@@ -68,3 +68,5 @@ jobs:
           provenance: false
           sbom: false
           tags: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}
+
+# Registered on video repository default branch

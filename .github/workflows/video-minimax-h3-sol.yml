@@ -83,3 +83,5 @@ jobs:
           tags: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}
       - name: Verify published manifest
         run: docker buildx imagetools inspect "${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}"
+
+# Registered on video repository default branch
