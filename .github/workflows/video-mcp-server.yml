@@ -1,0 +1,70 @@
+name: Video MCP Server
+
+on:
+  push:
+    branches: [release]
+    paths:
+      - services/video-mcp-server/**
+      - .github/workflows/video-mcp-server.yml
+permissions:
+  contents: read
+concurrency:
+  group: video-mcp-server-release
+  cancel-in-progress: false
+env:
+  SERVICE: video-mcp-server
+  VERSION: 0.4.1
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run unit tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          PYTHONPATH: services/video-mcp-server
+        run: |
+          python3 -m pip install -r services/${SERVICE}/requirements.txt
+          python3 -m unittest discover -s services/${SERVICE}/tests -v
+          node --check services/${SERVICE}/verdantflare_video_mcp/static/dashboard.js
+          node --check services/${SERVICE}/verdantflare_video_mcp/static/resources.js
+      - name: Browser integration
+        env:
+          PYTHONPATH: services/video-mcp-server
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          python3 -m pip install playwright==1.62.0
+          python3 -m playwright install --with-deps chromium
+          python3 services/${SERVICE}/tests/browser_dashboard.py
+  build:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - id: image
+        env:
+          REGISTRY_ENDPOINT: ${{ secrets.REGISTRY_ENDPOINT_ALIYUN }}
+        run: |
+          set -euo pipefail
+          registry_endpoint="${REGISTRY_ENDPOINT%/}"
+          test -n "${registry_endpoint}"
+          echo "registry_endpoint=${registry_endpoint}" >> "$GITHUB_OUTPUT"
+          echo "name=${registry_endpoint}/wod/verdantflare-app" >> "$GITHUB_OUTPUT"
+          echo "version=${SERVICE}-v${VERSION}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.image.outputs.registry_endpoint }}
+          username: ${{ secrets.REGISTRY_USER_ALIYUN }}
+          password: ${{ secrets.REGISTRY_PASSWORD_ALIYUN }}
+      - run: '! docker buildx imagetools inspect "${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}" >/dev/null 2>&1'
+      - uses: docker/build-push-action@v6
+        with:
+          context: services/${{ env.SERVICE }}
+          push: true
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          tags: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}

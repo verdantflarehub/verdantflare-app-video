@@ -1,0 +1,70 @@
+name: Video MiniMax H3 API
+
+on:
+  push:
+    branches: [release]
+    paths:
+      - services/video-minimax-h3-api/**
+      - .github/workflows/video-minimax-h3-api.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: video-minimax-h3-api-release
+  cancel-in-progress: false
+
+env:
+  SERVICE: video-minimax-h3-api
+  VERSION: 0.3.0
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check shell scripts
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' script; do
+            bash -n "$script"
+            shellcheck "$script"
+          done < <(find "services/${SERVICE}" -type f -name '*.sh' -print0)
+
+  build:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - id: image
+        env:
+          REGISTRY_ENDPOINT: ${{ secrets.REGISTRY_ENDPOINT_ALIYUN }}
+        run: |
+          set -euo pipefail
+          registry_endpoint="${REGISTRY_ENDPOINT%/}"
+          test -n "${registry_endpoint}"
+          echo "registry_endpoint=${registry_endpoint}" >> "$GITHUB_OUTPUT"
+          echo "name=${registry_endpoint}/wod/verdantflare-app" >> "$GITHUB_OUTPUT"
+          echo "version=${SERVICE}-v${VERSION}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.image.outputs.registry_endpoint }}
+          username: ${{ secrets.REGISTRY_USER_ALIYUN }}
+          password: ${{ secrets.REGISTRY_PASSWORD_ALIYUN }}
+      - name: Verify version is unpublished
+        run: |
+          image="${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}"
+          ! docker buildx imagetools inspect "$image" >/dev/null 2>&1
+      - uses: docker/build-push-action@v6
+        with:
+          context: services/${{ env.SERVICE }}
+          push: true
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          tags: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}
+          cache-from: type=gha,scope=${{ env.SERVICE }}
+          cache-to: type=gha,mode=max,scope=${{ env.SERVICE }}
