@@ -87,7 +87,7 @@ def main():
     try:
         if torch.cuda.device_count()!=2:raise ValueError('two physical CUDA GPUs required')
         uuids=['GPU-'+str(torch.cuda.get_device_properties(i).uuid).removeprefix('GPU-') for i in range(2)]
-        verify_gpu_allocation(uuids)
+        print(json.dumps({"stage":"gpu_uuid_observed","rank":rank,"gpu_uuids":uuids}),flush=True)
         for i in range(2):
             if torch.cuda.get_device_capability(i)!=(8,9) or torch.cuda.get_device_properties(i).total_memory<23*1024**3:
                 raise ValueError('two full RTX4090 SM89 GPUs required')
