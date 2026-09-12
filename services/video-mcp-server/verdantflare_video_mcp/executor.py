@@ -47,7 +47,7 @@ class VideoExecutor:
         self.runtime_url = os.environ.get("H3_RUNTIME_URL", "http://video-minimax-h3-api:8000").rstrip("/")
         self.runtime_artifact_url = os.environ.get("VIDEO_MCP_RUNTIME_BASE_URL", "http://video-mcp-server:8000").rstrip("/")
         self.sol_url = os.environ.get("H3_SOL_RUNTIME_URL", "").rstrip("/")
-        self.sol_version = os.environ.get("H3_SOL_RUNTIME_VERSION", "video-minimax-h3-sol-v0.2.0")
+        self.sol_version = os.environ.get("H3_SOL_RUNTIME_VERSION", "video-minimax-h3-sol-v0.2.1")
         self.sol_token = os.environ.get("H3_SOL_RUNTIME_TOKEN", "")
         self.runtime_version = os.environ.get("H3_RUNTIME_VERSION", "video-minimax-h3-api-v0.3.0")
         self.allowed_origins = frozenset(x.strip() for x in os.environ.get("VIDEO_ASSET_IMPORT_ORIGINS", "").split(",") if x.strip())
