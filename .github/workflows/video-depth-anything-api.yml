@@ -48,4 +48,6 @@ jobs:
           context: services/${{ env.SERVICE }}
           push: true
           platforms: linux/amd64
+          provenance: false
+          sbom: false
           tags: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}
