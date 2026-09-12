@@ -6,10 +6,7 @@ on:
     paths:
       - services/video-minimax-h3-sol/**
       - .github/workflows/video-minimax-h3-sol.yml
-  pull_request:
-    paths:
-      - services/video-minimax-h3-sol/**
-      - .github/workflows/video-minimax-h3-sol.yml
+
 permissions:
   contents: read
 concurrency:
