@@ -21,8 +21,10 @@ The MCP never returns Runtime task IDs, internal service URLs, node names, GPU d
 | `VIDEO_MCP_BEARER_TOKEN` | unset |
 | `VIDEO_MCP_ALLOWED_HOSTS` | loopback only |
 | `VIDEO_MCP_ALLOWED_ORIGINS` | loopback only |
+| `VIDEO_MCP_URL` | client-facing unified Video MCP endpoint |
 | `VIDEO_MCP_RUNTIME_BASE_URL` | `http://video-mcp-server:8000` |
 | `H3_RUNTIME_URL` | `http://video-minimax-h3-api:8000` |
+| `VIDEO_DEPTH_RUNTIME_URL` | `http://video-depth-anything-api:8000` |
 | `H3_RUNTIME_VERSION` | `video-minimax-h3-api-v0.3.0` |
 
 `video.generate` uses 21 sigma points, which corresponds to the approved Base

@@ -30,6 +30,21 @@ dashboard = Dashboard(executor)
 mcp = MCPServer("VerdantFlare Video")
 
 
+@mcp.tool(name="video.depth.generate")
+def video_depth_generate(project_id: str, idempotency_key: str, source_artifact_id: str,
+                         model: str = "video-depth-anything", output_format: str = "mp4") -> types.CallToolResult:
+    """Submit RGB video depth conversion through the Video MCP runtime."""
+    url = os.environ.get("VIDEO_DEPTH_RUNTIME_URL", "http://video-depth-anything-api:8000").rstrip("/")
+    try:
+        response = executor.client.post(f"{url}/v1/depth", json={"project_id": project_id,
+            "idempotency_key": idempotency_key, "source_artifact_id": source_artifact_id,
+            "model": model, "output_format": output_format}, timeout=30)
+        response.raise_for_status()
+        return _result(response.json())
+    except Exception as error:
+        raise ExecutionError(f"depth runtime request failed: {error}") from error
+
+
 def _result(value: dict[str, object]) -> types.CallToolResult:
     return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(value, ensure_ascii=False))], structuredContent=value)
 
@@ -140,4 +155,3 @@ app = Starlette(routes=[*dashboard.routes(), Route("/health", health),
                                                                transport_security=transport_security_from_environment()))],
                 lifespan=lifespan)
 app.add_middleware(BearerAuthMiddleware)
-

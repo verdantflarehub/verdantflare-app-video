@@ -7,6 +7,7 @@
 | H3 | `services/video-minimax-h3-api` | 原版推理服务，已部署 `video-minimax-h3-api-v0.3.0` |
 | H3-Sol | `services/video-minimax-h3-sol` | Sol 常驻双 rank 推理服务，版本 `video-minimax-h3-sol-v0.2.0`；上线结果见中央验收记录 |
 | MCP | `services/video-mcp-server` | 统一调用入口及 Dashboard，版本 `video-mcp-server-v0.4.0`（上线证据以中央发布记录为准） |
+| Depth | `services/video-depth-anything-api` | Video MCP 内部深度转换推理服务，版本 `video-depth-anything-api-v0.1.0` |
 
 H3-Sol 的既有双卡实验出片与人工质量限制，以中央设计记录为准。实验镜像可追溯发布不等于热启动服务、生产接入或质量验收完成。H3、H3-Sol 的后续模型服务不使用 Kubernetes Job，分别复用各自模型进程；MCP 不加载模型。
 
@@ -18,6 +19,7 @@ services/
   video-minimax-h3-api/
   video-minimax-h3-sol/
   video-mcp-server/
+  video-depth-anything-api/
 ```
 
 设计、接口与部署清单统一维护在 [verdantflare-design](https://github.com/verdantflarehub/verdantflare-design/tree/dev)：
