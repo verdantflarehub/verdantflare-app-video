@@ -33,4 +33,3 @@
 !Dockerfile.resident
 !resident_api.py
 !resident_worker.py
-!patch_fusion_offsets.py

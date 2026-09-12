@@ -1,0 +1,38 @@
+--- a/h3_runtime/fusions.py
++++ b/h3_runtime/fusions.py
+@@ -58,7 +58,7 @@
+         stride_row, stride_table_row,
+         BLOCK: tl.constexpr,
+     ):
+-        row = tl.program_id(0)
++        row = tl.program_id(0).to(tl.int64)
+         cols = tl.arange(0, BLOCK)
+         mask = cols < n_cols
+         offset = row * stride_row + cols
+@@ -95,7 +95,7 @@
+         n_cols, n_index, eps, stride_row, stride_table_row,
+         BLOCK: tl.constexpr,
+     ):
+-        row = tl.program_id(0)
++        row = tl.program_id(0).to(tl.int64)
+         cols = tl.arange(0, BLOCK)
+         mask = cols < n_cols
+         offset = row * stride_row + cols
+@@ -115,7 +115,7 @@
+ 
+     @triton.jit
+     def _swiglu_kernel(out_ptr, x_ptr, n_cols, stride_in_row, stride_out_row, BLOCK: tl.constexpr):
+-        row = tl.program_id(0)
++        row = tl.program_id(0).to(tl.int64)
+         cols = tl.arange(0, BLOCK)
+         mask = cols < n_cols
+         value = tl.load(x_ptr + row * stride_in_row + cols, mask=mask, other=0.0).to(tl.float32)
+@@ -215,7 +215,7 @@
+         # One program per (token, head): the RMS is over head_dim, and rotary pairs channel j with
+         # j + half_dim inside the rotary span. cos/sin are shared across heads and indexed by the
+         # position within the sequence, so the batch stride has to be divided out.
+-        pid = tl.program_id(0)
++        pid = tl.program_id(0).to(tl.int64)
+         token = (pid // heads) % seq
+         cols = tl.arange(0, BLOCK)
+         mask = cols < head_dim

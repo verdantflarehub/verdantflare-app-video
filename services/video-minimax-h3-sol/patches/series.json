@@ -30,6 +30,13 @@
       "source": "h3_runtime/engine.py",
       "before_sha256": "db6e0d1bc2fc33917ae28f55edaa649ee1c2778f2b93420c70a2c1e3f5a20118",
       "after_sha256": "d9016f32eaab1320c71664c7f934e39249c2705d9e89b41733612f388be2df72"
+    },
+    {
+      "file": "0005-use-int64-fusion-offsets.patch",
+      "sha256": "d74813a9be1e0751f511f4b8453907e15ec12f567d421799b6b74a2ddaf91229",
+      "source": "h3_runtime/fusions.py",
+      "before_sha256": "28f47ad80871d9873c4a3b3ad6f89e75a482088375a97d408ebaf2857fab391b",
+      "after_sha256": "af63683f9554076979b8d44adcffcca46d4c58fbe317d7144a7b4aafe2443073"
     }
   ]
 }

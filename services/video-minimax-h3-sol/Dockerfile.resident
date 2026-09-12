@@ -1,8 +1,11 @@
 # syntax=docker/dockerfile:1.7
 FROM registry.cn-qingdao.aliyuncs.com/wod/verdantflare-app:vedio-minimax-h3-sol-v0.1.1@sha256:09bd61ea754d279bd55b92448d5a1f6bd1e5cc6ab3cad426b025509faf0bab79
-LABEL org.opencontainers.image.version="0.2.3"
-COPY resident_api.py resident_worker.py patch_fusion_offsets.py /opt/verdantflare-sol/
-RUN python /opt/verdantflare-sol/patch_fusion_offsets.py /opt/sol-h3-experimental/h3_runtime/fusions.py
+LABEL org.opencontainers.image.version="0.2.4"
+COPY resident_api.py resident_worker.py /opt/verdantflare-sol/
+COPY patches/ /opt/verdantflare-sol/patches/
+RUN python /opt/verdantflare-sol/prepare-patched-source.py --source /opt/sol-h3 --output /opt/sol-h3-fixed \
+    && rm -rf /opt/sol-h3-experimental \
+    && mv /opt/sol-h3-fixed /opt/sol-h3-experimental
 COPY tests/test_resident.py /opt/verdantflare-sol/tests/
 RUN python -m unittest discover -s /opt/verdantflare-sol/tests -v \
     && python -m compileall -q /opt/verdantflare-sol/resident_api.py /opt/verdantflare-sol/resident_worker.py
