@@ -5,7 +5,7 @@ LABEL org.opencontainers.image.version="0.1.0"
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip ffmpeg git && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
-RUN pip3 install --no-cache-dir --index-url https://download.pytorch.org/whl/cu130 torch==2.10.0 torchvision && pip3 install --no-cache-dir -r requirements.txt
+RUN pip3 install --break-system-packages --no-cache-dir --index-url https://download.pytorch.org/whl/cu130 torch==2.10.0 torchvision && pip3 install --break-system-packages --no-cache-dir -r requirements.txt
 COPY main.py .
 EXPOSE 8000
 ENV NVIDIA_VISIBLE_DEVICES=all NVIDIA_DRIVER_CAPABILITIES=compute,utility
