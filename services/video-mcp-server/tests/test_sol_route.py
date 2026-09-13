@@ -18,14 +18,14 @@ class SolRouteTest(unittest.TestCase):
    if request.method=='POST':return httpx.Response(200,json={'id':'sol_'+'c'*32})
    return httpx.Response(200,json={'status':'completed','execution_instance_id':'11111111-1111-1111-1111-111111111111','stage':'completed'})
   self.http=httpx.Client(transport=httpx.MockTransport(handle))
-  self.env=patch.dict(os.environ,{'H3_SOL_RUNTIME_URL':'http://sol.example:8000','H3_SOL_RUNTIME_TOKEN':'test-sol-token'});self.env.start()
+  self.env=patch.dict(os.environ,{'H3_SOL_RUNTIME_URL':'http://sol.example:8000','H3_SOL_RUNTIME_TOKEN':'test-sol-token','H3_SOL_RUNTIME_ROUTE':'minimax-h3-sol-ref2va'});self.env.start()
   self.executor=VideoExecutor(self.assets,self.tasks,self.http)
   asset=self.assets.create_from_chunks(project_id='demo',operation='test',filename='image.png',media_type='image/png',chunks=[b'fixture'])
   self.kw={'project_id':'demo','idempotency_key':'attempt','model':'minimax-h3-ref2va','prompt':'Approved motion','duration_seconds':5,'aspect_ratio':'9:16','references':{'images':[{'artifact_id':asset.artifact_id,'purpose':'identity'}]}}
  def tearDown(self):self.http.close();self.env.stop();self.temp.cleanup()
  def test_sol_route_and_instance_persist_without_fallback(self):
   row=self.executor.generate(**self.kw,service='h3-sol')
-  self.assertEqual(row.service,'h3-sol');self.assertEqual(self.calls[0].url.host,'sol.example')
+  self.assertEqual(row.service,'h3-sol');self.assertEqual(row.runtime_route,'minimax-h3-sol-ref2va');self.assertEqual(self.calls[0].url.host,'sol.example')
   self.assertEqual(self.calls[0].headers['Authorization'],'Bearer test-sol-token')
   body=json.loads(self.calls[0].content);self.assertEqual(body['num_inference_steps'],4)
   self.assertEqual(body['idempotency_key'],row.video_task_id);self.assertIn('sha256',body['conditions'][0])

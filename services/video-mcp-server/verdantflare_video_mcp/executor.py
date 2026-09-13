@@ -48,6 +48,7 @@ class VideoExecutor:
         self.runtime_artifact_url = os.environ.get("VIDEO_MCP_RUNTIME_BASE_URL", "http://video-mcp-server:8000").rstrip("/")
         self.sol_url = os.environ.get("H3_SOL_RUNTIME_URL", "").rstrip("/")
         self.sol_version = os.environ.get("H3_SOL_RUNTIME_VERSION", "video-minimax-h3-sol-v0.2.1")
+        self.sol_route = os.environ.get("H3_SOL_RUNTIME_ROUTE", "minimax-h3-sol-ref2va")
         self.sol_token = os.environ.get("H3_SOL_RUNTIME_TOKEN", "")
         self.runtime_version = os.environ.get("H3_RUNTIME_VERSION", "video-minimax-h3-api-v0.3.0")
         self.allowed_origins = frozenset(x.strip() for x in os.environ.get("VIDEO_ASSET_IMPORT_ORIGINS", "").split(",") if x.strip())
@@ -67,9 +68,9 @@ class VideoExecutor:
 
     def runtime(self, service):
         if service == "h3":
-            return self.runtime_url, {}, self.runtime_version
+            return self.runtime_url, {}, self.runtime_version, "minimax-h3-ref2va"
         if service == "h3-sol" and self.sol_url and self.sol_token:
-            return self.sol_url, {"Authorization": f"Bearer {self.sol_token}"}, self.sol_version
+            return self.sol_url, {"Authorization": f"Bearer {self.sol_token}"}, self.sol_version, self.sol_route
         raise ExecutionError("Selected runtime is not connected")
 
     def import_asset(self, *, project_id: str, source_url: str, filename: str, expected_sha256: str) -> ArtifactRecord:
@@ -156,7 +157,7 @@ class VideoExecutor:
             if existing.input_digest != digest:
                 raise TaskConflict("idempotency key already exists with different input")
             return existing
-        runtime_url, runtime_headers, runtime_version = self.runtime(service)
+        runtime_url, runtime_headers, runtime_version, runtime_route = self.runtime(service)
         conditions = []
         material_tags = []
         singular = {"images": "image", "videos": "video", "audios": "audio"}
@@ -180,7 +181,7 @@ class VideoExecutor:
         # failure must not permit a duplicate GPU request under the same key.
         reserved = self.tasks.create(project_id=project_id, idempotency_key=idempotency_key,
                                      input_digest=digest, request=request, runtime_task_id="", status="queued")
-        reserved = self.tasks.update(reserved, service=service, runtime_version=runtime_version)
+        reserved = self.tasks.update(reserved, service=service, runtime_version=runtime_version, runtime_route=runtime_route)
         if service == "h3-sol":
             payload["idempotency_key"] = reserved.video_task_id
         try:
@@ -200,7 +201,7 @@ class VideoExecutor:
             return self.depth.status(video_task_id)
         if record.status in {"succeeded", "failed", "cancelled"}:
             return record
-        runtime_url, runtime_headers, _ = self.runtime(record.service)
+        runtime_url, runtime_headers, _, _ = self.runtime(record.service)
         try:
             response = self.client.get(f"{runtime_url}/v1/videos/{record.runtime_task_id}", timeout=10, headers=runtime_headers)
             if response.status_code == 404:
@@ -238,7 +239,7 @@ class VideoExecutor:
             raise ExecutionError("video task has not succeeded")
         if record.artifact_id:
             return record
-        runtime_url, runtime_headers, _ = self.runtime(record.service)
+        runtime_url, runtime_headers, _, _ = self.runtime(record.service)
         try:
             response = self.client.get(f"{runtime_url}/v1/videos/{record.runtime_task_id}/content", headers=runtime_headers)
             response.raise_for_status()

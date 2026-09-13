@@ -25,6 +25,7 @@ class TaskRecord(BaseModel):
     schema_version: int = 1
     service: str = "h3"
     runtime_version: str | None = None
+    runtime_route: str | None = None
     execution_instance_id: str | None = None
     runtime_stage: str | None = None
     video_task_id: str
@@ -108,4 +109,3 @@ class TaskStore:
         updated = record.model_copy(update={**values, "updated_at": now})
         self._write(updated)
         return updated
-

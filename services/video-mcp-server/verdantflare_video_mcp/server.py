@@ -86,7 +86,8 @@ def video_status(video_task_id: str) -> types.CallToolResult:
     record = executor.status(video_task_id)
     return _result({"video_task_id": record.video_task_id, "status": record.status,
                     "created_at": record.created_at, "updated_at": record.updated_at, "error": record.error,
-                    "service": record.service, "execution_instance_id": record.execution_instance_id, "stage": record.runtime_stage})
+                    "service": record.service, "runtime_route": record.runtime_route,
+                    "execution_instance_id": record.execution_instance_id, "stage": record.runtime_stage})
 
 
 @mcp.tool(name="video.result")
@@ -96,7 +97,8 @@ def video_result(video_task_id: str) -> types.CallToolResult:
         return _result(executor.depth.public_result(record))
     artifact = artifacts.get(record.artifact_id, record.project_id)
     value = {"video_task_id": record.video_task_id, "artifact_id": artifact.artifact_id,
-             "model": record.request["model"], "runtime_version": record.runtime_version or executor.runtime_version, "service": record.service,
+             "model": record.request["model"], "runtime_version": record.runtime_version or executor.runtime_version,
+             "runtime_route": record.runtime_route, "service": record.service,
              "input_digest": record.input_digest, "media": record.media,
              "download_path": artifacts.download_path(artifact.artifact_id)}
     return _result(value)
