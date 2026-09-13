@@ -11,7 +11,7 @@ import threading
 import uuid
 from functools import wraps
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import httpx
 
@@ -85,6 +85,16 @@ class VideoExecutor:
         origin = f"{parsed.scheme}://{parsed.hostname}" if parsed.port in {None, 443} else f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
         if parsed.scheme != "https" or parsed.username or parsed.password or parsed.fragment or origin not in self.allowed_origins:
             raise ValueError("source_url must be an allowed absolute HTTPS object URL")
+        decoded_path = parsed.path
+        for _ in range(5):
+            if "\\" in decoded_path or any(part in {".", ".."} for part in decoded_path.split("/")):
+                raise ValueError("source_url must not contain path traversal")
+            decoded = unquote(decoded_path)
+            if decoded == decoded_path:
+                break
+            decoded_path = decoded
+        else:
+            raise ValueError("source_url path has excessive encoding")
         download_url = source_url
         for source, target in self.import_rewrites.items():
             if source_url.startswith(source):

@@ -154,5 +154,9 @@ class AssetRewriteTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 executor.import_asset(project_id='p', source_url='https://storage.example.com.evil.test:9090/bucket/source.mp4',
                                       filename='source.mp4', expected_sha256=digest)
+            for path in ('../other', '%2e%2e/other', '%252e%252e/other', 'nested/../../other', '%5c..%5cother'):
+                with self.assertRaises(ValueError):
+                    executor.import_asset(project_id='p', source_url='https://storage.example.com:9090/bucket/' + path,
+                                          filename='source.mp4', expected_sha256=digest)
             self.assertEqual(len(requests), 1)
             client.close()
