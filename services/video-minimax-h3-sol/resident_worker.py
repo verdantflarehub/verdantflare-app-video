@@ -131,7 +131,7 @@ def main():
         with torch.inference_mode():
             engine=MiniMaxH3Inference(model_path=str(models/'MiniMax-H3-Diffusers'),
                 adapter_path=models/'MiniMax-H3-Turbo/minimax_h3_ref2v_turbo_4step_v0.1_bf16.safetensors',
-                task='ref2va', attention_backend=attention_backend, compute_quant=compute_quant)
+                task='ref2va', attention_backend=attention_backend)
         torch.cuda.synchronize(rank);dist.barrier(group=control)
         state.load_seconds=round(time.monotonic()-started,2);state.load_count=1;state.ready_at=time.time();state.set_stage('ready',True)
         print(json.dumps({'stage':'ready','rank':rank,'pid':os.getpid(),'load_count':1,'load_seconds':state.load_seconds}),flush=True)
