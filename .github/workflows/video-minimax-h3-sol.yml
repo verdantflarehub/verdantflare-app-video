@@ -48,7 +48,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Reserve disk for CUDA image on the disposable runner
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
           df -h /
       - uses: docker/setup-buildx-action@v3
       - id: image
