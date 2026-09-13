@@ -118,6 +118,7 @@ def verify_models(root):
             index_path = relative_file(root, "base/" + name)
             index = read_json(index_path)
             for shard in set(index["weight_map"].values()):
-                if "base/" + str(Path(name).parent / shard) not in names:
+                indexed_name = "base/" + (Path(name).parent / shard).as_posix()
+                if indexed_name not in names:
                     raise ValueError("weight index refers to an unsealed shard")
     return root / "base", root / adapter_name
