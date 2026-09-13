@@ -13,7 +13,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
-VERSION = 'video-minimax-h3-sol-v0.2.10'
+VERSION = 'video-minimax-h3-sol-v0.2.11'
 ID = re.compile(r'sol_[0-9a-f]{32}$')
 SHA = re.compile(r'[0-9a-f]{64}$')
 
@@ -128,16 +128,19 @@ class State:
         self.lock=threading.RLock();self.ready=False;self.stage='gpu_check';self.instance_id=instance_id
         self.gpu_uuids=[];self.rank_pids=[];self.load_count=0;self.load_seconds=None;self.ready_at=None
         self.started_at=time.time();self.package_complete=False;self.last_heartbeat=time.monotonic()
+        self.runtime_profile={}
     def set_stage(self,stage,ready=None):
         with self.lock:
             self.stage=stage
             if ready is not None:self.ready=ready
     def snapshot(self):
         with self.lock:
-            return {'service':'H3-Sol','version':VERSION,'ready':self.ready,'stage':self.stage,'execution_instance_id':self.instance_id,
+            value={'service':'H3-Sol','version':VERSION,'ready':self.ready,'stage':self.stage,'execution_instance_id':self.instance_id,
                     'gpu_uuids':self.gpu_uuids,'rank_pids':self.rank_pids,'model_load_count':self.load_count,'load_seconds':self.load_seconds,
                     'started_at':self.started_at,'ready_at':self.ready_at,'model_package_complete':self.package_complete,
                     'quality_review':'pending','heartbeat_age_seconds':round(time.monotonic()-self.last_heartbeat,1)}
+            value['runtime_profile']=dict(self.runtime_profile)
+            return value
 
 
 def serve(state,store,token,source,port=8000):

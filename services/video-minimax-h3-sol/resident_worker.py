@@ -110,10 +110,28 @@ def main():
         from retain_cpu_weights import install,verify
         install();verify(torch.device('cuda',rank))
         from h3_runtime import MiniMaxH3Inference
+        attention_backend = os.environ.get('SOL_ATTENTION_BACKEND', 'sol_bsa').strip().lower()
+        if attention_backend not in {'dense', 'sol_bsa'}:
+            raise ValueError('SOL_ATTENTION_BACKEND must be dense or sol_bsa')
+        compute_quant = os.environ.get('SOL_COMPUTE_QUANT', 'none').strip().lower()
+        if compute_quant not in {'none', 'fp8', 'mxfp8'}:
+            raise ValueError('SOL_COMPUTE_QUANT must be none, fp8, or mxfp8')
+        # These are runtime knobs consumed by the patched Sol-H3 communication/VAE code.
+        for name, allowed in [('H3_ULYSSES_COMM_DTYPE', {'bf16','int8_qkv'}),
+                              ('H3_ULYSSES_OUTPUT_DTYPE', {'bf16','int8','fp8','match_qkv'}),
+                              ('H3_ULYSSES_INT8_SCOPE', {'all','sparse'})]:
+            value = os.environ.get(name)
+            if value and value.lower() not in allowed:
+                raise ValueError(f'{name} has unsupported value')
+        state.runtime_profile = {'attention_backend': attention_backend,
+                                 'compute_quant': compute_quant,
+                                 'ulysses_comm_dtype': os.environ.get('H3_ULYSSES_COMM_DTYPE','auto'),
+                                 'ulysses_output_dtype': os.environ.get('H3_ULYSSES_OUTPUT_DTYPE','auto'),
+                                 'vae_global_batch': os.environ.get('H3_VAE_GLOBAL_BATCH','1')}
         with torch.inference_mode():
             engine=MiniMaxH3Inference(model_path=str(models/'MiniMax-H3-Diffusers'),
                 adapter_path=models/'MiniMax-H3-Turbo/minimax_h3_ref2v_turbo_4step_v0.1_bf16.safetensors',
-                task='ref2va',attention_backend='dense',cpu_offload=True,output_width=768,output_height=1344)
+                task='ref2va', attention_backend=attention_backend, compute_quant=compute_quant)
         torch.cuda.synchronize(rank);dist.barrier(group=control)
         state.load_seconds=round(time.monotonic()-started,2);state.load_count=1;state.ready_at=time.time();state.set_stage('ready',True)
         print(json.dumps({'stage':'ready','rank':rank,'pid':os.getpid(),'load_count':1,'load_seconds':state.load_seconds}),flush=True)
