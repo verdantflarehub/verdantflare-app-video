@@ -20,7 +20,9 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 VERSION = "0.4.1"
-MODELS = {"h3": ("H3", "video-minimax-h3-api"), "h3-sol": ("H3-Sol", "video-minimax-h3-sol-api")}
+MODEL_TYPE = "minimax-h3-ref2va"
+MODELS = {"h3": ("h3", "video-minimax-h3-api"), "h3-sol": ("h3-sol", "video-minimax-h3-sol-api"),
+          "h3-sol-4090": ("h3-sol-4090", "video-minimax-h3-sol-4090-api")}
 FIELDS = {"DCGM_FI_DEV_GPU_UTIL": ("utilization_percent", 100, 1),
           "DCGM_FI_DEV_FB_USED": ("memory_used_gib", 1048576, 1024),
           "DCGM_FI_DEV_FB_FREE": ("memory_free_gib", 1048576, 1024),
@@ -135,6 +137,17 @@ class Resources:
         self.protocol = {"state": "unavailable", "sampled_at": None, "status": "unknown"}
         self.requests = {"count": 0, "errors": 0, "last_at": None, "last_error_at": None}
 
+    @staticmethod
+    def route_connected(route):
+        if route == "h3":
+            return True
+        try:
+            routes = json.loads(os.environ.get("H3_RUNTIME_ROUTES", "{}"))
+        except json.JSONDecodeError:
+            return False
+        config = routes.get(route)
+        return bool(config and config.get("url") and (not config.get("requires_token") or os.environ.get("H3_SOL_RUNTIME_TOKEN")))
+
     def record_request(self, failed):
         with self.lock:
             self.requests["count"] += 1
@@ -173,9 +186,9 @@ class Resources:
                 ready = sum(i["ready"] for i in instances)
                 state = ("not_deployed" if not deployment else "scaled_zero" if not desired and not instances else
                          "not_ready" if not ready else "partial" if ready < desired or ready < len(instances) else "online")
-                models[model] = {"id": model, "name": name, "deployment_status": state,
+                models[model] = {"id": model, "name": name, "model_type": MODEL_TYPE, "route": model, "deployment_status": state,
                                  "ready": ready, "current": len(instances), "desired": desired,
-                                 "route_status": "connected" if model == "h3" or (os.environ.get("H3_SOL_RUNTIME_URL") and os.environ.get("H3_SOL_RUNTIME_TOKEN")) else "not_connected", "instances": instances}
+                                 "route_status": "connected" if self.route_connected(model) else "not_connected", "instances": instances}
             with self.lock:
                 self.models, self.inventory_at, self.inventory_failed = models, now, False
                 allowed = {g for m in models.values() for i in m["instances"] for g in i["gpu_ids"]}
@@ -260,7 +273,7 @@ class Resources:
             state = self._state()
             rows = []
             for model, (name, _) in MODELS.items():
-                row = copy.deepcopy(self.models.get(model, {"id": model, "name": name, "route_status": "connected" if model == "h3" or (os.environ.get("H3_SOL_RUNTIME_URL") and os.environ.get("H3_SOL_RUNTIME_TOKEN")) else "not_connected"}))
+                row = copy.deepcopy(self.models.get(model, {"id": model, "name": name, "model_type": MODEL_TYPE, "route": model, "route_status": "connected" if self.route_connected(model) else "not_connected"}))
                 row.pop("instances", None)
                 if state != "fresh":
                     row.update(deployment_status="unknown", ready=None, current=None, desired=None)

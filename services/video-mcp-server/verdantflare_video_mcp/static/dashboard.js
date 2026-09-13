@@ -10,7 +10,7 @@ function storeToken(value) {
     // Storage-disabled browsers still support the current in-memory session.
   }
 }
-const names = { h3: "H3", "h3-sol": "H3-Sol", mcp: "MCP" };
+const names = { h3: "h3", "h3-sol": "h3-sol", "h3-sol-4090": "h3-sol-4090", mcp: "MCP" };
 const labels = {
   queued: "排队中",
   running: "渲染中",
@@ -495,6 +495,8 @@ $("dispatchForm").addEventListener("submit", async (event) => {
   try {
     const body = Object.fromEntries(new FormData(event.target));
     body.duration_seconds = Number(body.duration_seconds);
+    if (body.service === "h3-sol-4090") { body.route = "h3-sol-4090"; body.service = "h3-sol"; }
+    else if (body.service === "h3-sol") body.route = "h3-sol";
     const references = { images: [], videos: [], audios: [] };
     const kinds = { image: "images", video: "videos", audio: "audios" };
     for (const line of body.references.trim().split("\n")) {
@@ -531,7 +533,7 @@ $("dispatchForm").addEventListener("submit", async (event) => {
 
 $("dispatchForm").elements.service.addEventListener("change",()=>{
   const duration=$("dispatchForm").elements.duration_seconds;
-  const sol=$("dispatchForm").elements.service.value==='h3-sol';
+  const sol=$("dispatchForm").elements.service.value.startsWith('h3-sol');
   duration.min=sol?'5':'4';duration.step=sol?'5':'1';
   if(sol&&![5,10,15].includes(Number(duration.value)))duration.value='5';
 });

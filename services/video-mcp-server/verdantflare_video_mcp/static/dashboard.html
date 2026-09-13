@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>VerdantFlare Video Station · H3 / H3-Sol / MCP</title>
+    <title>VerdantFlare Video Station · minimax-h3-ref2va</title>
     <link rel="stylesheet" href="./dashboard/static/dashboard.css" />
     <script src="./dashboard/static/dashboard.js" defer></script>
     <script src="./dashboard/static/resources.js" defer></script>
@@ -39,7 +39,7 @@
       <section class="market-wrap business-section" aria-labelledby="modelsHeading">
         <p class="market-kicker">02 / MODELS</p><h2 id="modelsHeading">模型服务</h2>
         <p class="business-muted">查看模型上线状态与实例数量，进入实例后查看 GPU。</p>
-        <div id="modelServices" class="business-models"><button class="business-card" data-resource="model" data-model="h3"><h3>H3</h3><p>认证后查看实例数量 →</p></button><button class="business-card" data-resource="model" data-model="h3-sol"><h3>H3-Sol</h3><p>认证后查看实例数量 →</p></button></div>
+        <div id="modelServices" class="business-models"><div class="business-card"><h3>minimax-h3-ref2va</h3><p>业务模型类型 / 接口契约</p><p>供应商：h3 · h3-sol · h3-sol-4090</p></div></div>
         <p id="inventoryTime" class="business-muted"></p>
       </section>
       <section class="market-wrap business-section" aria-labelledby="tasksHeading">
@@ -64,8 +64,9 @@
               ><span>推理服务</span
               ><select id="filterEngine">
                 <option value="all">全部服务</option>
-                <option value="h3">H3</option>
-                <option value="h3-sol">H3-Sol</option>
+                <option value="h3">h3</option>
+                <option value="h3-sol">h3-sol</option>
+                <option value="h3-sol-4090">h3-sol-4090</option>
               </select></label
             ><label
               ><span>所属项目</span
@@ -172,8 +173,9 @@
                 placeholder="creator-demo" /></label
             ><label
               >推理服务<select name="service">
-                <option value="h3">H3</option>
-                <option value="h3-sol" disabled>H3-Sol · 检查中</option>
+                <option value="h3">h3</option>
+                <option value="h3-sol" disabled>h3-sol · 检查中</option>
+                <option value="h3-sol-4090" disabled>h3-sol-4090 · 检查中</option>
               </select></label
             ><label class="full"
               >镜头 / Attempt 幂等键<input

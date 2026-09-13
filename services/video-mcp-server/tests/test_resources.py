@@ -43,9 +43,10 @@ class ResourcesTest(unittest.TestCase):
         self.resources.sync_metrics()
 
     def test_counts_owner_chain_and_gpu_assignment(self):
-        h3, sol = self.resources.snapshot()['models']
+        h3, sol, b4090 = self.resources.snapshot()['models']
         self.assertEqual((h3['ready'], h3['current'], h3['desired'], h3['deployment_status']), (1, 1, 2, 'partial'))
         self.assertEqual(sol['deployment_status'], 'not_deployed')
+        self.assertEqual((b4090['route'], b4090['model_type'], b4090['deployment_status']), ('h3-sol-4090', 'minimax-h3-ref2va', 'not_deployed'))
         rogue = copy.deepcopy(self.source.data[2][0]); rogue['metadata']['uid'] = 'rogue'
         rogue['metadata']['ownerReferences'][0]['uid'] = 'unrelated-rs'
         self.source.data[2].append(rogue)

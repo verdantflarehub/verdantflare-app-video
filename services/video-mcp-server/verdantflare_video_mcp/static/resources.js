@@ -10,19 +10,18 @@ function clearBusiness(){
   $("resourceCrumbs").replaceChildren();
   $("inventoryTime").textContent="";
   $("mcpStatus").innerHTML='<button class="business-card" data-resource="mcp"><h3>MCP</h3><p>认证后查看服务状态 →</p></button>';
-  $("modelServices").innerHTML=["h3","h3-sol"].map(m=>`<button class="business-card" data-resource="model" data-model="${m}"><h3>${names[m]}</h3><p>认证后查看实例数量 →</p></button>`).join("");
+  $("modelServices").innerHTML=`<div class="business-card"><h3>minimax-h3-ref2va</h3><p>业务模型类型</p><div class="route-list"><span>供应商 / 接入渠道</span><b>h3 · h3-sol · h3-sol-4090</b></div></div>`;
 }
 function renderMCP(data){
   const protocol=data.protocol.state==='fresh'?(data.protocol.status==='ready'?'通过':'不可达'):'检查状态未知';
   $("mcpStatus").innerHTML=`<button class="business-card business-mcp" data-resource="mcp"><div><h3>MCP</h3><span class="business-state">服务可达</span></div><div>协议检查：${protocol}<p>${date(data.protocol.sampled_at)}</p></div><div>已记录请求：${data.requests.count}<p>HTTP 错误：${data.requests.errors} · 查看详情 →</p></div></button>`;
 }
 function renderModels(data){
-  const sol=data.models.find(m=>m.id==='h3-sol');
-  const option=$("dispatchForm").elements.service.querySelector('option[value="h3-sol"]');
-  const available=data.state==='fresh'&&sol?.route_status==='connected'&&sol.ready>0;
-  option.disabled=!available;option.textContent=available?'H3-Sol':'H3-Sol · 暂不可用';
+  const routes=new Map(data.models.map(m=>[m.id,m]));
+  for(const id of ['h3','h3-sol','h3-sol-4090']){ const option=$("dispatchForm").elements.service.querySelector(`option[value="${id}"]`), row=routes.get(id); if(!option)continue; const available=data.state==='fresh'&&row?.route_status==='connected'&&row.ready>0; option.disabled=!available; option.textContent=available?id:`${id} · 暂不可用`; }
   $("inventoryTime").textContent=`部署采集：${date(data.sampled_at)}${data.state!=='fresh'?' · 当前部署状态未知':''}`;
-  $("modelServices").innerHTML=data.models.map(m=>`<button class="business-card" data-resource="model" data-model="${escapeHTML(m.id)}"><h3>${escapeHTML(m.name)}</h3><span class="business-state ${data.state==='fresh'&&m.deployment_status==='online'?'':'stale'}">${deploymentLabels[m.deployment_status]||'未知'}</span><div class="instance-counts"><div><strong>${m.ready??'—'}</strong><span>就绪实例</span></div><div><strong>${m.current??'—'}</strong><span>当前实例</span></div><div><strong>${m.desired??'—'}</strong><span>期望实例</span></div></div><p>MCP 路由：${m.route_status==='connected'?'已接入':m.route_status==='not_connected'?'未接入':'未知'}</p><div class="business-foot">查看 ${escapeHTML(m.name)} 实例列表 →</div></button>`).join('');
+  const modelCards=data.models.map(m=>`<button class="business-card" data-resource="model" data-model="${escapeHTML(m.id)}"><h3>${escapeHTML(m.name)}</h3><span class="business-state ${data.state==='fresh'&&m.deployment_status==='online'?'':'stale'}">${deploymentLabels[m.deployment_status]||'未知'}</span><div class="instance-counts"><div><strong>${m.ready??'—'}</strong><span>就绪实例</span></div><div><strong>${m.current??'—'}</strong><span>当前实例</span></div><div><strong>${m.desired??'—'}</strong><span>期望实例</span></div></div><p>模型：${escapeHTML(m.model_type||'minimax-h3-ref2va')} · 渠道：${escapeHTML(m.route)}</p><p>MCP 路由：${m.route_status==='connected'?'已接入':m.route_status==='not_connected'?'未接入':'未知'}</p><div class="business-foot">查看 ${escapeHTML(m.name)} 实例列表 →</div></button>`).join('');
+  $("modelServices").innerHTML=`<div class="business-card model-contract"><h3>minimax-h3-ref2va</h3><p>业务模型类型 / 接口契约</p></div>${modelCards}`;
 }
 async function refreshBusiness(){
   if(businessBusy||!authorized)return;
@@ -34,7 +33,7 @@ async function refreshBusiness(){
     if(responses[0].status==='fulfilled')renderMCP(responses[0].value);
     else $("mcpStatus").innerHTML='<button class="business-card" data-resource="mcp"><h3>MCP</h3><p>连接失败，当前状态未知 →</p></button>';
     if(responses[1].status==='fulfilled')renderModels(responses[1].value);
-    else renderModels({state:'unavailable',sampled_at:null,models:['h3','h3-sol'].map(id=>({id,name:names[id],deployment_status:'unknown'}))});
+    else renderModels({state:'unavailable',sampled_at:null,models:['h3','h3-sol','h3-sol-4090'].map(id=>({id,name:names[id],route:id,model_type:'minimax-h3-ref2va',deployment_status:'unknown'}))});
     if($("resourceDrawer").open&&resourceSelection)await inspectResource(...resourceSelection,false);
   }finally{businessBusy=false;}
 }

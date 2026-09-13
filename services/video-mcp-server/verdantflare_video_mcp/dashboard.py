@@ -41,6 +41,7 @@ class Submission(BaseModel):
     project_id: str = Field(min_length=1, max_length=64)
     idempotency_key: str = Field(min_length=1, max_length=128)
     service: str = "h3"
+    route: str | None = None
     prompt: str = Field(min_length=1, max_length=16000)
     duration_seconds: int = Field(ge=4, le=15)
     aspect_ratio: str = "9:16"
@@ -57,7 +58,7 @@ class ImportRequest(BaseModel):
 
 def public_task(record):
     return {"video_task_id": record.video_task_id, "project_id": record.project_id,
-            "idempotency_key": record.idempotency_key, "service": record.service,
+            "idempotency_key": record.idempotency_key, "service": record.service, "route": record.runtime_route or record.request.get("route"),
             "prompt": record.request.get("prompt", ""),
             "duration_seconds": record.request.get("duration_seconds"),
             "aspect_ratio": record.request.get("aspect_ratio"), "seed": record.request.get("seed", 7),
@@ -216,7 +217,7 @@ class Dashboard:
                     value = artifact.model_dump()
                 else:
                     inputs = Submission.model_validate_json(body)
-                    if inputs.service not in {"h3", "h3-sol"} or (inputs.service == "h3-sol" and not (self.executor.sol_url and self.executor.sol_token)):
+                    if inputs.service not in {"h3", "h3-sol"}:
                         return JSONResponse({"error": "service_not_connected"}, status_code=409)
                     kwargs = inputs.model_dump()
                     record = await run_in_threadpool(self.executor.generate, model="minimax-h3-ref2va", **kwargs)
