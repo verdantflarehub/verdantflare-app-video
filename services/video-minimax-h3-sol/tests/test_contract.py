@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import sol_common as common
+import sglang_backend
 
 spec = importlib.util.spec_from_file_location("runner", common.ROOT / "run-inference.py")
 runner = importlib.util.module_from_spec(spec)
@@ -199,6 +200,20 @@ class ContractTests(unittest.TestCase):
                 "streams": [{"codec_type": "video"}]}).encode()):
             with self.assertRaisesRegex(ValueError, "native audio"):
                 runner.validate_media(self.root / "not-real.mp4", 5)
+
+    def test_sglang_adapter_preserves_ref2va_conditions(self):
+        params = sglang_backend.SGLangH3Inference.sampling_params(
+            "frozen prompt", references=[("image", "./reference.png"), ("audio", "voice.wav")],
+            duration=10, seed=7, output=self.root / "output.mp4")
+        self.assertEqual(params["task"], "ref2va")
+        self.assertEqual([item["type"] for item in params["conditions"]], ["image", "audio"])
+        self.assertEqual(params["target"]["aspect_ratio"], "9:16")
+
+    def test_sglang_adapter_rejects_audio_only_ref2va(self):
+        with self.assertRaisesRegex(ValueError, "image or video"):
+            sglang_backend.SGLangH3Inference.sampling_params(
+                "prompt", references=[("audio", "voice.wav")], duration=5,
+                seed=7, output=self.root / "output.mp4")
 
 
 if __name__ == "__main__":
