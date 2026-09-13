@@ -13,7 +13,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
-VERSION = 'video-minimax-h3-sol-v0.2.4'
+VERSION = 'video-minimax-h3-sol-v0.2.5'
 ID = re.compile(r'sol_[0-9a-f]{32}$')
 SHA = re.compile(r'[0-9a-f]{64}$')
 
@@ -188,3 +188,4 @@ def serve(state,store,token,source,port=8000):
     server=ThreadingHTTPServer(('0.0.0.0',port),Handler);server.daemon_threads=True
     threading.Thread(target=server.serve_forever,daemon=True).start()
     return server
+
