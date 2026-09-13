@@ -1,60 +1,191 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-import os, uuid, tempfile
+"""Single-GPU durable depth queue, reachable only through the internal Service."""
+from contextlib import asynccontextmanager
+import hashlib
+import json
+import logging
+import os
 from pathlib import Path
-import cv2
-import numpy as np
-import torch
-from transformers import pipeline
+import re
+import sqlite3
+import threading
+import time
 
-app = FastAPI(title="Video Depth Anything API")
-MODEL_ID = os.getenv("DEPTH_MODEL_ID", "depth-anything/Depth-Anything-V2-Small-hf")
-DEPTH_PIPE = None
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Literal
+from model import Engine, LOCK, sha256
+from media import convert, MediaError
 
-def _pipe():
-    global DEPTH_PIPE
-    if DEPTH_PIPE is None:
-        DEPTH_PIPE = pipeline("depth-estimation", model=MODEL_ID,
-                              device=0 if torch.cuda.is_available() else -1)
-    return DEPTH_PIPE
+TASK_PATTERN = re.compile(r'video_task_[0-9a-f]{32}')
+
 
 class DepthRequest(BaseModel):
-    project_id: str
-    idempotency_key: str
-    source_artifact_id: str
-    model: str = "video-depth-anything"
-    output_format: str = "mp4"
+    model_config = ConfigDict(extra='forbid')
+    project_id: str = Field(pattern=r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+    idempotency_key: str = Field(pattern=r'^video_task_[0-9a-f]{32}$')
+    source_artifact_id: str = Field(pattern=r'^art_[0-9a-f]{32}$')
+    source_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
+    model: Literal['video-depth-anything'] = 'video-depth-anything'
+    output_format: Literal['mp4'] = 'mp4'
+
+
+def source_path(req, root):
+    directory = root / 'artifacts' / req.source_artifact_id
+    metadata = directory / 'metadata.json'
+    if directory.is_symlink() or metadata.is_symlink() or not metadata.is_file():
+        raise HTTPException(404, {'code': 'source_not_found'})
+    data = json.loads(metadata.read_text())
+    if data.get('project_id') != req.project_id or data.get('artifact_id') != req.source_artifact_id:
+        raise HTTPException(404, {'code': 'source_not_found'})
+    filename = data.get('filename', '')
+    if not filename or Path(filename).name != filename or filename in {'.', '..'} or not data.get('media_type', '').startswith('video/'):
+        raise HTTPException(422, {'code': 'invalid_source'})
+    path = directory / filename
+    if path.is_symlink() or not path.is_file() or path.resolve().parent != directory.resolve():
+        raise HTTPException(404, {'code': 'source_not_found'})
+    if path.stat().st_size != data.get('size') or data.get('sha256') != req.source_sha256 or sha256(path) != req.source_sha256:
+        raise HTTPException(422, {'code': 'source_integrity_failed'})
+    return path
+
+
+class Queue:
+    def __init__(self, root, artifact_root, engine):
+        self.root, self.artifact_root, self.engine = Path(root), Path(artifact_root), engine
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.lock = threading.RLock()
+        self.stop = threading.Event()
+        self.db = sqlite3.connect(self.root / 'tasks.sqlite3', check_same_thread=False)
+        self.db.execute('PRAGMA journal_mode=WAL')
+        self.db.execute('PRAGMA synchronous=FULL')
+        self.db.execute('CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, request TEXT NOT NULL, digest TEXT NOT NULL, state TEXT NOT NULL, result TEXT, error TEXT, created REAL NOT NULL)')
+        self.db.execute("UPDATE tasks SET state='failed', error='interrupted' WHERE state='running'")
+        self.db.commit()
+        self.thread = None
+
+    def start(self):
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+
+    def close(self):
+        self.stop.set()
+        if self.thread:
+            self.thread.join()  # Kubernetes grace period bounds shutdown; interrupted state is recovered on restart.
+        self.db.close()
+
+    def get(self, task_id):
+        if not TASK_PATTERN.fullmatch(task_id):
+            raise HTTPException(404, {'code': 'task_not_found'})
+        with self.lock:
+            row = self.db.execute('SELECT state,result,error,created FROM tasks WHERE id=?', (task_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, {'code': 'task_not_found'})
+        return {'video_task_id': task_id, 'status': row[0], 'result': json.loads(row[1]) if row[1] else None,
+                'error': {'code': row[2], 'message': 'Depth conversion failed; inspect operator logs'} if row[2] else None,
+                'created_at': row[3]}
+
+    def submit(self, req):
+        canonical = req.model_dump_json()
+        digest = hashlib.sha256(canonical.encode()).hexdigest()
+        with self.lock:
+            row = self.db.execute('SELECT digest FROM tasks WHERE id=?', (req.idempotency_key,)).fetchone()
+            if row:
+                if row[0] != digest:
+                    raise HTTPException(409, {'code': 'idempotency_conflict'})
+                return self.get(req.idempotency_key)
+            source_path(req, self.artifact_root)
+            waiting = self.db.execute("SELECT count(*) FROM tasks WHERE state IN ('queued','running')").fetchone()[0]
+            if waiting >= 8:
+                raise HTTPException(429, {'code': 'queue_full'})
+            self.db.execute('INSERT INTO tasks VALUES (?,?,?,?,?,?,?)', (req.idempotency_key, canonical, digest, 'queued', None, None, time.time()))
+            self.db.commit()
+            return self.get(req.idempotency_key)
+
+    def run_one(self):
+        with self.lock:
+            row = self.db.execute("SELECT id,request FROM tasks WHERE state='queued' ORDER BY created LIMIT 1").fetchone()
+            if not row:
+                return False
+            task_id, raw = row
+            self.db.execute("UPDATE tasks SET state='running' WHERE id=?", (task_id,))
+            self.db.commit()
+        try:
+            req = DepthRequest.model_validate_json(raw)
+            source = source_path(req, self.artifact_root)
+            directory = self.root / 'projects' / req.project_id / task_id
+            directory.mkdir(parents=True, exist_ok=False)
+            result = convert(self.engine, source, directory)
+            result.update(model=LOCK, input_sha256=req.source_sha256,
+                          output_sha256=sha256(directory / 'depth.mp4'), preview_sha256=sha256(directory / 'preview.mp4'))
+            (directory / 'manifest.json').write_text(json.dumps(result, indent=2) + '\n')
+            with self.lock:
+                self.db.execute("UPDATE tasks SET state='succeeded',result=? WHERE id=?", (json.dumps(result), task_id))
+                self.db.commit()
+            logging.info('depth_completed %s', task_id)
+        except Exception as exc:
+            code = 'invalid_media' if isinstance(exc, MediaError) else 'inference_failed'
+            if isinstance(exc, HTTPException):
+                code = 'source_integrity_failed'
+            logging.exception('depth_failed %s', task_id)
+            with self.lock:
+                self.db.execute("UPDATE tasks SET state='failed',error=? WHERE id=?", (code, task_id))
+                self.db.commit()
+        return True
+
+    def run(self):
+        while not self.stop.is_set():
+            if not self.run_one():
+                self.stop.wait(.5)
+
+    def content(self, task_id, filename):
+        record = self.get(task_id)
+        if record['status'] != 'succeeded':
+            raise HTTPException(409, {'code': 'result_not_ready'})
+        with self.lock:
+            raw = self.db.execute('SELECT request FROM tasks WHERE id=?', (task_id,)).fetchone()[0]
+        req = DepthRequest.model_validate_json(raw)
+        return self.root / 'projects' / req.project_id / task_id / filename
+
+
+@asynccontextmanager
+async def lifespan(app):
+    engine = Engine()  # Failure aborts startup; health cannot claim ready without model and CUDA.
+    queue = Queue(os.environ.get('DEPTH_PROJECT_ROOT', '/data/depth'),
+                  os.environ.get('VIDEO_ARTIFACT_ROOT', '/source/video-mcp'), engine)
+    app.state.queue = queue
+    queue.start()
+    try:
+        yield
+    finally:
+        queue.close()
+
+
+app = FastAPI(title='Video Depth Anything API', lifespan=lifespan)
+
 
 @app.get('/health')
 def health():
-    return {'status': 'ok', 'model': os.getenv('DEPTH_MODEL_VERSION', 'video-depth-anything')}
+    queue = getattr(app.state, 'queue', None)
+    if queue is None or queue.thread is None or not queue.thread.is_alive():
+        raise HTTPException(503, {'code': 'not_ready'})
+    return {'status': 'ok', 'model': LOCK}
 
-@app.post('/v1/depth')
+
+@app.post('/v1/depth', status_code=202)
 def generate(req: DepthRequest):
-    if req.model != 'video-depth-anything':
-        raise HTTPException(400, 'unsupported model')
-    # The worker contract expects the MCP to provide a local source path. This
-    # endpoint accepts that path for the first cluster smoke test.
-    source = Path(req.source_artifact_id)
-    if not source.is_file():
-        raise HTTPException(404, 'source artifact path not found')
-    cap = cv2.VideoCapture(str(source))
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    width, height = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    out_path = Path(tempfile.gettempdir()) / f'depth-{uuid.uuid4().hex}.mp4'
-    writer = cv2.VideoWriter(str(out_path), cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height), False)
-    count = 0
-    try:
-        while True:
-            ok, frame = cap.read()
-            if not ok: break
-            result = _pipe()(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            depth = np.asarray(result['depth'].resize((width, height)))
-            depth = cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-            writer.write(depth); count += 1
-    finally:
-        cap.release(); writer.release()
-    return {'depth_task_id': f'depth_task_{uuid.uuid4().hex}', 'status': 'succeeded',
-            'project_id': req.project_id, 'source_artifact_id': req.source_artifact_id,
-            'model': req.model, 'output_format': req.output_format, 'frames': count,
-            'fps': fps, 'width': width, 'height': height, 'output_path': str(out_path)}
+    return app.state.queue.submit(req)
+
+
+@app.get('/v1/depth/{task_id}')
+def status(task_id: str):
+    return app.state.queue.get(task_id)
+
+
+@app.get('/v1/depth/{task_id}/content')
+def content(task_id: str):
+    return FileResponse(app.state.queue.content(task_id, 'depth.mp4'), media_type='video/mp4')
+
+
+@app.get('/v1/depth/{task_id}/preview')
+def preview(task_id: str):
+    return FileResponse(app.state.queue.content(task_id, 'preview.mp4'), media_type='video/mp4')

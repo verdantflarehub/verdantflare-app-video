@@ -10,9 +10,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: video-depth-anything-api-release
+  cancel-in-progress: false
+
 env:
   SERVICE: video-depth-anything-api
-  VERSION: 0.1.1
+  VERSION: 0.2.0
 
 jobs:
   check:
@@ -23,7 +27,9 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install -r services/${SERVICE}/requirements.txt
-      - run: python -m compileall -q services/${SERVICE}
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: python -m pip install httpx==0.28.1
+      - run: PYTHONPATH=services/${SERVICE} python -m unittest discover -s services/${SERVICE}/tests -v
   build:
     needs: check
     runs-on: ubuntu-latest
@@ -43,6 +49,14 @@ jobs:
           registry: ${{ steps.image.outputs.registry_endpoint }}
           username: ${{ secrets.REGISTRY_USER_ALIYUN }}
           password: ${{ secrets.REGISTRY_PASSWORD_ALIYUN }}
+      - name: Refuse an existing image tag
+        run: |
+          set -euo pipefail
+          if docker buildx imagetools inspect "${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}" > /tmp/image-inspect.log 2>&1; then
+            echo "Refusing to overwrite an existing release"
+            exit 1
+          fi
+          grep -Eqi 'manifest unknown|not found' /tmp/image-inspect.log || { echo "Registry preflight failed"; exit 1; }
       - uses: docker/build-push-action@v6
         with:
           context: services/${{ env.SERVICE }}

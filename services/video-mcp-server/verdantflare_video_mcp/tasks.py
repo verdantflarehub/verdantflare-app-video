@@ -83,7 +83,7 @@ class TaskStore:
                 raise TaskConflict("idempotency key already exists with different input")
             return existing
         now = datetime.now(UTC).isoformat()
-        record = TaskRecord(video_task_id=f"video_task_{uuid.uuid4().hex}", project_id=project_id,
+        record = TaskRecord(video_task_id=f"video_task_{uuid.uuid4().hex}", service=str(request.get("service", "h3")), project_id=project_id,
                             idempotency_key=idempotency_key, input_digest=input_digest,
                             request=request, runtime_task_id=runtime_task_id, status=status,
                             created_at=now, updated_at=now)

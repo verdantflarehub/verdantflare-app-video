@@ -1,0 +1,12 @@
+{
+  "model": "video-depth-anything",
+  "encoder": "vits",
+  "code_repository": "https://github.com/DepthAnything/Video-Depth-Anything.git",
+  "code_revision": "4f5ae23172ba60fd7bc11ef671cca678842c7072",
+  "repository": "depth-anything/Video-Depth-Anything-Small",
+  "revision": "256875362cff76724b920335dfb4b29dd611f66e",
+  "filename": "video_depth_anything_vits.pth",
+  "size": 116440756,
+  "sha256": "13379300b739e659f076a59d52e9801bd8d38c541a7e71f73bbca4dcfb013609",
+  "license": "Apache-2.0"
+}

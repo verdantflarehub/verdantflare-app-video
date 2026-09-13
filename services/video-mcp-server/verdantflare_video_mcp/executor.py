@@ -52,6 +52,8 @@ class VideoExecutor:
         self.runtime_version = os.environ.get("H3_RUNTIME_VERSION", "video-minimax-h3-api-v0.3.0")
         self.allowed_origins = frozenset(x.strip() for x in os.environ.get("VIDEO_ASSET_IMPORT_ORIGINS", "").split(",") if x.strip())
         self.client = client or httpx.Client(timeout=httpx.Timeout(connect=10, read=3600, write=600, pool=10), follow_redirects=False)
+        from .depth import DepthExecutor
+        self.depth = DepthExecutor(self)
 
     def runtime(self, service):
         if service == "h3":
@@ -169,6 +171,8 @@ class VideoExecutor:
     @serialized
     def status(self, video_task_id: str) -> TaskRecord:
         record = self.tasks.get(video_task_id)
+        if record.service == "depth":
+            return self.depth.status(video_task_id)
         if record.status in {"succeeded", "failed", "cancelled"}:
             return record
         runtime_url, runtime_headers, _ = self.runtime(record.service)
@@ -203,6 +207,8 @@ class VideoExecutor:
     @serialized
     def result(self, video_task_id: str) -> TaskRecord:
         record = self.status(video_task_id)
+        if record.service == "depth":
+            return self.depth.result(video_task_id)
         if record.status != "succeeded":
             raise ExecutionError("video task has not succeeded")
         if record.artifact_id:

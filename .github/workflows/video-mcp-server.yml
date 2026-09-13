@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 env:
   SERVICE: video-mcp-server
-  VERSION: 0.4.3
+  VERSION: 0.5.0
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -59,7 +59,14 @@ jobs:
           registry: ${{ steps.image.outputs.registry_endpoint }}
           username: ${{ secrets.REGISTRY_USER_ALIYUN }}
           password: ${{ secrets.REGISTRY_PASSWORD_ALIYUN }}
-      - run: '! docker buildx imagetools inspect "${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}" >/dev/null 2>&1'
+      - name: Refuse an existing image tag
+        run: |
+          set -euo pipefail
+          if docker buildx imagetools inspect "${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}" > /tmp/image-inspect.log 2>&1; then
+            echo "Refusing to overwrite an existing release"
+            exit 1
+          fi
+          grep -Eqi 'manifest unknown|not found' /tmp/image-inspect.log || { echo "Registry preflight failed"; exit 1; }
       - uses: docker/build-push-action@v6
         with:
           context: services/${{ env.SERVICE }}

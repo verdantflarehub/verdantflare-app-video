@@ -33,17 +33,26 @@ mcp = MCPServer("VerdantFlare Video")
 @mcp.tool(name="video.depth.generate")
 def video_depth_generate(project_id: str, idempotency_key: str, source_artifact_id: str,
                          model: str = "video-depth-anything", output_format: str = "mp4") -> types.CallToolResult:
-    """Submit RGB video depth conversion through the Video MCP runtime."""
-    url = os.environ.get("VIDEO_DEPTH_RUNTIME_URL", "http://video-depth-anything-api:8000").rstrip("/")
-    source = artifacts.get(source_artifact_id, project_id)
-    try:
-        response = executor.client.post(f"{url}/v1/depth", json={"project_id": project_id,
-            "idempotency_key": idempotency_key, "source_artifact_id": str(artifacts.content_path(source)),
-            "model": model, "output_format": output_format}, timeout=30)
-        response.raise_for_status()
-        return _result(response.json())
-    except Exception as error:
-        raise ExecutionError(f"depth runtime request failed: {error}") from error
+    """Queue temporal RGB-to-depth conversion of a registered project video."""
+    record = executor.depth.generate(project_id=project_id, idempotency_key=idempotency_key,
+                                    source_artifact_id=source_artifact_id, model=model, output_format=output_format)
+    return _result(executor.depth.public_status(record))
+
+
+@mcp.tool(name="video.depth.status")
+def video_depth_status(video_task_id: str) -> types.CallToolResult:
+    return _result(executor.depth.public_status(executor.depth.status(video_task_id)))
+
+
+@mcp.tool(name="video.depth.result")
+def video_depth_result(video_task_id: str) -> types.CallToolResult:
+    return _result(executor.depth.public_result(executor.depth.result(video_task_id)))
+
+
+@mcp.tool(name="video.depth.preview")
+def video_depth_preview(video_task_id: str) -> types.CallToolResult:
+    """Get an immutable side-by-side source RGB / grayscale depth MP4."""
+    return _result(executor.depth.public_result(executor.depth.result(video_task_id), preview=True))
 
 
 def _result(value: dict[str, object]) -> types.CallToolResult:
@@ -83,6 +92,8 @@ def video_status(video_task_id: str) -> types.CallToolResult:
 @mcp.tool(name="video.result")
 def video_result(video_task_id: str) -> types.CallToolResult:
     record = executor.result(video_task_id)
+    if record.service == "depth":
+        return _result(executor.depth.public_result(record))
     artifact = artifacts.get(record.artifact_id, record.project_id)
     value = {"video_task_id": record.video_task_id, "artifact_id": artifact.artifact_id,
              "model": record.request["model"], "runtime_version": record.runtime_version or executor.runtime_version, "service": record.service,

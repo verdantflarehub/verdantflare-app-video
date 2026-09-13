@@ -101,7 +101,7 @@ class Dashboard:
                 self.services["h3-sol"] = "unavailable"
         errors = 0
         for record in self.records():
-            if record.status in {"queued", "running"} and record.runtime_task_id:
+            if record.status in {"queued", "running"} and (record.runtime_task_id or record.service == "depth"):
                 try:
                     self.executor.status(record.video_task_id)
                 except (ExecutionError, OSError, ValueError):
@@ -111,7 +111,7 @@ class Dashboard:
 
     def recover_incomplete_submissions(self):
         for record in self.records():
-            if record.status == "queued" and not record.runtime_task_id:
+            if record.status == "queued" and not record.runtime_task_id and record.service != "depth":
                 self.executor.tasks.update(record, status="failed", error={
                     "code": "submission_unconfirmed",
                     "message": "Submission interrupted; do not resubmit automatically"})
