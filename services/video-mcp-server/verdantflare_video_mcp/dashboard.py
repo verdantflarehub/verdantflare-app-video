@@ -219,6 +219,12 @@ class Dashboard:
                     inputs = Submission.model_validate_json(body)
                     if inputs.service not in {"h3", "h3-sol"}:
                         return JSONResponse({"error": "service_not_connected"}, status_code=409)
+                    if inputs.service == "h3-sol":
+                        selected_route = inputs.route or self.executor.sol_route
+                        route_config = self.executor.runtime_routes.get(selected_route)
+                        route_requires_token = route_config is not None and route_config["requires_token"]
+                        if (route_config is None and not (self.executor.sol_url and self.executor.sol_token)) or (route_requires_token and not self.executor.sol_token):
+                            return JSONResponse({"error": "service_not_connected"}, status_code=409)
                     kwargs = inputs.model_dump()
                     record = await run_in_threadpool(self.executor.generate, model="minimax-h3-ref2va", **kwargs)
                     value = public_task(record)
