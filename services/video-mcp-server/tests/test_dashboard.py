@@ -46,7 +46,7 @@ class DashboardTest(unittest.TestCase):
         self.headers = {'Authorization':'Bearer test-only-token'}
         self.image = self.artifacts.create_from_chunks(project_id='demo', operation='test', filename='ref.png',
                                                        media_type='image/png', chunks=[b'reference'])
-        self.payload = {'project_id':'demo', 'idempotency_key':'shot/attempt-1', 'service':'h3',
+        self.payload = {'project_id':'demo', 'idempotency_key':'shot/attempt-1', 'route':'h3',
                         'prompt':'Continuous camera motion', 'duration_seconds':5, 'aspect_ratio':'9:16',
                         'references':{'images':[{'artifact_id':self.image.artifact_id, 'purpose':'identity'}]}}
 
@@ -105,7 +105,7 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual(self.client.get('/api/dashboard?page=bad', headers=self.headers).status_code, 400)
 
     def test_sol_rejected_without_fallback_and_inputs_are_strict(self):
-        self.assertEqual(self.client.post('/api/tasks', json={**self.payload,'service':'h3-sol'}, headers=self.headers).status_code, 409)
+        self.assertEqual(self.client.post('/api/tasks', json={**self.payload,'route':'h3-sol'}, headers=self.headers).status_code, 409)
         self.assertEqual(len(self.calls), 0)
         for change in ({'duration_seconds':True}, {'duration_seconds':16}, {'seed':42}, {'aspect_ratio':'16:9'}, {'references':{'images':[]}}):
             self.assertEqual(self.client.post('/api/tasks', json={**self.payload,**change}, headers=self.headers).status_code, 400)
@@ -118,7 +118,7 @@ class DashboardTest(unittest.TestCase):
         self.assertNotIn('secret', response.text)
 
     def test_duplicate_concurrent_submissions_only_call_runtime_once(self):
-        kwargs = {k:v for k,v in self.payload.items() if k != 'service'}
+        kwargs = dict(self.payload)
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(lambda _: self.executor.generate(model='minimax-h3-ref2va', **kwargs), range(2)))
         self.assertEqual(results[0].video_task_id, results[1].video_task_id)

@@ -89,8 +89,13 @@ class VideoExecutor:
                              "requires_token": bool(config.get("requires_token", False))}
         return routes
 
-    def runtime(self, service, route=None):
-        selected = route or (self.sol_route if service == "h3-sol" else self.runtime_route)
+    @staticmethod
+    def _service_for_route(route: str) -> str:
+        return "h3-sol" if route.startswith("h3-sol") else "h3"
+
+    def runtime(self, route=None):
+        selected = route or self.runtime_route
+        service = self._service_for_route(selected)
         if selected in self.runtime_routes:
             config = self.runtime_routes[selected]
             if config["requires_token"]:
@@ -103,6 +108,13 @@ class VideoExecutor:
         if service == "h3-sol" and self.sol_url and self.sol_token:
             return self.sol_url, {"Authorization": f"Bearer {self.sol_token}"}, self.sol_version, self.sol_route
         raise ExecutionError("Selected runtime is not connected")
+
+    def _record_route(self, record: TaskRecord) -> str:
+        route = record.request.get("route")
+        if isinstance(route, str) and route:
+            return route
+        # Read old records created before route became the public selector.
+        return self.sol_route if record.service == "h3-sol" else self.runtime_route
 
     def import_asset(self, *, project_id: str, source_url: str, filename: str, expected_sha256: str) -> ArtifactRecord:
         project_id = require_project_id(project_id)
@@ -146,10 +158,13 @@ class VideoExecutor:
             raise ExecutionError("asset import request failed") from error
 
     def _normalize(self, project_id: str, model: str, prompt: str, duration_seconds: int,
-                   aspect_ratio: str, references: dict[str, list[dict[str, str]]], service: str = "h3",
-                   route: str | None = None) -> tuple[dict[str, object], str]:
-        if service not in {"h3", "h3-sol"} or (service == "h3-sol" and duration_seconds not in {5, 10, 15}):
-            raise ValueError("invalid service or duration")
+                   aspect_ratio: str, references: dict[str, list[dict[str, str]]],
+                   route: str = "h3") -> tuple[dict[str, object], str]:
+        if not isinstance(route, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", route):
+            raise ValueError("route must be a lowercase slug")
+        service = self._service_for_route(route)
+        if service == "h3-sol" and duration_seconds not in {5, 10, 15}:
+            raise ValueError("Sol duration must be 5, 10, or 15 seconds")
         if model != "minimax-h3-ref2va":
             raise ValueError("model must be minimax-h3-ref2va")
         if not 4 <= duration_seconds <= 15 or aspect_ratio != "9:16" or not prompt.strip():
@@ -171,30 +186,25 @@ class VideoExecutor:
                 normalized[kind].append({"artifact_id": artifact.artifact_id, "purpose": item["purpose"].strip()})
         request = {"project_id": project_id, "model": model, "prompt": prompt.strip(),
                    "duration_seconds": duration_seconds, "aspect_ratio": aspect_ratio, "references": normalized}
-        if service == "h3-sol":
-            request["service"] = service
-        if route:
-            if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", route):
-                raise ValueError("route must be a lowercase slug")
-            request["route"] = route
+        request["route"] = route
         canonical = json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return request, "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
 
     @serialized
     def generate(self, *, project_id: str, idempotency_key: str, model: str, prompt: str,
                  duration_seconds: int, aspect_ratio: str,
-                 references: dict[str, list[dict[str, str]]], service: str = "h3",
-                 route: str | None = None) -> TaskRecord:
+                 references: dict[str, list[dict[str, str]]], route: str = "h3") -> TaskRecord:
         project_id = require_project_id(project_id)
         if not idempotency_key.strip() or len(idempotency_key) > 128:
             raise ValueError("idempotency_key is invalid")
-        request, digest = self._normalize(project_id, model, prompt, duration_seconds, aspect_ratio, references, service, route)
+        request, digest = self._normalize(project_id, model, prompt, duration_seconds, aspect_ratio, references, route)
+        service = self._service_for_route(route)
         existing = self.tasks.find_idempotency(project_id, idempotency_key)
         if existing:
             if existing.input_digest != digest:
                 raise TaskConflict("idempotency key already exists with different input")
             return existing
-        runtime_url, runtime_headers, runtime_version, runtime_route = self.runtime(service, route)
+        runtime_url, runtime_headers, runtime_version, runtime_route = self.runtime(route)
         conditions = []
         material_tags = []
         singular = {"images": "image", "videos": "video", "audios": "audio"}
@@ -238,7 +248,7 @@ class VideoExecutor:
             return self.depth.status(video_task_id)
         if record.status in {"succeeded", "failed", "cancelled"}:
             return record
-        runtime_url, runtime_headers, _, _ = self.runtime(record.service, record.request.get("route"))
+        runtime_url, runtime_headers, _, _ = self.runtime(self._record_route(record))
         try:
             response = self.client.get(f"{runtime_url}/v1/videos/{record.runtime_task_id}", timeout=10, headers=runtime_headers)
             if response.status_code == 404:
@@ -276,7 +286,7 @@ class VideoExecutor:
             raise ExecutionError("video task has not succeeded")
         if record.artifact_id:
             return record
-        runtime_url, runtime_headers, _, _ = self.runtime(record.service, record.request.get("route"))
+        runtime_url, runtime_headers, _, _ = self.runtime(self._record_route(record))
         try:
             response = self.client.get(f"{runtime_url}/v1/videos/{record.runtime_task_id}/content", headers=runtime_headers)
             response.raise_for_status()
