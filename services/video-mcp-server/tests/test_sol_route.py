@@ -41,3 +41,12 @@ class SolRouteTest(unittest.TestCase):
  def test_sol_duration_rejects_before_network(self):
   with self.assertRaises(ValueError):self.executor.generate(**{**self.kw,'duration_seconds':6},service='h3-sol')
   self.assertFalse(self.calls)
+ def test_explicit_4090_route_keeps_business_model_type(self):
+  with patch.dict(os.environ, {'H3_RUNTIME_ROUTES': json.dumps({
+   'h3-sol-4090': {'url':'http://sol4090.example:8000','version':'video-minimax-h3-sol-v0.2.10','requires_token':True}})}):
+   executor=VideoExecutor(self.assets,self.tasks,self.http)
+   row=executor.generate(**self.kw,service='h3-sol',route='h3-sol-4090')
+   self.assertEqual(row.request['model'],'minimax-h3-ref2va')
+   self.assertEqual(row.request['route'],'h3-sol-4090')
+   self.assertEqual(row.runtime_route,'h3-sol-4090')
+   self.assertEqual(self.calls[-1].url.host,'sol4090.example')

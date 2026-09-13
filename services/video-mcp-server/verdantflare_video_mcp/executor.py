@@ -45,6 +45,8 @@ class VideoExecutor:
         self.artifacts = artifacts
         self.tasks = tasks
         self.runtime_url = os.environ.get("H3_RUNTIME_URL", "http://video-minimax-h3-api:8000").rstrip("/")
+        self.runtime_route = os.environ.get("H3_RUNTIME_ROUTE", "h3")
+        self.runtime_routes = self._load_routes()
         self.runtime_artifact_url = os.environ.get("VIDEO_MCP_RUNTIME_BASE_URL", "http://video-mcp-server:8000").rstrip("/")
         self.sol_url = os.environ.get("H3_SOL_RUNTIME_URL", "").rstrip("/")
         self.sol_version = os.environ.get("H3_SOL_RUNTIME_VERSION", "video-minimax-h3-sol-v0.2.1")
@@ -66,9 +68,38 @@ class VideoExecutor:
         from .depth import DepthExecutor
         self.depth = DepthExecutor(self)
 
-    def runtime(self, service):
+    def _load_routes(self) -> dict[str, dict[str, object]]:
+        raw = os.environ.get("H3_RUNTIME_ROUTES", "")
+        if not raw:
+            return {}
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise ValueError("H3_RUNTIME_ROUTES must be valid JSON") from error
+        if not isinstance(value, dict):
+            raise ValueError("H3_RUNTIME_ROUTES must be an object")
+        routes: dict[str, dict[str, object]] = {}
+        for route, config in value.items():
+            if not isinstance(route, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", route):
+                raise ValueError("runtime route names must be lowercase slugs")
+            if not isinstance(config, dict) or not isinstance(config.get("url"), str) or not config["url"].startswith("http"):
+                raise ValueError("each runtime route requires an HTTP URL")
+            routes[route] = {"url": config["url"].rstrip("/"),
+                             "version": str(config.get("version", "unknown")),
+                             "requires_token": bool(config.get("requires_token", False))}
+        return routes
+
+    def runtime(self, service, route=None):
+        selected = route or (self.sol_route if service == "h3-sol" else self.runtime_route)
+        if selected in self.runtime_routes:
+            config = self.runtime_routes[selected]
+            if config["requires_token"]:
+                if not self.sol_token:
+                    raise ExecutionError("Selected runtime route is not connected")
+                return config["url"], {"Authorization": f"Bearer {self.sol_token}"}, config["version"], selected
+            return config["url"], {}, config["version"], selected
         if service == "h3":
-            return self.runtime_url, {}, self.runtime_version, "minimax-h3-ref2va"
+            return self.runtime_url, {}, self.runtime_version, selected
         if service == "h3-sol" and self.sol_url and self.sol_token:
             return self.sol_url, {"Authorization": f"Bearer {self.sol_token}"}, self.sol_version, self.sol_route
         raise ExecutionError("Selected runtime is not connected")
@@ -115,7 +146,8 @@ class VideoExecutor:
             raise ExecutionError("asset import request failed") from error
 
     def _normalize(self, project_id: str, model: str, prompt: str, duration_seconds: int,
-                   aspect_ratio: str, references: dict[str, list[dict[str, str]]], service: str = "h3") -> tuple[dict[str, object], str]:
+                   aspect_ratio: str, references: dict[str, list[dict[str, str]]], service: str = "h3",
+                   route: str | None = None) -> tuple[dict[str, object], str]:
         if service not in {"h3", "h3-sol"} or (service == "h3-sol" and duration_seconds not in {5, 10, 15}):
             raise ValueError("invalid service or duration")
         if model != "minimax-h3-ref2va":
@@ -141,23 +173,28 @@ class VideoExecutor:
                    "duration_seconds": duration_seconds, "aspect_ratio": aspect_ratio, "references": normalized}
         if service == "h3-sol":
             request["service"] = service
+        if route:
+            if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", route):
+                raise ValueError("route must be a lowercase slug")
+            request["route"] = route
         canonical = json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return request, "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
 
     @serialized
     def generate(self, *, project_id: str, idempotency_key: str, model: str, prompt: str,
                  duration_seconds: int, aspect_ratio: str,
-                 references: dict[str, list[dict[str, str]]], service: str = "h3") -> TaskRecord:
+                 references: dict[str, list[dict[str, str]]], service: str = "h3",
+                 route: str | None = None) -> TaskRecord:
         project_id = require_project_id(project_id)
         if not idempotency_key.strip() or len(idempotency_key) > 128:
             raise ValueError("idempotency_key is invalid")
-        request, digest = self._normalize(project_id, model, prompt, duration_seconds, aspect_ratio, references, service)
+        request, digest = self._normalize(project_id, model, prompt, duration_seconds, aspect_ratio, references, service, route)
         existing = self.tasks.find_idempotency(project_id, idempotency_key)
         if existing:
             if existing.input_digest != digest:
                 raise TaskConflict("idempotency key already exists with different input")
             return existing
-        runtime_url, runtime_headers, runtime_version, runtime_route = self.runtime(service)
+        runtime_url, runtime_headers, runtime_version, runtime_route = self.runtime(service, route)
         conditions = []
         material_tags = []
         singular = {"images": "image", "videos": "video", "audios": "audio"}
@@ -201,7 +238,7 @@ class VideoExecutor:
             return self.depth.status(video_task_id)
         if record.status in {"succeeded", "failed", "cancelled"}:
             return record
-        runtime_url, runtime_headers, _, _ = self.runtime(record.service)
+        runtime_url, runtime_headers, _, _ = self.runtime(record.service, record.request.get("route"))
         try:
             response = self.client.get(f"{runtime_url}/v1/videos/{record.runtime_task_id}", timeout=10, headers=runtime_headers)
             if response.status_code == 404:
@@ -239,7 +276,7 @@ class VideoExecutor:
             raise ExecutionError("video task has not succeeded")
         if record.artifact_id:
             return record
-        runtime_url, runtime_headers, _, _ = self.runtime(record.service)
+        runtime_url, runtime_headers, _, _ = self.runtime(record.service, record.request.get("route"))
         try:
             response = self.client.get(f"{runtime_url}/v1/videos/{record.runtime_task_id}/content", headers=runtime_headers)
             response.raise_for_status()
