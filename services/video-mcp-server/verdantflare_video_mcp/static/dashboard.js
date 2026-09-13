@@ -18,6 +18,9 @@ const labels = {
   failed: "失败",
   cancelled: "已取消",
 };
+const taskModel = (task) => task.model || "minimax-h3-ref2va";
+const taskRoute = (task) => task.route || (task.service === "h3-sol" ? "h3-sol" : task.service === "h3" ? "h3" : "历史任务");
+const taskIdentity = (task) => `<div class="task-identity"><div><span>模型服务</span><strong>${escapeHTML(taskModel(task))}</strong></div><div><span>渠道服务</span><strong>${escapeHTML(taskRoute(task))}</strong></div></div>`;
 let token = "",
   authorized = false,
   page = 1,
@@ -205,13 +208,13 @@ function render(data) {
   $("galleryContainer").innerHTML = data.tasks
     .map(
       (t) =>
-        `<article class="model-card" tabindex="0" role="button" data-task="${escapeHTML(t.video_task_id)}" aria-label="查看 ${escapeHTML(t.idempotency_key)}"><div class="card-thumb-wrap"><span>${t.status === "succeeded" ? "▶" : t.status === "running" ? "◌" : "◇"}</span><div class="card-badges"><span class="badge-tag engine-h3">${names[t.service] || escapeHTML(t.service)}</span>${badge(t)}</div></div><div class="card-body"><div><div class="card-title-row"><span>${escapeHTML(t.project_id)} / ${escapeHTML(t.idempotency_key)}</span><span>${elapsed(t)}</span></div><p class="card-prompt">${escapeHTML(t.prompt)}</p></div><div class="model-tags"><span>REF2VA</span><span>${escapeHTML(t.aspect_ratio)}</span><span>${escapeHTML(t.duration_seconds)}s</span><span>${t.media ? escapeHTML(t.media.frame_rate || "24") + " FPS" : "待验收"}</span></div><div class="card-footer"><span>${date(t.created_at)}</span><span class="card-footer-action">${t.status === "succeeded" ? "运镜回放" : "查看详情"} →</span></div></div></article>`,
+        `<article class="model-card" tabindex="0" role="button" data-task="${escapeHTML(t.video_task_id)}" aria-label="查看 ${escapeHTML(t.idempotency_key)}"><div class="card-thumb-wrap"><span>${t.status === "succeeded" ? "▶" : t.status === "running" ? "◌" : "◇"}</span><div class="card-badges">${badge(t)}</div></div><div class="card-body"><div><div class="card-title-row"><span>${escapeHTML(t.project_id)} / ${escapeHTML(t.idempotency_key)}</span><span>${elapsed(t)}</span></div>${taskIdentity(t)}<p class="card-prompt">${escapeHTML(t.prompt)}</p></div><div class="model-tags"><span>REF2VA</span><span>${escapeHTML(t.aspect_ratio)}</span><span>${escapeHTML(t.duration_seconds)}s</span><span>${t.media ? escapeHTML(t.media.frame_rate || "24") + " FPS" : "待验收"}</span></div><div class="card-footer"><span>${date(t.created_at)}</span><span class="card-footer-action">${t.status === "succeeded" ? "运镜回放" : "查看详情"} →</span></div></div></article>`,
     )
     .join("");
   $("taskRows").innerHTML = data.tasks
     .map(
       (t) =>
-        `<tr><td>${escapeHTML(t.project_id)}<br>${escapeHTML(t.idempotency_key)}</td><td>${escapeHTML(t.video_task_id)}</td><td>${names[t.service] || escapeHTML(t.service)}</td><td>${escapeHTML(t.execution_instance_id || (t.status === "queued" ? "尚未分配" : "未知"))}</td><td>${escapeHTML(t.prompt.slice(0, 100))}</td><td>${escapeHTML(t.duration_seconds)}s · ${escapeHTML(t.aspect_ratio)}</td><td>${elapsed(t)}</td><td>${badge(t)}</td><td><button class="button" data-task="${escapeHTML(t.video_task_id)}">${t.status === "succeeded" ? "回放" : "详情"}</button></td></tr>`,
+        `<tr><td>${escapeHTML(t.project_id)}<br>${escapeHTML(t.idempotency_key)}</td><td>${escapeHTML(t.video_task_id)}</td><td>${escapeHTML(taskModel(t))}<br>${escapeHTML(taskRoute(t))}</td><td>${escapeHTML(t.execution_instance_id || (t.status === "queued" ? "尚未分配" : "未知"))}</td><td>${escapeHTML(t.prompt.slice(0, 100))}</td><td>${escapeHTML(t.duration_seconds)}s · ${escapeHTML(t.aspect_ratio)}</td><td>${elapsed(t)}</td><td>${badge(t)}</td><td><button class="button" data-task="${escapeHTML(t.video_task_id)}">${t.status === "succeeded" ? "回放" : "详情"}</button></td></tr>`,
     )
     .join("");
   previews(data.tasks);
@@ -276,7 +279,7 @@ async function inspect(id) {
     $("modalShotTitle").textContent =
       `${task.project_id} / ${task.idempotency_key}`;
     $("inspectorBody").innerHTML =
-      `<p>${names[task.service] || escapeHTML(task.service)} · ${labels[task.status] || escapeHTML(task.status)} · ${date(task.created_at)}</p><p>执行模型：<button class="button" data-resource="model" data-model="${escapeHTML(task.service)}">${names[task.service] || escapeHTML(task.service)} →</button> · 执行实例：${task.execution_instance_id ? `<button class="button" data-resource="instance" data-model="${escapeHTML(task.service)}" data-instance="${escapeHTML(task.execution_instance_id)}">${escapeHTML(task.execution_instance_id)} →</button>` : task.status === "queued" ? "尚未分配" : "未知（未上报）"}</p><div id="videoArea"></div><div class="actions" id="resultActions"></div><p id="resultMessage" role="status"></p><h3>动态运镜 Prompt</h3><p>${escapeHTML(task.prompt)}</p><div class="reference-grid" id="referenceGrid"></div><pre>${escapeHTML(JSON.stringify({ video_task_id: task.video_task_id, seed: task.seed, duration_seconds: task.duration_seconds, aspect_ratio: task.aspect_ratio, runtime_version: task.runtime_version, input_digest: task.input_digest, media: task.media, error: task.error }, null, 2))}</pre><p>技术完成后仍需人工检查构图、连续性和动态运镜。参考素材不代表已锁定首尾帧。</p>`;
+      `${taskIdentity(task)}<p>${labels[task.status] || escapeHTML(task.status)} · ${date(task.created_at)}</p><p>执行渠道：<button class="button" data-resource="model" data-model="${escapeHTML(taskRoute(task))}">${escapeHTML(taskRoute(task))} →</button> · 执行实例：${task.execution_instance_id ? `<button class="button" data-resource="instance" data-model="${escapeHTML(taskRoute(task))}" data-instance="${escapeHTML(task.execution_instance_id)}">${escapeHTML(task.execution_instance_id)} →</button>` : task.status === "queued" ? "尚未分配" : "未知（未上报）"}</p><div id="videoArea"></div><div class="actions" id="resultActions"></div><p id="resultMessage" role="status"></p><h3>动态运镜 Prompt</h3><p>${escapeHTML(task.prompt)}</p><div class="reference-grid" id="referenceGrid"></div><pre>${escapeHTML(JSON.stringify({ video_task_id: task.video_task_id, seed: task.seed, duration_seconds: task.duration_seconds, aspect_ratio: task.aspect_ratio, runtime_version: task.runtime_version, input_digest: task.input_digest, media: task.media, error: task.error }, null, 2))}</pre><p>技术完成后仍需人工检查构图、连续性和动态运镜。参考素材不代表已锁定首尾帧。</p>`;
     const loadResult = async () => {
       $("resultMessage").textContent = "正在获取并校验视频…";
       try {

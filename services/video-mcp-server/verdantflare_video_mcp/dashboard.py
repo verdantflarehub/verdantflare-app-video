@@ -60,6 +60,7 @@ class ImportRequest(BaseModel):
 def public_task(record):
     return {"video_task_id": record.video_task_id, "project_id": record.project_id,
             "idempotency_key": record.idempotency_key, "service": record.service, "route": record.runtime_route or record.request.get("route"),
+            "model": record.request.get("model", "minimax-h3-ref2va"),
             "prompt": record.request.get("prompt", ""),
             "duration_seconds": record.request.get("duration_seconds"),
             "aspect_ratio": record.request.get("aspect_ratio"), "seed": record.request.get("seed", 7),
