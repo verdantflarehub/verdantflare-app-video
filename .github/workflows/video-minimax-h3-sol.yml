@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: false
 env:
   SERVICE: video-minimax-h3-sol
-  VERSION: 0.2.5
+  VERSION: 0.2.6
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -81,4 +81,5 @@ jobs:
         run: docker buildx imagetools inspect "${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}"
 
 # Registered on video repository default branch
+
 
