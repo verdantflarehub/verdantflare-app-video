@@ -40,7 +40,8 @@ class Submission(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     project_id: str = Field(min_length=1, max_length=64)
     idempotency_key: str = Field(min_length=1, max_length=128)
-    service: str = "h3"
+    model: str = "minimax-h3-ref2va"
+    service: str | None = None  # legacy input; clients should send model + route
     route: str | None = None
     prompt: str = Field(min_length=1, max_length=16000)
     duration_seconds: int = Field(ge=4, le=15)
@@ -217,16 +218,18 @@ class Dashboard:
                     value = artifact.model_dump()
                 else:
                     inputs = Submission.model_validate_json(body)
-                    if inputs.service not in {"h3", "h3-sol"}:
+                    service = inputs.service or ("h3-sol" if (inputs.route or "").startswith("h3-sol") else "h3")
+                    if service not in {"h3", "h3-sol"}:
                         return JSONResponse({"error": "service_not_connected"}, status_code=409)
-                    if inputs.service == "h3-sol":
+                    if service == "h3-sol":
                         selected_route = inputs.route or self.executor.sol_route
                         route_config = self.executor.runtime_routes.get(selected_route)
                         route_requires_token = route_config is not None and route_config["requires_token"]
                         if (route_config is None and not (self.executor.sol_url and self.executor.sol_token)) or (route_requires_token and not self.executor.sol_token):
                             return JSONResponse({"error": "service_not_connected"}, status_code=409)
-                    kwargs = inputs.model_dump()
-                    record = await run_in_threadpool(self.executor.generate, model="minimax-h3-ref2va", **kwargs)
+                    kwargs = inputs.model_dump(exclude={"model"})
+                    kwargs["service"] = service
+                    record = await run_in_threadpool(self.executor.generate, model=inputs.model, **kwargs)
                     value = public_task(record)
             return JSONResponse(value, headers={"Cache-Control": "no-store"})
         except (TaskNotFound, ArtifactNotFound):

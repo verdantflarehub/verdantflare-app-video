@@ -495,8 +495,7 @@ $("dispatchForm").addEventListener("submit", async (event) => {
   try {
     const body = Object.fromEntries(new FormData(event.target));
     body.duration_seconds = Number(body.duration_seconds);
-    if (body.service === "h3-sol-4090") { body.route = "h3-sol-4090"; body.service = "h3-sol"; }
-    else if (body.service === "h3-sol") body.route = "h3-sol";
+    body.model = "minimax-h3-ref2va";
     const references = { images: [], videos: [], audios: [] };
     const kinds = { image: "images", video: "videos", audio: "audios" };
     for (const line of body.references.trim().split("\n")) {
@@ -531,9 +530,9 @@ $("dispatchForm").addEventListener("submit", async (event) => {
   }
 });
 
-$("dispatchForm").elements.service.addEventListener("change",()=>{
+$("dispatchForm").elements.route.addEventListener("change",()=>{
   const duration=$("dispatchForm").elements.duration_seconds;
-  const sol=$("dispatchForm").elements.service.value.startsWith('h3-sol');
+  const sol=$("dispatchForm").elements.route.value.startsWith('h3-sol');
   duration.min=sol?'5':'4';duration.step=sol?'5':'1';
   if(sol&&![5,10,15].includes(Number(duration.value)))duration.value='5';
 });
