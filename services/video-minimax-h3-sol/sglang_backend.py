@@ -6,6 +6,7 @@ SGLang.  This keeps the CPU HTTP contract usable for probes and tests.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 
@@ -14,6 +15,8 @@ class SGLangH3Inference:
 
     def __init__(self, model_path: str):
         from sglang.multimodal_gen.runtime.entrypoints.diffusion_generator import DiffGenerator
+        runtime_dir = Path(os.environ.get("H3_SGLANG_PROFILE_DIR", "/opt/sol-h3/models/minimax_h3/RTX4090"))
+        sys.path.insert(0, str(runtime_dir))
         from registration import register_runtime
         register_runtime()
         self._generator = DiffGenerator.from_pretrained(
