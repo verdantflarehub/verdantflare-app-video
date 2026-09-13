@@ -36,7 +36,7 @@ class DepthExecutor:
             return existing
         record = self.tasks.create(project_id=project_id, idempotency_key=idempotency_key, input_digest=digest,
                                    request=request, runtime_task_id='', status='queued')
-        record = self.tasks.update(record, service='depth', runtime_version='video-depth-anything-api-v0.2.0', runtime_task_id=record.video_task_id,
+        record = self.tasks.update(record, service='depth', runtime_version='video-depth-anything-api-v0.2.1', runtime_task_id=record.video_task_id,
             error={'code': 'submission_unconfirmed', 'message': 'Submission is pending confirmation'})
         return self._submit(record)
 

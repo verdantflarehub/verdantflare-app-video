@@ -130,3 +130,29 @@ class DepthMCPTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class AssetRewriteTest(unittest.TestCase):
+    def test_only_allowlisted_public_prefix_rewrites(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temp, patch.dict('os.environ', {
+            'VIDEO_ASSET_IMPORT_ORIGINS': 'https://storage.example.com:9090',
+            'VIDEO_ASSET_IMPORT_REWRITES': '{"https://storage.example.com:9090/bucket/":"http://storage.internal:8082/tenant:bucket/"}'
+        }):
+            requests = []
+            def respond(request):
+                requests.append(request)
+                return httpx.Response(200, content=b'video')
+            client = httpx.Client(transport=httpx.MockTransport(respond))
+            executor = VideoExecutor(ArtifactStore(Path(temp)), TaskStore(Path(temp)), client)
+            digest = hashlib.sha256(b'video').hexdigest()
+            executor.import_asset(project_id='p', source_url='https://storage.example.com:9090/bucket/project/source.mp4',
+                                  filename='source.mp4', expected_sha256=digest)
+            self.assertEqual(str(requests[0].url), 'http://storage.internal:8082/tenant:bucket/project/source.mp4')
+            with self.assertRaises(ValueError):
+                executor.import_asset(project_id='p', source_url='http://storage.internal:8082/tenant:bucket/project/source.mp4',
+                                      filename='source.mp4', expected_sha256=digest)
+            with self.assertRaises(ValueError):
+                executor.import_asset(project_id='p', source_url='https://storage.example.com.evil.test:9090/bucket/source.mp4',
+                                      filename='source.mp4', expected_sha256=digest)
+            self.assertEqual(len(requests), 1)
+            client.close()

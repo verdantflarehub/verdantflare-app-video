@@ -27,9 +27,9 @@ def verify():
 class Engine:
     def __init__(self):
         import torch
+        from gpu_guard import verify_gpu
+        verify_gpu(torch, os.environ.get('DEPTH_GPU_ALLOCATION', ''))
         from video_depth_anything.video_depth import VideoDepthAnything
-        if not torch.cuda.is_available() or torch.cuda.device_count() != 1:
-            raise RuntimeError('exactly_one_cuda_gpu_required')
         path = verify()
         self.model = VideoDepthAnything(encoder='vits', features=64, out_channels=[48, 96, 192, 384])
         self.model.load_state_dict(torch.load(path, map_location='cpu', weights_only=True), strict=True)

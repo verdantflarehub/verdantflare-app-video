@@ -51,6 +51,16 @@ class VideoExecutor:
         self.sol_token = os.environ.get("H3_SOL_RUNTIME_TOKEN", "")
         self.runtime_version = os.environ.get("H3_RUNTIME_VERSION", "video-minimax-h3-api-v0.3.0")
         self.allowed_origins = frozenset(x.strip() for x in os.environ.get("VIDEO_ASSET_IMPORT_ORIGINS", "").split(",") if x.strip())
+        self.import_rewrites = json.loads(os.environ.get("VIDEO_ASSET_IMPORT_REWRITES", "{}"))
+        if not isinstance(self.import_rewrites, dict):
+            raise ValueError("VIDEO_ASSET_IMPORT_REWRITES must be an object")
+        for source, target in self.import_rewrites.items():
+            if not isinstance(source, str) or not isinstance(target, str) or not source.endswith("/") or not target.endswith("/"):
+                raise ValueError("import rewrite prefixes must end with a slash")
+            for value in (source, target):
+                parsed = urlsplit(value)
+                if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+                    raise ValueError("invalid import rewrite prefix")
         self.client = client or httpx.Client(timeout=httpx.Timeout(connect=10, read=3600, write=600, pool=10), follow_redirects=False)
         from .depth import DepthExecutor
         self.depth = DepthExecutor(self)
@@ -75,8 +85,13 @@ class VideoExecutor:
         origin = f"{parsed.scheme}://{parsed.hostname}" if parsed.port in {None, 443} else f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
         if parsed.scheme != "https" or parsed.username or parsed.password or parsed.fragment or origin not in self.allowed_origins:
             raise ValueError("source_url must be an allowed absolute HTTPS object URL")
+        download_url = source_url
+        for source, target in self.import_rewrites.items():
+            if source_url.startswith(source):
+                download_url = target + source_url[len(source):]
+                break
         try:
-            with self.client.stream("GET", source_url, headers={"Accept": "image/*, audio/*, video/*, application/octet-stream"}) as response:
+            with self.client.stream("GET", download_url, headers={"Accept": "image/*, audio/*, video/*, application/octet-stream"}) as response:
                 if not 200 <= response.status_code < 300:
                     raise ExecutionError(f"asset import returned HTTP {response.status_code}")
                 length = response.headers.get("content-length")
