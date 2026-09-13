@@ -13,7 +13,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
-VERSION = 'video-minimax-h3-sol-v0.2.11'
+VERSION = 'video-minimax-h3-sol-v0.2.12'
 ID = re.compile(r'sol_[0-9a-f]{32}$')
 SHA = re.compile(r'[0-9a-f]{64}$')
 
