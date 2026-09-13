@@ -77,7 +77,7 @@ def main():
                 expect(page.locator('h1')).to_contain_text('视频业务工作台')
                 page.locator('#tokenButton').click(); page.locator('#tokenInput').fill('browser-test-token'); page.locator('#tokenForm button[type=submit]').click()
                 expect(page.locator('#pageLabel')).to_contain_text('27 个任务')
-                expect(page.locator('#modelServices')).to_contain_text('H3-Sol')
+                expect(page.locator('#modelServices')).to_contain_text('h3-sol')
                 expect(page.locator('#modelServices')).to_contain_text('未部署')
                 expect(page.locator('main [data-resource=gpu]')).to_have_count(0)
                 page.locator('#modelServices [data-model=h3]').click()
