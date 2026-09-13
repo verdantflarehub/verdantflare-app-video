@@ -82,3 +82,4 @@ jobs:
         run: docker buildx imagetools inspect "${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}"
 
 # Registered on video repository default branch
+
