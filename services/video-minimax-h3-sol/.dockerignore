@@ -33,3 +33,4 @@
 !Dockerfile.resident
 !resident_api.py
 !resident_worker.py
+!sglang_backend.py
