@@ -35,9 +35,10 @@ def video_depth_generate(project_id: str, idempotency_key: str, source_artifact_
                          model: str = "video-depth-anything", output_format: str = "mp4") -> types.CallToolResult:
     """Submit RGB video depth conversion through the Video MCP runtime."""
     url = os.environ.get("VIDEO_DEPTH_RUNTIME_URL", "http://video-depth-anything-api:8000").rstrip("/")
+    source = artifacts.get(source_artifact_id, project_id)
     try:
         response = executor.client.post(f"{url}/v1/depth", json={"project_id": project_id,
-            "idempotency_key": idempotency_key, "source_artifact_id": source_artifact_id,
+            "idempotency_key": idempotency_key, "source_artifact_id": str(artifacts.content_path(source)),
             "model": model, "output_format": output_format}, timeout=30)
         response.raise_for_status()
         return _result(response.json())
