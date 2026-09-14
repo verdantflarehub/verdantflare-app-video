@@ -27,7 +27,7 @@ def main():
         return
     args.output.mkdir(parents=True, exist_ok=False)
     record = {'status': 'in_progress', 'request': request, 'model': lock, 'started_at': time.time(),
-              'runtime_version': '0.3.1', 'upstream': tomllib.loads((Path(__file__).resolve().parents[1] / 'pyproject.toml').read_text())['tool']['vdn']['upstream']}
+              'runtime_version': '0.3.2', 'upstream': tomllib.loads((Path(__file__).resolve().parents[1] / 'pyproject.toml').read_text())['tool']['vdn']['upstream']}
     def save():
         temp = args.output / 'record.tmp'
         temp.write_text(json.dumps(record, indent=2) + '\n')

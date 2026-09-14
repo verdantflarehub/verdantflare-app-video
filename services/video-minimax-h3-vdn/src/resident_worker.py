@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import sys
 import threading
 import time
 import tomllib
@@ -25,6 +26,8 @@ class Engine:
         with torch.inference_mode():
             self.pipeline = load_pipeline(self.args, 'ref2va')
             self.hybrid_blocks = attach_layout_bridge(self.pipeline.transformer_ref)
+            upstream = sys.modules[type(self.pipeline.transformer_ref).__module__]
+            self.softmax_backend = upstream.set_softmax_backend(self.pipeline.transformer_ref, "flex")
 
     def generate(self, request, paths, output):
         import torch
@@ -41,7 +44,7 @@ class Engine:
             torch.cuda.synchronize(index)
         if transformer._vdn_layout_calls != args.steps or transformer._vdn_linear_calls < args.steps*self.hybrid_blocks:
             raise RuntimeError('VDN branch execution was not verified')
-        return {'peak_allocated_bytes': [torch.cuda.max_memory_allocated(i) for i in range(2)],
+        return {'vdn_softmax_backend': self.softmax_backend, 'peak_allocated_bytes': [torch.cuda.max_memory_allocated(i) for i in range(2)],
                 'peak_reserved_bytes': [torch.cuda.max_memory_reserved(i) for i in range(2)],
                 'vdn_layout_calls':transformer._vdn_layout_calls, 'vdn_linear_calls':transformer._vdn_linear_calls,
                 'vdn_hybrid_blocks':self.hybrid_blocks}
