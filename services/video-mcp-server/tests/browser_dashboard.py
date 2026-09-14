@@ -120,9 +120,11 @@ def main():
                 page.locator('[data-close=importModal]').click()
                 expect(page.locator('#referenceInput')).to_contain_text('')
                 assert page.locator('#referenceInput').input_value().startswith('image | art_')
+                expect(page.locator('#dispatchForm [name=duration_seconds]')).to_have_attribute('step','5')
                 def models_connected(route):
                     route.fulfill(json={'state':'fresh','sampled_at':'2026-09-10T00:00:00Z','models':[
                         {'id':'h3','name':'H3','deployment_status':'online','ready':1,'current':1,'desired':1,'route_status':'connected'},
+                        {'id':'h3-vdn','name':'H3-VDN','deployment_status':'online','ready':1,'current':1,'desired':1,'route_status':'connected'},
                         {'id':'h3-sol','name':'H3-Sol','deployment_status':'online','ready':1,'current':1,'desired':1,'route_status':'connected'}]})
                 page.route('**/api/models',models_connected)
                 page.evaluate('refreshBusiness()')
@@ -131,6 +133,11 @@ def main():
                 expect(page.locator('#dispatchForm [name=duration_seconds]')).to_have_attribute('step','5')
                 page.locator('#dispatchForm [name=route]').select_option('h3')
                 expect(page.locator('#dispatchForm [name=duration_seconds]')).to_have_attribute('step','1')
+                page.evaluate('refreshBusiness()')
+                expect(page.locator('#dispatchForm [name=route]')).to_have_value('h3')
+                page.locator('#dispatchForm [name=route]').select_option('h3-vdn')
+                expect(page.locator('#dispatchForm [name=duration_seconds]')).to_have_attribute('step','5')
+                page.locator('#dispatchForm [name=route]').select_option('h3')
                 page.unroute('**/api/models',models_connected)
                 page.locator('#submitTask').click(); expect(page.locator('#inspectorBody')).to_contain_text('A browser test task')
                 page.keyboard.press('Escape')

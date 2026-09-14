@@ -19,7 +19,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 MODEL_TYPE = "minimax-h3-ref2va"
 MODELS = {"h3": ("h3", "video-minimax-h3-api"), "h3-sol": ("h3-sol", "video-minimax-h3-sol-api"),
           "h3-vdn": ("h3-vdn", "video-minimax-h3-vdn")}
