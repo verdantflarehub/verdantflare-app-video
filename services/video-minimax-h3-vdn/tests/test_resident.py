@@ -16,8 +16,10 @@ SOURCE = 'http://video-mcp-server:8000'
 
 
 def request():
-    return dict(schema_version=1, task='t2va', prompt='A river at dawn', seed=7,
-                frames=124, steps=8, input_artifacts=[], idempotency_key='attempt-1')
+    return dict(model='MiniMaxAI/MiniMax-H3',task='ref2va',prompt='Test motion',seed=7,
+                seconds=5,num_inference_steps=8,num_outputs_per_prompt=1,flow_shift=12.0,audio_flow_shift=3.0,
+                target={'short_edge':768,'aspect_ratio':'9:16','duration_seconds':5.0},idempotency_key='attempt-1',
+                conditions=[dict(type='image',role='reference',uri=SOURCE+'/runtime-artifacts/art_'+'a'*32+'/content',sha256='a'*64,size=12)])
 
 
 class ResidentTests(unittest.TestCase):
@@ -55,13 +57,12 @@ class ResidentTests(unittest.TestCase):
 
     def test_rejects_unsupported_modes_and_unsafe_artifacts(self):
         base = request()
-        base.update(task='i2va', input_artifacts=[dict(role='first', uri=SOURCE+'/runtime-artifacts/art_'+'a'*32+'/content', sha256='a'*64, size=12)])
         validate(base, SOURCE)
-        cases = [dict(request(), task='ref2va'), dict(request(), steps=50), dict(request(), frames=True),
-                 dict(request(), task=[]), dict(request(), input_artifacts=[[]])]
+        cases = [dict(request(), task='t2va'), dict(request(), num_inference_steps=50), dict(request(), seconds=True),
+                 dict(request(), task=[]), dict(request(), conditions=[[]]), dict(request(), conditions=[])]
         for uri in [SOURCE+'.attacker/runtime-artifacts/art_'+'a'*32+'/content',
-                    SOURCE+'/runtime-artifacts/../secret', base['input_artifacts'][0]['uri']+'?redirect=http://attacker']:
-            bad=copy.deepcopy(base);bad['input_artifacts'][0]['uri']=uri;cases.append(bad)
+                    SOURCE+'/runtime-artifacts/../secret', base['conditions'][0]['uri']+'?redirect=http://attacker']:
+            bad=copy.deepcopy(base);bad['conditions'][0]['uri']=uri;cases.append(bad)
         for payload in cases:
             self.assertEqual(self.call('POST', '/v1/videos', payload)[0], 400)
 
@@ -72,7 +73,7 @@ class ResidentTests(unittest.TestCase):
         self.assertEqual(self.store.get(task['id'])['status'], 'queued')
 
     def test_download_failure_never_calls_gpu_and_is_queryable(self):
-        task=self.store.submit('key', dict(request(), input_artifacts=[]))
+        task=self.store.submit('key', request())
         task=self.store.take()
         with patch('resident_worker.download', side_effect=ValueError('bad hash')), patch('resident_worker.Engine') as engine:
             execute(self.store, task, engine, {})

@@ -105,21 +105,42 @@ docker run --rm --gpus all \
 将访问 Token 放入 `VDN_RUNTIME_TOKEN` 环境变量，然后启动：
 
 ```bash
-export VDN_MODELS=/models/VDN-H3
-export VDN_MODEL_LOCK=/models/VDN-H3.lock.json
+export VDN_MODELS=/models/VDN-H3-Ref2VA
+export VDN_MODEL_LOCK=/models/VDN-H3-Ref2VA.lock.json
 export VDN_TASK_ROOT=/projects/h3-vdn/tasks
 export VDN_ARTIFACT_SOURCE=http://video-mcp-server:8000
 export VDN_GPU_UUIDS=GPU_FIRST_UUID,GPU_SECOND_UUID
 python src/resident_worker.py
 ```
 
-容器启动时使用 `--entrypoint python`，命令为 `/opt/verdantflare-vdn/src/resident_worker.py`。监听端口 8000；`GET /live` 检查进程，`GET /health` 在模型加载完成后返回 200。
+容器使用 `--entrypoint python`，命令为 `/opt/verdantflare-vdn/src/resident_worker.py`。监听端口 8000；`GET /live` 检查进程，`GET /health` 在模型加载完成后返回 200。
 
 任务接口需要 `Authorization: Bearer <Token>`：
 
-- `POST /v1/videos`：提交任务；请求采用上述输入格式，新增 `idempotency_key`。关键帧使用 `uri`、`size`、`sha256` 和 `role`，不使用本地 `path`。URI 来自配置的 Artifact 服务。
+- `POST /v1/videos`：提交 Ref2VA 任务。
 - `GET /v1/videos/{id}`：查询任务。
 - `GET /v1/videos/{id}/content`：下载成功产物。
 - `DELETE /v1/videos/{id}`：取消排队任务。
 
-HTTP 接口仅接受 8-step。每个任务目录只能由一个常驻进程使用；重启后未完成任务标记失败，原幂等键不会重新生成。
+请求示例：
+
+```json
+{
+  "model": "MiniMaxAI/MiniMax-H3",
+  "task": "ref2va",
+  "prompt": "The character walks toward the camera",
+  "seconds": 5,
+  "conditions": [{"type": "image", "role": "reference", "uri": "http://video-mcp-server:8000/runtime-artifacts/art_REPLACE_WITH_ID/content", "sha256": "REPLACE_WITH_SHA256", "size": 12345}],
+  "target": {"short_edge": 768, "aspect_ratio": "9:16", "duration_seconds": 5.0},
+  "num_outputs_per_prompt": 1,
+  "num_inference_steps": 8,
+  "flow_shift": 12.0,
+  "audio_flow_shift": 3.0,
+  "seed": 7,
+  "idempotency_key": "new-attempt"
+}
+```
+
+替换示例中的 Artifact ID、哈希和大小。支持图片、视频、音频参考；至少包含一张图片或一段视频，最多 9 张图片、3 段视频、3 段音频，总计不超过 12 个。时长档 5/10/15 秒对应 124/243/345 帧，实际时长写入结果。画布为 768×1344，24 FPS。
+
+每个任务目录只由一个常驻进程使用；重启后未完成任务标记失败，原幂等键不会重新生成。

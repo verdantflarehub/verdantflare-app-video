@@ -19,10 +19,10 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-VERSION = "0.4.1"
+VERSION = "0.6.0"
 MODEL_TYPE = "minimax-h3-ref2va"
 MODELS = {"h3": ("h3", "video-minimax-h3-api"), "h3-sol": ("h3-sol", "video-minimax-h3-sol-api"),
-          "h3-sol-4090": ("h3-sol-4090", "video-minimax-h3-sol-4090-api")}
+          "h3-vdn": ("h3-vdn", "video-minimax-h3-vdn")}
 FIELDS = {"DCGM_FI_DEV_GPU_UTIL": ("utilization_percent", 100, 1),
           "DCGM_FI_DEV_FB_USED": ("memory_used_gib", 1048576, 1024),
           "DCGM_FI_DEV_FB_FREE": ("memory_free_gib", 1048576, 1024),
@@ -146,7 +146,7 @@ class Resources:
         except json.JSONDecodeError:
             return False
         config = routes.get(route)
-        return bool(config and config.get("url") and (not config.get("requires_token") or os.environ.get("H3_SOL_RUNTIME_TOKEN")))
+        return bool(config and config.get("url") and ((not config.get("requires_token") and route != "h3-vdn") or os.environ.get("H3_VDN_RUNTIME_TOKEN" if route == "h3-vdn" else "H3_SOL_RUNTIME_TOKEN")))
 
     def record_request(self, failed):
         with self.lock:

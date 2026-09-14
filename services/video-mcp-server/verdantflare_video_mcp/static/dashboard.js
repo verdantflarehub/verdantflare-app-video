@@ -10,7 +10,7 @@ function storeToken(value) {
     // Storage-disabled browsers still support the current in-memory session.
   }
 }
-const names = { h3: "h3", "h3-sol": "h3-sol", "h3-sol-4090": "h3-sol-4090", mcp: "MCP" };
+const names = { h3: "h3", "h3-sol": "h3-sol", "h3-vdn": "h3-vdn", mcp: "MCP" };
 const labels = {
   queued: "排队中",
   running: "渲染中",
@@ -535,7 +535,8 @@ $("dispatchForm").addEventListener("submit", async (event) => {
 
 $("dispatchForm").elements.route.addEventListener("change",()=>{
   const duration=$("dispatchForm").elements.duration_seconds;
-  const sol=$("dispatchForm").elements.route.value.startsWith('h3-sol');
+  const route=$("dispatchForm").elements.route.value;
+  const sol=route.startsWith('h3-sol')||route==='h3-vdn';
   duration.min=sol?'5':'4';duration.step=sol?'5':'1';
   if(sol&&![5,10,15].includes(Number(duration.value)))duration.value='5';
 });

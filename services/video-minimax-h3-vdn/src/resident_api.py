@@ -1,52 +1,15 @@
 """Authenticated HTTP transport for the durable VDN queue (no GPU imports)."""
 import hmac
 import json
-import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from task_store import Conflict, QueueFull
-from vdn_io import MODES
+from ref2va_io import validate
 
-VERSION = 'video-minimax-h3-vdn-v0.2.0'
+VERSION = 'video-minimax-h3-vdn-v0.3.0'
 
-
-def validate(payload, source):
-    expected = {'schema_version', 'task', 'prompt', 'seed', 'frames', 'steps', 'input_artifacts', 'idempotency_key'}
-    if not isinstance(payload, dict) or set(payload) != expected or type(payload['schema_version']) is not int or payload['schema_version'] != 1:
-        raise ValueError('invalid schema')
-    if not isinstance(payload['task'], str) or payload['task'] not in MODES:
-        raise ValueError('unsupported mode')
-    if not isinstance(payload['prompt'], str) or not payload['prompt'].strip() or len(payload['prompt']) > 24000:
-        raise ValueError('invalid prompt')
-    for name, low, high in [('seed', 0, 2**63-1), ('frames', 124, 362), ('steps', 8, 8)]:
-        if type(payload[name]) is not int or not low <= payload[name] <= high:
-            raise ValueError('invalid inference parameter')
-    if payload['frames'] % 17 != 5:
-        raise ValueError('frames must be 17n+5')
-    key = payload['idempotency_key']
-    if not isinstance(key, str) or not key.strip() or len(key) > 128:
-        raise ValueError('invalid idempotency key')
-    assets = payload['input_artifacts']
-    if not isinstance(assets, list) or len(assets) > 2:
-        raise ValueError('invalid keyframes')
-    roles = []
-    for asset in assets:
-        if not isinstance(asset, dict) or set(asset) != {'role', 'uri', 'sha256', 'size'}:
-            raise ValueError('invalid artifact')
-        if not isinstance(asset['role'], str) or asset['role'] not in {'first', 'last'}:
-            raise ValueError('invalid role')
-        roles.append(asset['role'])
-        if not isinstance(asset['uri'], str) or not re.fullmatch(re.escape(source.rstrip('/')) + r'/runtime-artifacts/art_[0-9a-f]{32}/content', asset['uri']):
-            raise ValueError('artifact source forbidden')
-        if not isinstance(asset['sha256'], str) or not re.fullmatch(r'[0-9a-f]{64}', asset['sha256']):
-            raise ValueError('invalid artifact digest')
-        if type(asset['size']) is not int or not 0 < asset['size'] <= 32 * 1024**2:
-            raise ValueError('invalid artifact size')
-    if len(set(roles)) != len(roles) or set(roles) != set(MODES[payload['task']]):
-        raise ValueError('keyframes do not match mode')
-    return payload
 
 
 class State:

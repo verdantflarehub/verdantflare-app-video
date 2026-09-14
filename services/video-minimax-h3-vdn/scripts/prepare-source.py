@@ -32,6 +32,9 @@ def main():
     for patch in sorted((root / 'vdn/diffusers_patches').glob('*.patch')):
         git('-C', root / 'diffusers', 'apply', '--check', patch)
         git('-C', root / 'diffusers', 'apply', patch)
+    patch = Path(__file__).resolve().parents[1] / 'patches/0002-diffusers-vdn-layout.patch'
+    git('-C', root / 'diffusers', 'apply', '--check', patch)
+    git('-C', root / 'diffusers', 'apply', patch)
 
 
 if __name__ == '__main__':

@@ -52,6 +52,7 @@ class VideoExecutor:
         self.sol_version = os.environ.get("H3_SOL_RUNTIME_VERSION", "video-minimax-h3-sol-v0.2.1")
         self.sol_route = os.environ.get("H3_SOL_RUNTIME_ROUTE", "minimax-h3-sol-ref2va")
         self.sol_token = os.environ.get("H3_SOL_RUNTIME_TOKEN", "")
+        self.vdn_token = os.environ.get("H3_VDN_RUNTIME_TOKEN", "")
         self.runtime_version = os.environ.get("H3_RUNTIME_VERSION", "video-minimax-h3-api-v0.3.0")
         self.allowed_origins = frozenset(x.strip() for x in os.environ.get("VIDEO_ASSET_IMPORT_ORIGINS", "").split(",") if x.strip())
         self.import_rewrites = json.loads(os.environ.get("VIDEO_ASSET_IMPORT_REWRITES", "{}"))
@@ -91,17 +92,18 @@ class VideoExecutor:
 
     @staticmethod
     def _service_for_route(route: str) -> str:
-        return "h3-sol" if route.startswith("h3-sol") else "h3"
+        return "h3-vdn" if route == "h3-vdn" else "h3-sol" if route.startswith("h3-sol") else "h3"
 
     def runtime(self, route=None):
         selected = route or self.runtime_route
         service = self._service_for_route(selected)
         if selected in self.runtime_routes:
             config = self.runtime_routes[selected]
-            if config["requires_token"]:
-                if not self.sol_token:
+            if config["requires_token"] or service == "h3-vdn":
+                token = self.vdn_token if service == "h3-vdn" else self.sol_token
+                if not token:
                     raise ExecutionError("Selected runtime route is not connected")
-                return config["url"], {"Authorization": f"Bearer {self.sol_token}"}, config["version"], selected
+                return config["url"], {"Authorization": f"Bearer {token}"}, config["version"], selected
             return config["url"], {}, config["version"], selected
         if service == "h3":
             return self.runtime_url, {}, self.runtime_version, selected
@@ -163,8 +165,8 @@ class VideoExecutor:
         if not isinstance(route, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", route):
             raise ValueError("route must be a lowercase slug")
         service = self._service_for_route(route)
-        if service == "h3-sol" and duration_seconds not in {5, 10, 15}:
-            raise ValueError("Sol duration must be 5, 10, or 15 seconds")
+        if service in {"h3-sol", "h3-vdn"} and duration_seconds not in {5, 10, 15}:
+            raise ValueError("Selected channel duration must be 5, 10, or 15 seconds")
         if model != "minimax-h3-ref2va":
             raise ValueError("model must be minimax-h3-ref2va")
         if not 4 <= duration_seconds <= 15 or aspect_ratio != "9:16" or not prompt.strip():
@@ -172,6 +174,9 @@ class VideoExecutor:
         limits = {"images": 9, "videos": 3, "audios": 3}
         if not references.get("images") and not references.get("videos"):
             raise ValueError("at least one image or video reference is required")
+        if service == "h3-vdn" and sum(len(references.get(k, [])) for k in limits) > 12:
+            raise ValueError("VDN supports at most 12 references")
+        reference_bytes = 0
         normalized: dict[str, list[dict[str, str]]] = {}
         for kind, limit in limits.items():
             items = references.get(kind, [])
@@ -180,10 +185,13 @@ class VideoExecutor:
             normalized[kind] = []
             for item in items:
                 artifact = self.artifacts.get(item["artifact_id"], project_id)
+                reference_bytes += artifact.size
                 expected_prefix = {"images": "image/", "videos": "video/", "audios": "audio/"}[kind]
                 if not artifact.media_type.startswith(expected_prefix) or not item.get("purpose", "").strip():
                     raise ValueError(f"invalid {kind} reference")
                 normalized[kind].append({"artifact_id": artifact.artifact_id, "purpose": item["purpose"].strip()})
+        if service == "h3-vdn" and reference_bytes > 2 * 1024**3:
+            raise ValueError("VDN references exceed 2 GiB")
         request = {"project_id": project_id, "model": model, "prompt": prompt.strip(),
                    "duration_seconds": duration_seconds, "aspect_ratio": aspect_ratio, "references": normalized}
         request["route"] = route
@@ -214,7 +222,7 @@ class VideoExecutor:
                 conditions.append({"type": singular[kind],
                                    "uri": f"{self.runtime_artifact_url}/runtime-artifacts/{item['artifact_id']}/content",
                                    "role": "reference"})
-                if service == "h3-sol":
+                if service in {"h3-sol", "h3-vdn"}:
                     asset = self.artifacts.get(item["artifact_id"], project_id)
                     conditions[-1].update(sha256=asset.sha256, size=asset.size)
                 material_tags.append(f"<{tag_name[kind]} {index}> is the approved {item['purpose']} reference")
@@ -222,14 +230,14 @@ class VideoExecutor:
         payload = {"model": "MiniMaxAI/MiniMax-H3", "task": "ref2va", "prompt": compiled_prompt,
                    "seconds": duration_seconds, "conditions": conditions,
                    "target": {"short_edge": 768, "aspect_ratio": aspect_ratio, "duration_seconds": float(duration_seconds)},
-                   "num_outputs_per_prompt": 1, "num_inference_steps": 4 if service == "h3-sol" else 21, "flow_shift": 12.0,
+                   "num_outputs_per_prompt": 1, "num_inference_steps": 8 if service == "h3-vdn" else 4 if service == "h3-sol" else 21, "flow_shift": 12.0,
                    "audio_flow_shift": 3.0, "seed": 7}
         # Persist the attempt before calling the runtime. An ambiguous network
         # failure must not permit a duplicate GPU request under the same key.
         reserved = self.tasks.create(project_id=project_id, idempotency_key=idempotency_key,
                                      input_digest=digest, request=request, runtime_task_id="", status="queued")
         reserved = self.tasks.update(reserved, service=service, runtime_version=runtime_version, runtime_route=runtime_route)
-        if service == "h3-sol":
+        if service in {"h3-sol", "h3-vdn"}:
             payload["idempotency_key"] = reserved.video_task_id
         try:
             response = self.client.post(f"{runtime_url}/v1/videos", json=payload, headers=runtime_headers)

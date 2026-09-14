@@ -51,13 +51,14 @@ def offload(pipe, device, dit=False):
     def decoder_back(module, args):
         vae.offload()                 # fl2va encodes its keyframes before denoising
 
-    pipe.transformer.register_forward_pre_hook(decoder_back)
+    transformer = getattr(pipe, "transformer_ref", None) or pipe.transformer
+    transformer.register_forward_pre_hook(decoder_back)
     if not dit:
-        pipe.transformer.to(device)
+        transformer.to(device)
         return
     # fp8 keeps its weights in buffers; diffusers_patches/0002 is what sends a streamed
     # group's buffers back to the CPU along with its parameters.
-    apply_group_offloading(pipe.transformer, onload_device=device, offload_device="cpu",
+    apply_group_offloading(transformer, onload_device=device, offload_device="cpu",
                            offload_type="block_level", num_blocks_per_group=1,
                            use_stream=True)
 
@@ -115,7 +116,7 @@ def load_pipeline(args, workflow):
     root = Path(args.models).resolve()
     for name in pipe.pretrained_component_names:
         spec = pipe.get_component_spec(name)
-        folder = args.transformer if name == "transformer" else (spec.subfolder or name)
+        folder = args.transformer if name in {"transformer", "transformer_ref"} else (spec.subfolder or name)
         if not folder:
             raise ValueError("explicit transformer subfolder required")
         path = (root / folder).resolve()
@@ -160,6 +161,29 @@ def render(pipe, args, prompt):
                  audio=audio[0].float().cpu(), audio_sample_rate=rate)
     print(f"wrote {args.out}: {len(videos[0])} frames, "
           f"{audio.shape[-1] / rate:.2f}s of audio")
+
+
+@torch.inference_mode()
+def render_ref2va(pipe, args, prompt, paths):
+    # Pinned Diffusers MiniMax-H3 "Omni-references" example, adapted to local
+    # verified artifacts and the VDN checkpoint's NFE (+1 sigma grid point).
+    from diffusers.modular_pipelines.minimax_h3 import (
+        MiniMaxH3AudioReference, MiniMaxH3ImageReference, MiniMaxH3VideoReference,
+    )
+    reference_types = {"image": MiniMaxH3ImageReference,
+                       "video": MiniMaxH3VideoReference, "audio": MiniMaxH3AudioReference}
+    references = [reference_types[kind].from_file(path) for kind, path in paths]
+    results = pipe(
+        prompt=prompt,
+        references=references,
+        num_frames=args.frames,
+        height=1344, width=768,
+        num_inference_steps=args.steps + 1,
+        generator=torch.Generator(args.device).manual_seed(args.seed),
+        output=["videos", "audio", "sampling_rate"],
+    )
+    encode_video(results["videos"][0], fps=FPS, output_path=args.out,
+                 audio=results["audio"][0].float().cpu(), audio_sample_rate=results["sampling_rate"])
 
 
 if __name__ == "__main__":

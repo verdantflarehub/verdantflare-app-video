@@ -1,5 +1,4 @@
 """One resident upstream pipeline, one durable queue, no automatic generation retry."""
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -8,76 +7,44 @@ import threading
 import time
 import tomllib
 from types import SimpleNamespace
-from urllib.request import build_opener, HTTPRedirectHandler, ProxyHandler, Request
 import uuid
 
 from resident_api import State, VERSION, serve
 from task_store import TaskStore
-from vdn_io import TRANSFORMERS, inspect_media, sha256, validate_model, validate_request
+from vdn_io import TRANSFORMERS, inspect_media, sha256, validate_model
 
-
-class NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, *_args, **_kwargs):
-        raise ValueError('artifact redirects forbidden')
-
-
-def download(request, directory):
-    opener = build_opener(ProxyHandler({}), NoRedirect())
-    local = dict(request, input_artifacts=[])
-    for asset in request['input_artifacts']:
-        path = directory / (asset['role'] + '.image')
-        size, digest = 0, hashlib.sha256()
-        with opener.open(Request(asset['uri']), timeout=60) as response, path.open('xb') as stream:
-            if response.status != 200:
-                raise ValueError('artifact unavailable')
-            while chunk := response.read(1024**2):
-                size += len(chunk)
-                if size > asset['size']:
-                    raise ValueError('artifact too large')
-                digest.update(chunk)
-                stream.write(chunk)
-        if size != asset['size'] or digest.hexdigest() != asset['sha256']:
-            raise ValueError('artifact integrity failed')
-        from PIL import Image
-        with Image.open(path) as image:
-            if image.format not in {'PNG', 'JPEG', 'WEBP'} or image.width * image.height > 16_000_000:
-                raise ValueError('unsupported keyframe image')
-            image.verify()
-        local['input_artifacts'].append(dict(role=asset['role'], path=path.name, sha256=asset['sha256']))
-    return validate_request(local, directory)
-
+from ref2va_io import FRAMES, download
+from vdn_layout import attach_layout_bridge
 
 class Engine:
     def __init__(self, models):
         import torch
-        from diffusers import ModularPipeline
         from vendor.infer_diffusers import load_pipeline
         self.args = SimpleNamespace(models=str(models), transformer=TRANSFORMERS[8], fp8=False,
                                     device='cuda:0', offload_dit=True)
-        # Workflow graphs share exactly the same already-loaded components. The
-        # upstream workflow selector still chooses distinct keyframe/text blocks.
         with torch.inference_mode():
-            text = load_pipeline(self.args, 't2va')
-            keyframes = ModularPipeline.from_pretrained(str(models), workflow='fl2va', local_files_only=True)
-            for name in keyframes.pretrained_component_names:
-                component = getattr(text, name, None)
-                if component is None:
-                    raise ValueError('keyframe workflow requires an unloaded component')
-                keyframes.update_components(**{name: component})
-        self.pipelines = {'t2va': text, 'fl2va': keyframes}
+            self.pipeline = load_pipeline(self.args, 'ref2va')
+            self.hybrid_blocks = attach_layout_bridge(self.pipeline.transformer_ref)
 
     def generate(self, request, paths, output):
         import torch
-        from vendor.infer_diffusers import render
+        from vendor.infer_diffusers import render_ref2va
         for index in range(2):
             torch.cuda.reset_peak_memory_stats(index)
-        args = SimpleNamespace(**vars(self.args), first=paths.get('first'), last=paths.get('last'),
-                               out=str(output), frames=request['frames'], steps=request['steps'], seed=request['seed'])
-        render(self.pipelines['fl2va' if paths else 't2va'], args, request['prompt'])
+        transformer = self.pipeline.transformer_ref
+        transformer._vdn_layout_calls = 0
+        transformer._vdn_linear_calls = 0
+        args = SimpleNamespace(**vars(self.args), out=str(output), frames=FRAMES[request['seconds']],
+                               steps=request['num_inference_steps'], seed=request['seed'])
+        render_ref2va(self.pipeline, args, request['prompt'], paths)
         for index in range(2):
             torch.cuda.synchronize(index)
+        if transformer._vdn_layout_calls != args.steps or transformer._vdn_linear_calls < args.steps*self.hybrid_blocks:
+            raise RuntimeError('VDN branch execution was not verified')
         return {'peak_allocated_bytes': [torch.cuda.max_memory_allocated(i) for i in range(2)],
-                'peak_reserved_bytes': [torch.cuda.max_memory_reserved(i) for i in range(2)]}
+                'peak_reserved_bytes': [torch.cuda.max_memory_reserved(i) for i in range(2)],
+                'vdn_layout_calls':transformer._vdn_layout_calls, 'vdn_linear_calls':transformer._vdn_linear_calls,
+                'vdn_hybrid_blocks':self.hybrid_blocks}
 
 
 def execute(store, task, engine, provenance):
@@ -94,7 +61,7 @@ def execute(store, task, engine, provenance):
     partial = directory / 'partial.mp4'
     gpu = engine.generate(task['request'], paths, partial)
     store.progress(task['id'], 'saving')
-    media = inspect_media(partial, task['request']['frames'])
+    media = inspect_media(partial, FRAMES[task['request']['seconds']])
     result = dict(provenance, sha256=sha256(partial), size=partial.stat().st_size,
                   media=media, gpu=gpu, generate_seconds=time.monotonic()-started)
     (directory / 'record.json').write_text(json.dumps(dict(request=task['request'], result=result), indent=2) + '\n')
@@ -147,11 +114,13 @@ def main():
     try:
         state.update(stage='gpu_check')
         state.update(gpu_uuids=verify_gpus(), stage='model_integrity')
-        models = Path(os.environ.get('VDN_MODELS', '/models/VDN-H3')).resolve()
-        lock_path = Path(os.environ.get('VDN_MODEL_LOCK', '/models/VDN-H3.lock.json'))
+        models = Path(os.environ.get('VDN_MODELS', '/models/VDN-H3-Ref2VA')).resolve()
+        lock_path = Path(os.environ.get('VDN_MODEL_LOCK', '/models/VDN-H3-Ref2VA.lock.json'))
         lock = json.loads(lock_path.read_text())
+        if lock.get("task") != "ref2va" or lock.get("profile") != "vdn-ref2va-8step":
+            raise ValueError("Ref2VA VDN model package required")
         validate_model(models, lock, 8)
-        provenance = dict(runtime_version=VERSION, execution_instance_id=instance, model_revision=lock['revision'],
+        provenance = dict(profile='vdn-ref2va-8step', runtime_version=VERSION, execution_instance_id=instance, model_revision=lock['revision'],
                           model_lock_sha256=sha256(lock_path),
                           upstream=tomllib.loads((Path(__file__).resolve().parents[1]/'pyproject.toml').read_text())['tool']['vdn']['upstream'])
         state.update(stage='loading')

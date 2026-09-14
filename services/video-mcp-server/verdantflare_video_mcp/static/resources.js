@@ -11,7 +11,7 @@ function clearBusiness(){
   $("inventoryTime").textContent="";
   $("mcpStatus").innerHTML='<button class="business-card" data-resource="mcp"><h3>MCP</h3><p>认证后查看服务状态 →</p></button>';
   $("modelServices").innerHTML=`<div class="business-card"><h3>minimax-h3-ref2va</h3><p>业务模型类型 / 接口契约</p></div>`;
-  $("channelServices").innerHTML=`<div class="business-card"><p>h3 · h3-sol · h3-sol-4090</p></div>`;
+  $("channelServices").innerHTML=`<div class="business-card"><p>h3 · h3-sol · h3-vdn</p></div>`;
 }
 function renderMCP(data){
   const protocol=data.protocol.state==='fresh'?(data.protocol.status==='ready'?'通过':'不可达'):'检查状态未知';
@@ -19,9 +19,9 @@ function renderMCP(data){
 }
 function renderModels(data){
   const routes=new Map(data.models.map(m=>[m.id,m]));
-  for(const id of ['h3','h3-sol','h3-sol-4090']){ const option=$("dispatchForm").elements.route.querySelector(`option[value="${id}"]`), row=routes.get(id); if(!option)continue; const available=data.state==='fresh'&&row?.route_status==='connected'&&row.ready>0; option.disabled=!available; option.textContent=available?id:`${id} · 暂不可用`; }
-  const preferred=routes.get('h3-sol-4090');
-  if(data.state==='fresh'&&preferred?.route_status==='connected'&&preferred.ready>0) $("dispatchForm").elements.route.value='h3-sol-4090';
+  for(const id of ['h3','h3-sol','h3-vdn']){ const option=$("dispatchForm").elements.route.querySelector(`option[value="${id}"]`), row=routes.get(id); if(!option)continue; const available=data.state==='fresh'&&row?.route_status==='connected'&&row.ready>0; option.disabled=!available; option.textContent=available?id:`${id} · 暂不可用`; }
+  const preferred=routes.get('h3-vdn');
+  if(data.state==='fresh'&&preferred?.route_status==='connected'&&preferred.ready>0) $("dispatchForm").elements.route.value='h3-vdn';
   $("inventoryTime").textContent=`部署采集：${date(data.sampled_at)}${data.state!=='fresh'?' · 当前部署状态未知':''}`;
   const modelCards=data.models.map(m=>`<button class="business-card" data-resource="model" data-model="${escapeHTML(m.id)}"><h3>${escapeHTML(m.name)}</h3><span class="business-state ${data.state==='fresh'&&m.deployment_status==='online'?'':'stale'}">${deploymentLabels[m.deployment_status]||'未知'}</span><div class="instance-counts"><div><strong>${m.ready??'—'}</strong><span>就绪实例</span></div><div><strong>${m.current??'—'}</strong><span>当前实例</span></div><div><strong>${m.desired??'—'}</strong><span>期望实例</span></div></div><p>模型：${escapeHTML(m.model_type||'minimax-h3-ref2va')} · 渠道：${escapeHTML(m.route)}</p><p>MCP 路由：${m.route_status==='connected'?'已接入':m.route_status==='not_connected'?'未接入':'未知'}</p><div class="business-foot">查看 ${escapeHTML(m.name)} 实例列表 →</div></button>`).join('');
   $("modelServices").innerHTML=`<div class="business-card model-contract"><h3>minimax-h3-ref2va</h3><p>业务模型类型 / 接口契约</p></div>`;
@@ -37,7 +37,7 @@ async function refreshBusiness(){
     if(responses[0].status==='fulfilled')renderMCP(responses[0].value);
     else $("mcpStatus").innerHTML='<button class="business-card" data-resource="mcp"><h3>MCP</h3><p>连接失败，当前状态未知 →</p></button>';
     if(responses[1].status==='fulfilled')renderModels(responses[1].value);
-    else renderModels({state:'unavailable',sampled_at:null,models:['h3','h3-sol','h3-sol-4090'].map(id=>({id,name:names[id],route:id,model_type:'minimax-h3-ref2va',deployment_status:'unknown'}))});
+    else renderModels({state:'unavailable',sampled_at:null,models:['h3','h3-sol','h3-vdn'].map(id=>({id,name:names[id],route:id,model_type:'minimax-h3-ref2va',deployment_status:'unknown'}))});
     if($("resourceDrawer").open&&resourceSelection)await inspectResource(...resourceSelection,false);
   }finally{businessBusy=false;}
 }
