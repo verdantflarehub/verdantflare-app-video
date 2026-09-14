@@ -67,13 +67,38 @@ def validate_model(root, lock, steps):
         raise ValueError('checkpoint and requested NFE differ')
     files = lock.get('files', {})
     transformer = TRANSFORMERS[steps]
-    if not any(name.startswith(transformer + '/') and name.endswith('.safetensors') for name in files):
-        raise ValueError('model tree lacks the requested stage transformer')
+    config_path = transformer + '/config.json'
+    if config_path not in files:
+        raise ValueError('model tree lacks the requested stage configuration')
     if not {'model_index.json', 'modular_model_index.json'} & files.keys() or not any(p.endswith('.safetensors') for p in files):
         raise ValueError('model lock lacks index or weights')
     for relative, digest in files.items():
         if sha256(checked_path(root, relative)) != digest:
             raise ValueError(f'model checksum mismatch: {relative}')
+    # The published Diffusers component assembles sibling branch/adapter files
+    # onto a sharded base; there are no weights in its diffusers/ subdirectory.
+    spec = json.loads(checked_path(root, config_path).read_text())['vdn']
+    stage = Path(transformer).parent
+    for relative in [spec['branch'], *spec['adapters']]:
+        dependency = str(stage / relative)
+        if dependency not in files:
+            raise ValueError('missing branch or adapter in model inventory')
+        checked_path(root, dependency)
+    base = spec['base']
+    if Path(base['source']).resolve() != root.resolve():
+        raise ValueError('base transformer must load from the verified local tree')
+    index_path = str(Path(base['subfolder']) / 'diffusion_pytorch_model.safetensors.index.json')
+    if index_path not in files:
+        raise ValueError('base transformer shard index missing')
+    index = json.loads(checked_path(root, index_path).read_text())
+    shards = set(index['weight_map'].values())
+    if not shards:
+        raise ValueError('base transformer shard index empty')
+    for shard in shards:
+        relative = str(Path(base['subfolder']) / shard)
+        if relative not in files:
+            raise ValueError('base transformer shard missing')
+        checked_path(root, relative)
     actual = {str(p.relative_to(root)) for p in root.rglob('*') if p.is_file() and '.cache' not in p.relative_to(root).parts}
     if actual != set(files):
         raise ValueError('model tree contains unlisted or missing files')

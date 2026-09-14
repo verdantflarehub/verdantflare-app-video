@@ -51,8 +51,14 @@ class ContractTests(unittest.TestCase):
     def model(self):
         root = self.root / 'model'; root.mkdir()
         (root / 'model_index.json').write_text('{}')
-        (root / 'stage-dmd-step-250/diffusers').mkdir(parents=True)
-        (root / 'stage-dmd-step-250/diffusers/weights.safetensors').write_bytes(b'fixture only')
+        stage = root / 'stage-dmd-step-250'
+        (stage / 'diffusers').mkdir(parents=True)
+        (stage / 'linear_branch').mkdir()
+        (stage / 'linear_branch/model.safetensors').write_bytes(b'fixture only')
+        base = root / 'h3-base/transformer'; base.mkdir(parents=True)
+        (base / 'shard.safetensors').write_bytes(b'fixture base')
+        (base / 'diffusion_pytorch_model.safetensors.index.json').write_text(json.dumps({'weight_map':{'weight':'shard.safetensors'}}))
+        (stage / 'diffusers/config.json').write_text(json.dumps({'vdn':{'branch':'linear_branch/model.safetensors','adapters':[], 'base':{'source':str(root),'subfolder':'h3-base/transformer'}}}))
         lock = dict(repository='OpenVDN/vdn-minimax-h3', revision='a'*40, steps=8,
                     files={str(p.relative_to(root)): sha256(p) for p in root.rglob('*') if p.is_file()})
         return root, lock
@@ -66,7 +72,7 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'unlisted'):
             validate_model(root, lock, 8)
         (root / 'injected.py').unlink()
-        (root / 'stage-dmd-step-250/diffusers/weights.safetensors').write_bytes(b'changed')
+        (root / 'stage-dmd-step-250/linear_branch/model.safetensors').write_bytes(b'changed')
         with self.assertRaisesRegex(ValueError, 'checksum'):
             validate_model(root, lock, 8)
 

@@ -8,20 +8,24 @@
      p.add_argument("--out", default="results/diffusers.mp4")
      p.add_argument("--steps", type=int, default=8,
                     help="model evaluations (NFE). The scheduler counts sigma grid "
-@@ -102,7 +103,7 @@
-         if args.last:
-             keyframes["last_image"] = load_image(args.last)
+@@ -93,6 +94,47 @@
+     prompt = args.prompt or torch.load(DEFAULT_PROMPT, map_location="cpu",
+                                        weights_only=True)["prompt"]
  
--    pipe = ModularPipeline.from_pretrained(REPO, workflow="fl2va" if keyframes else "t2va")
-+    pipe = ModularPipeline.from_pretrained(args.models, workflow="fl2va" if keyframes else "t2va", local_files_only=True)
- 
-     load_kwargs = {"trust_remote_code": True, "torch_dtype": torch.bfloat16}
-     if args.transformer:
-@@ -110,7 +111,26 @@
-     if args.fp8:
-         # A dict keys a kwarg to one component; the text encoder would not know it.
-         load_kwargs["fp8"] = {"transformer": True}
--    pipe.load_components(**load_kwargs)
++    pipe = load_pipeline(args, "fl2va" if args.first or args.last else "t2va")
++    render(pipe, args, prompt)
++
++
++def load_pipeline(args, workflow):
++    """Load upstream components once for either the CLI or resident worker."""
++    pipe = ModularPipeline.from_pretrained(args.models, workflow=workflow, local_files_only=True)
++
++    load_kwargs = {"trust_remote_code": True, "torch_dtype": torch.bfloat16}
++    if args.transformer:
++        load_kwargs["subfolder"] = {"transformer": args.transformer}
++    if args.fp8:
++        # A dict keys a kwarg to one component; the text encoder would not know it.
++        load_kwargs["fp8"] = {"transformer": True}
 +    # Local-path adaptation: modular indexes may still contain Hub repository IDs.
 +    # Use the same ComponentSpec loader, with every component bound to the
 +    # caller-verified local tree. Missing components must fail immediately.
@@ -42,6 +46,31 @@
 +        if args.fp8 and name == "transformer":
 +            kwargs["fp8"] = True
 +        pipe.update_components(**{name: spec.load(**kwargs)})
-     offload(pipe, torch.device(args.device), dit=args.offload_dit)
++    offload(pipe, torch.device(args.device), dit=args.offload_dit)
++
++    return pipe
++
++
++@torch.inference_mode()
++def render(pipe, args, prompt):
+     keyframes = {}
+     if args.first or args.last:
+         from diffusers.utils import load_image
+@@ -101,17 +143,6 @@
+             keyframes["image"] = load_image(args.first)
+         if args.last:
+             keyframes["last_image"] = load_image(args.last)
+-
+-    pipe = ModularPipeline.from_pretrained(REPO, workflow="fl2va" if keyframes else "t2va")
+-
+-    load_kwargs = {"trust_remote_code": True, "torch_dtype": torch.bfloat16}
+-    if args.transformer:
+-        load_kwargs["subfolder"] = {"transformer": args.transformer}
+-    if args.fp8:
+-        # A dict keys a kwarg to one component; the text encoder would not know it.
+-        load_kwargs["fp8"] = {"transformer": True}
+-    pipe.load_components(**load_kwargs)
+-    offload(pipe, torch.device(args.device), dit=args.offload_dit)
  
      videos, audio, rate = pipe(
+         prompt=prompt,

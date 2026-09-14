@@ -94,16 +94,13 @@ def main():
     prompt = args.prompt or torch.load(DEFAULT_PROMPT, map_location="cpu",
                                        weights_only=True)["prompt"]
 
-    keyframes = {}
-    if args.first or args.last:
-        from diffusers.utils import load_image
+    pipe = load_pipeline(args, "fl2va" if args.first or args.last else "t2va")
+    render(pipe, args, prompt)
 
-        if args.first:
-            keyframes["image"] = load_image(args.first)
-        if args.last:
-            keyframes["last_image"] = load_image(args.last)
 
-    pipe = ModularPipeline.from_pretrained(args.models, workflow="fl2va" if keyframes else "t2va", local_files_only=True)
+def load_pipeline(args, workflow):
+    """Load upstream components once for either the CLI or resident worker."""
+    pipe = ModularPipeline.from_pretrained(args.models, workflow=workflow, local_files_only=True)
 
     load_kwargs = {"trust_remote_code": True, "torch_dtype": torch.bfloat16}
     if args.transformer:
@@ -132,6 +129,20 @@ def main():
             kwargs["fp8"] = True
         pipe.update_components(**{name: spec.load(**kwargs)})
     offload(pipe, torch.device(args.device), dit=args.offload_dit)
+
+    return pipe
+
+
+@torch.inference_mode()
+def render(pipe, args, prompt):
+    keyframes = {}
+    if args.first or args.last:
+        from diffusers.utils import load_image
+
+        if args.first:
+            keyframes["image"] = load_image(args.first)
+        if args.last:
+            keyframes["last_image"] = load_image(args.last)
 
     videos, audio, rate = pipe(
         prompt=prompt,

@@ -7,6 +7,8 @@
 | `src/vendor/infer_diffusers.py` | 推理脚本 |
 | `patches/` | 源码补丁 |
 | `src/run-inference.py` | 命令行入口与运行记录 |
+| `src/resident_worker.py`、`src/resident_api.py` | 常驻服务与 HTTP 接口 |
+| `src/task_store.py` | 持久化任务队列 |
 | `src/vdn_io.py` | 输入、文件及媒体检查 |
 | `src/lock-model.py` | 生成本地模型文件校验清单 |
 | `scripts/prepare-source.py`、`scripts/verify-vendor.py` | 准备与校验构建源码 |
@@ -97,3 +99,27 @@ docker run --rm --gpus all \
 ```
 
 运行状态保存在 `record.json`，成功产物为 `video.mp4`；失败返回非零退出码并保留运行记录。镜像默认命令为 `--help`。
+
+## 常驻服务
+
+将访问 Token 放入 `VDN_RUNTIME_TOKEN` 环境变量，然后启动：
+
+```bash
+export VDN_MODELS=/models/VDN-H3
+export VDN_MODEL_LOCK=/models/VDN-H3.lock.json
+export VDN_TASK_ROOT=/projects/h3-vdn/tasks
+export VDN_ARTIFACT_SOURCE=http://video-mcp-server:8000
+export VDN_GPU_UUIDS=GPU_FIRST_UUID,GPU_SECOND_UUID
+python src/resident_worker.py
+```
+
+容器启动时使用 `--entrypoint python`，命令为 `/opt/verdantflare-vdn/src/resident_worker.py`。监听端口 8000；`GET /live` 检查进程，`GET /health` 在模型加载完成后返回 200。
+
+任务接口需要 `Authorization: Bearer <Token>`：
+
+- `POST /v1/videos`：提交任务；请求采用上述输入格式，新增 `idempotency_key`。关键帧使用 `uri`、`size`、`sha256` 和 `role`，不使用本地 `path`。URI 来自配置的 Artifact 服务。
+- `GET /v1/videos/{id}`：查询任务。
+- `GET /v1/videos/{id}/content`：下载成功产物。
+- `DELETE /v1/videos/{id}`：取消排队任务。
+
+HTTP 接口仅接受 8-step。每个任务目录只能由一个常驻进程使用；重启后未完成任务标记失败，原幂等键不会重新生成。
