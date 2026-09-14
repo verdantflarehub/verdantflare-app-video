@@ -56,3 +56,14 @@ class VdnRouteTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.executor.generate(**{**self.kw, **update}, route='h3-vdn')
         self.assertFalse(self.calls)
+
+    def test_explicit_audio_precedes_video_soundtrack_numbering(self):
+        video = self.assets.create_from_chunks(project_id='demo',operation='test',filename='clip.mp4',media_type='video/mp4',chunks=[b'video'])
+        audio = self.assets.create_from_chunks(project_id='demo',operation='test',filename='voice.wav',media_type='audio/wav',chunks=[b'audio'])
+        refs = dict(self.kw['references'], videos=[{'artifact_id':video.artifact_id,'purpose':'motion'}],
+                    audios=[{'artifact_id':audio.artifact_id,'purpose':'voice'}])
+        self.executor.generate(**{**self.kw,'references':refs},route='h3-vdn')
+        body = json.loads(self.calls[-1].content)
+        self.assertEqual([r['type'] for r in body['conditions']],['image','audio','video'])
+        self.assertIn(audio.artifact_id, body['conditions'][1]['uri'])
+        self.assertIn('<Audio 1> is the approved voice reference',body['prompt'])

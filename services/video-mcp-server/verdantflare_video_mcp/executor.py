@@ -217,7 +217,10 @@ class VideoExecutor:
         material_tags = []
         singular = {"images": "image", "videos": "video", "audios": "audio"}
         tag_name = {"images": "Picture", "videos": "Video", "audios": "Audio"}
-        for kind in ("images", "videos", "audios"):
+        # Diffusers numbers video soundtracks as audio references too. Put explicit
+        # audio first so <Audio 1> continues to name the first audio Artifact.
+        kinds = ("images", "audios", "videos") if service == "h3-vdn" else ("images", "videos", "audios")
+        for kind in kinds:
             for index, item in enumerate(request["references"][kind], start=1):
                 conditions.append({"type": singular[kind],
                                    "uri": f"{self.runtime_artifact_url}/runtime-artifacts/{item['artifact_id']}/content",
