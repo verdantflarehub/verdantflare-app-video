@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 FROM nvcr.io/nvidia/cuda:13.0.2-devel-ubuntu24.04@sha256:0eee3094c71518ad31d011a594ae6ed6de72959ee07e318cb31cffe71690e90c
 LABEL org.opencontainers.image.title="VerdantFlare MiniMax H3 VDN" \
-      org.opencontainers.image.version="0.3.0" \
+      org.opencontainers.image.version="0.3.1" \
       org.opencontainers.image.licenses="Apache-2.0 AND LicenseRef-MiniMax-H3-Community"
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.12 python3.12-dev python3.12-venv git ffmpeg ca-certificates build-essential \
@@ -18,6 +18,7 @@ RUN pip install --extra-index-url https://download.pytorch.org/whl/cu129 . /opt/
 COPY . .
 RUN python scripts/verify-vendor.py --upstream /opt/upstream/vdn \
     && python scripts/check-ref2va-layout.py \
+    && python scripts/check-ref2va-audio.py \
     && python -m unittest discover -s tests -v \
     && python -c "from diffusers import ModularPipeline; from diffusers.modular_pipelines.minimax_h3 import MiniMaxH3ModularPipeline; from diffusers.hooks import apply_group_offloading; from accelerate import cpu_offload_with_hook; from diffusers.utils.export_utils import encode_video; import torch; import av; assert torch.version.cuda == '12.9'" \
     && python -m compileall -q . \

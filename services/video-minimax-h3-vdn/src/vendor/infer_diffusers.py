@@ -44,7 +44,7 @@ def offload(pipe, device, dit=False):
     it stays on the GPU. It offloads whole or by block, never by leaf: its fused kernels
     read a child's weights without calling the child, so a leaf's hook never fires."""
     apply_group_offloading(pipe.text_encoder, onload_device=device, offload_device="cpu",
-                           offload_type="leaf_level", use_stream=True)
+                           offload_type="leaf_level", use_stream=True, low_cpu_mem_usage=True)
     _, vae = cpu_offload_with_hook(pipe.vae, execution_device=device)
     cpu_offload_with_hook(pipe.audio_vae, execution_device=device, prev_module_hook=vae)
 
@@ -60,7 +60,7 @@ def offload(pipe, device, dit=False):
     # group's buffers back to the CPU along with its parameters.
     apply_group_offloading(transformer, onload_device=device, offload_device="cpu",
                            offload_type="block_level", num_blocks_per_group=1,
-                           use_stream=True)
+                           use_stream=True, low_cpu_mem_usage=True)
 
 
 def main():
