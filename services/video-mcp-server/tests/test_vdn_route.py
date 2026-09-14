@@ -67,3 +67,9 @@ class VdnRouteTest(unittest.TestCase):
         self.assertEqual([r['type'] for r in body['conditions']],['image','audio','video'])
         self.assertIn(audio.artifact_id, body['conditions'][1]['uri'])
         self.assertIn('<Audio 1> is the approved voice reference',body['prompt'])
+
+    def test_removed_and_unknown_routes_never_fall_back(self):
+        for route in ('h3-sol-4090','minimax-h3-sol-ref2va-4090','h3-vdn-typo','missing-channel'):
+            with self.assertRaises(ExecutionError):
+                self.executor.generate(**self.kw,route=route)
+        self.assertFalse(self.calls)

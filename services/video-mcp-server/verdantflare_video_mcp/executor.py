@@ -105,9 +105,9 @@ class VideoExecutor:
                     raise ExecutionError("Selected runtime route is not connected")
                 return config["url"], {"Authorization": f"Bearer {token}"}, config["version"], selected
             return config["url"], {}, config["version"], selected
-        if service == "h3":
+        if service == "h3" and selected in {"h3", self.runtime_route}:
             return self.runtime_url, {}, self.runtime_version, selected
-        if service == "h3-sol" and self.sol_url and self.sol_token:
+        if service == "h3-sol" and selected in {"h3-sol", self.sol_route} and self.sol_url and self.sol_token:
             return self.sol_url, {"Authorization": f"Bearer {self.sol_token}"}, self.sol_version, self.sol_route
         raise ExecutionError("Selected runtime is not connected")
 
