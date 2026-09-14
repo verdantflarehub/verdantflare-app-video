@@ -46,10 +46,11 @@ def offload(pipe, device, dit=False):
     apply_group_offloading(pipe.text_encoder, onload_device=device, offload_device="cpu",
                            offload_type="leaf_level", use_stream=True, low_cpu_mem_usage=True)
     _, vae = cpu_offload_with_hook(pipe.vae, execution_device=device)
-    cpu_offload_with_hook(pipe.audio_vae, execution_device=device, prev_module_hook=vae)
+    _, audio_vae = cpu_offload_with_hook(pipe.audio_vae, execution_device=device, prev_module_hook=vae)
 
     def decoder_back(module, args):
-        vae.offload()                 # fl2va encodes its keyframes before denoising
+        vae.offload()                 # reference media are encoded before denoising
+        audio_vae.offload()
 
     transformer = getattr(pipe, "transformer_ref", None) or pipe.transformer
     transformer.register_forward_pre_hook(decoder_back)
@@ -60,7 +61,7 @@ def offload(pipe, device, dit=False):
     # group's buffers back to the CPU along with its parameters.
     apply_group_offloading(transformer, onload_device=device, offload_device="cpu",
                            offload_type="block_level", num_blocks_per_group=1,
-                           use_stream=True, low_cpu_mem_usage=True)
+                           use_stream=False)
 
 
 def main():

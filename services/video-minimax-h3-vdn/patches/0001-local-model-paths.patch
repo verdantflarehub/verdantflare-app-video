@@ -1,16 +1,19 @@
 --- a/infer_diffusers.py
 +++ b/infer_diffusers.py
-@@ -44,22 +44,23 @@
+@@ -44,22 +44,24 @@
      it stays on the GPU. It offloads whole or by block, never by leaf: its fused kernels
      read a child's weights without calling the child, so a leaf's hook never fires."""
      apply_group_offloading(pipe.text_encoder, onload_device=device, offload_device="cpu",
 -                           offload_type="leaf_level", use_stream=True)
 +                           offload_type="leaf_level", use_stream=True, low_cpu_mem_usage=True)
      _, vae = cpu_offload_with_hook(pipe.vae, execution_device=device)
-     cpu_offload_with_hook(pipe.audio_vae, execution_device=device, prev_module_hook=vae)
+-    cpu_offload_with_hook(pipe.audio_vae, execution_device=device, prev_module_hook=vae)
++    _, audio_vae = cpu_offload_with_hook(pipe.audio_vae, execution_device=device, prev_module_hook=vae)
 
      def decoder_back(module, args):
-         vae.offload()                 # fl2va encodes its keyframes before denoising
+-        vae.offload()                 # fl2va encodes its keyframes before denoising
++        vae.offload()                 # reference media are encoded before denoising
++        audio_vae.offload()
 
 -    pipe.transformer.register_forward_pre_hook(decoder_back)
 +    transformer = getattr(pipe, "transformer_ref", None) or pipe.transformer
@@ -25,11 +28,11 @@
 +    apply_group_offloading(transformer, onload_device=device, offload_device="cpu",
                             offload_type="block_level", num_blocks_per_group=1,
 -                           use_stream=True)
-+                           use_stream=True, low_cpu_mem_usage=True)
++                           use_stream=False)
 
 
  def main():
-@@ -67,6 +68,7 @@
+@@ -67,6 +69,7 @@
      p.add_argument("prompt", nargs="?",
                     help=f"defaults to the text {os.path.basename(DEFAULT_PROMPT)} was "
                          "encoded from")
@@ -37,7 +40,7 @@
      p.add_argument("--out", default="results/diffusers.mp4")
      p.add_argument("--steps", type=int, default=8,
                     help="model evaluations (NFE). The scheduler counts sigma grid "
-@@ -93,6 +95,47 @@
+@@ -93,6 +96,47 @@
      prompt = args.prompt or torch.load(DEFAULT_PROMPT, map_location="cpu",
                                         weights_only=True)["prompt"]
 
@@ -85,7 +88,7 @@
      keyframes = {}
      if args.first or args.last:
          from diffusers.utils import load_image
-@@ -101,17 +144,6 @@
+@@ -101,17 +145,6 @@
              keyframes["image"] = load_image(args.first)
          if args.last:
              keyframes["last_image"] = load_image(args.last)
@@ -103,7 +106,7 @@
 
      videos, audio, rate = pipe(
          prompt=prompt,
-@@ -131,5 +163,28 @@
+@@ -131,5 +164,28 @@
            f"{audio.shape[-1] / rate:.2f}s of audio")
 
 
