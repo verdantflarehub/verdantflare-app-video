@@ -1,0 +1,47 @@
+--- a/infer_diffusers.py
++++ b/infer_diffusers.py
+@@ -67,6 +67,7 @@
+     p.add_argument("prompt", nargs="?",
+                    help=f"defaults to the text {os.path.basename(DEFAULT_PROMPT)} was "
+                         "encoded from")
++    p.add_argument("--models", required=True, help="verified local model tree")
+     p.add_argument("--out", default="results/diffusers.mp4")
+     p.add_argument("--steps", type=int, default=8,
+                    help="model evaluations (NFE). The scheduler counts sigma grid "
+@@ -102,7 +103,7 @@
+         if args.last:
+             keyframes["last_image"] = load_image(args.last)
+ 
+-    pipe = ModularPipeline.from_pretrained(REPO, workflow="fl2va" if keyframes else "t2va")
++    pipe = ModularPipeline.from_pretrained(args.models, workflow="fl2va" if keyframes else "t2va", local_files_only=True)
+ 
+     load_kwargs = {"trust_remote_code": True, "torch_dtype": torch.bfloat16}
+     if args.transformer:
+@@ -110,7 +111,26 @@
+     if args.fp8:
+         # A dict keys a kwarg to one component; the text encoder would not know it.
+         load_kwargs["fp8"] = {"transformer": True}
+-    pipe.load_components(**load_kwargs)
++    # Local-path adaptation: modular indexes may still contain Hub repository IDs.
++    # Use the same ComponentSpec loader, with every component bound to the
++    # caller-verified local tree. Missing components must fail immediately.
++    from pathlib import Path
++    root = Path(args.models).resolve()
++    for name in pipe.pretrained_component_names:
++        spec = pipe.get_component_spec(name)
++        folder = args.transformer if name == "transformer" else (spec.subfolder or name)
++        if not folder:
++            raise ValueError("explicit transformer subfolder required")
++        path = (root / folder).resolve()
++        if not path.is_relative_to(root) or not path.is_dir():
++            raise ValueError(f"missing local component: {name}")
++        spec.pretrained_model_name_or_path = str(root)
++        spec.subfolder, spec.revision = folder, None
++        kwargs = {"trust_remote_code": True, "torch_dtype": torch.bfloat16,
++                  "local_files_only": True}
++        if args.fp8 and name == "transformer":
++            kwargs["fp8"] = True
++        pipe.update_components(**{name: spec.load(**kwargs)})
+     offload(pipe, torch.device(args.device), dit=args.offload_dit)
+ 
+     videos, audio, rate = pipe(

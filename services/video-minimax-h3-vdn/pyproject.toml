@@ -1,0 +1,37 @@
+[project]
+name = "verdantflare-video-minimax-h3-vdn"
+version = "0.1.0"
+description = "VDN-H3 inference command-line tools"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "torch==2.13.0+cu129",
+  "torchvision==0.28.0+cu129",
+  "diffusers==0.40.0.dev0",
+  "triton==3.7.1",
+  "flash-attn-4==4.0.0b26",
+  "transformers==5.15.0",
+  "accelerate==1.14.0",
+  "peft==0.20.0",
+  "safetensors==0.8.0",
+  "huggingface_hub==1.27.0",
+  "omegaconf==2.3.1",
+  "pyyaml==6.0.3",
+  "einops==0.8.2",
+  "numpy==2.5.2",
+  "pillow==12.3.0",
+  "av==18.1.0",
+]
+
+[build-system]
+requires = ["setuptools==78.1.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Container commands run the source files copied by Dockerfile.
+py-modules = []
+
+[tool.vdn.upstream]
+repository = "https://github.com/OpenVDN/vdn-minimax-h3"
+commit = "2f740c9291431d89d4f2330743b093fac4390d09"
+license = "Apache-2.0 (code); MiniMax H3 Community License Agreement (weights)"
+diffusers_commit = "3a2f35d4efa4c059c8bfb3bc0d6c906264895c81"

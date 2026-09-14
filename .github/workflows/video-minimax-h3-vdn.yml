@@ -1,0 +1,43 @@
+name: VDN H3 Review Build
+on:
+  push:
+    branches: [release]
+    paths:
+      [
+        services/video-minimax-h3-vdn/**,
+        .github/workflows/video-minimax-h3-vdn.yml,
+      ]
+permissions:
+  contents: read
+env:
+  SERVICE: video-minimax-h3-vdn
+  VERSION: 0.1.0
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install media validation tools
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Contract tests
+        run: |
+          python3 -m unittest discover -s services/${SERVICE}/tests -v
+          python3 -m compileall -q services/${SERVICE}
+      - name: Verify project configuration
+        run: |
+          python3 -c 'import os, pathlib, re, tomllib; p = pathlib.Path("services") / os.environ["SERVICE"] / "pyproject.toml"; config = tomllib.loads(p.read_text()); upstream = config["tool"]["vdn"]["upstream"]; assert upstream["repository"]; assert all(re.fullmatch("[0-9a-f]{40}", upstream[k]) for k in ("commit", "diffusers_commit"))'
+  build:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/release'
+    needs: check
+    timeout-minutes: 120
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: services/${{ env.SERVICE }}
+          file: services/${{ env.SERVICE }}/Dockerfile
+          platforms: linux/amd64
+          tags: video-minimax-h3-vdn:review-v${{ env.VERSION }}
+          push: false
