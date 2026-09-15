@@ -41,7 +41,10 @@ class TaskStore:
             id TEXT PRIMARY KEY, idempotency_key TEXT UNIQUE NOT NULL,
             digest TEXT NOT NULL, request TEXT NOT NULL, status TEXT NOT NULL,
             stage TEXT NOT NULL, instance_id TEXT, created REAL, updated REAL,
-            error TEXT, result TEXT)''')
+            error TEXT, result TEXT, started REAL, completed REAL)''')
+        for column in ('started', 'completed'):
+            try: self.db.execute(f'ALTER TABLE tasks ADD COLUMN {column} REAL')
+            except sqlite3.OperationalError: pass
         with self.db:
             self.db.execute("UPDATE tasks SET status='failed', stage='interrupted', error='runtime_restarted', updated=? WHERE status IN ('queued','in_progress')", (time.time(),))
 
@@ -66,7 +69,7 @@ class TaskStore:
                 raise QueueFull('queue capacity reached')
             task_id = 'vdn_' + uuid.uuid4().hex
             now = time.time()
-            self.db.execute('INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+            self.db.execute('INSERT INTO tasks (id,idempotency_key,digest,request,status,stage,instance_id,created,updated,error,result) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
                             (task_id, key, digest, encoded, 'queued', 'queued', None, now, now, None, None))
             return self.get(task_id)
 
@@ -79,7 +82,8 @@ class TaskStore:
             raise KeyError('unknown task')
         result = {'id':row['id'], 'status':row['status'], 'stage':row['stage'],
                   'execution_instance_id':row['instance_id'], 'created_at':row['created'],
-                  'updated_at':row['updated'], 'error':row['error'],
+                  'updated_at':row['updated'], 'started_at':row['started'], 'completed_at':row['completed'],
+                  'timing': self._timing(row), 'error':row['error'],
                   'result':json.loads(row['result']) if row['result'] else None}
         if include_request:
             result['request'] = json.loads(row['request'])
@@ -92,7 +96,7 @@ class TaskStore:
             row = self.db.execute("SELECT id FROM tasks WHERE status='queued' ORDER BY created,rowid LIMIT 1").fetchone()
             if row is None:
                 return None
-            self.db.execute("UPDATE tasks SET status='in_progress',stage='downloading',instance_id=?,updated=? WHERE id=?", (self.instance_id, time.time(), row['id']))
+            now=time.time(); self.db.execute("UPDATE tasks SET status='in_progress',stage='downloading',instance_id=?,updated=?,started=? WHERE id=?", (self.instance_id, now, now, row['id']))
             return self.get(row['id'], include_request=True)
 
     def progress(self, task_id, stage):
@@ -110,10 +114,17 @@ class TaskStore:
             if self.get(task_id)['status'] != 'in_progress':
                 raise Conflict('task is not running')
             status = 'failed' if error else 'completed'
-            self.db.execute('UPDATE tasks SET status=?,stage=?,updated=?,error=?,result=? WHERE id=?',
-                            (status, 'engine_failed' if error else 'completed', time.time(), error,
+            now=time.time(); self.db.execute('UPDATE tasks SET status=?,stage=?,updated=?,completed=?,error=?,result=? WHERE id=?',
+                            (status, 'engine_failed' if error else 'completed', now, now, error,
                              json.dumps(result, allow_nan=False) if result is not None else None, task_id))
             return self.get(task_id)
+
+    @staticmethod
+    def _timing(row):
+        created, started, completed = row['created'], row['started'], row['completed']
+        return {'queued_seconds': max(0.0, started-created) if started else None,
+                'running_seconds': max(0.0, completed-started) if completed and started else None,
+                'total_seconds': max(0.0, completed-created) if completed else max(0.0, time.time()-created)}
 
     def cancel(self, task_id):
         with self.mutex, self.db:
