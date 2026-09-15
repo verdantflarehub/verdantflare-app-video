@@ -1,6 +1,6 @@
 [project]
 name = "verdantflare-video-minimax-h3-vdn"
-version = "0.3.7"
+version = "0.3.8"
 description = "VDN-H3 inference service and command-line tools"
 requires-python = ">=3.12,<3.13"
 dependencies = [

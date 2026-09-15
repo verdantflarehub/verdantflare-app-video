@@ -75,7 +75,7 @@
 +        spec.subfolder, spec.revision = folder, None
 +        kwargs = {"trust_remote_code": True, "torch_dtype": torch.bfloat16,
 +                  "local_files_only": True}
-+        if args.fp8 and name == "transformer":
++        if args.fp8 and name in {"transformer", "transformer_ref"}:
 +            kwargs["fp8"] = True
 +        pipe.update_components(**{name: spec.load(**kwargs)})
 +    offload(pipe, torch.device(args.device), dit=args.offload_dit)

@@ -21,12 +21,20 @@ class Engine:
     def __init__(self, models):
         import torch
         from vendor.infer_diffusers import load_pipeline
-        self.args = SimpleNamespace(models=str(models), transformer=TRANSFORMERS[8], fp8=False,
+        fp8 = os.environ.get("VDN_FP8", "0")
+        if fp8 not in {"0", "1"}:
+            raise ValueError("VDN_FP8 must be 0 or 1")
+        self.args = SimpleNamespace(models=str(models), transformer=TRANSFORMERS[8], fp8=fp8 == "1",
                                     device='cuda:0', offload_dit=True)
         with torch.inference_mode():
             self.pipeline = load_pipeline(self.args, 'ref2va')
             self.hybrid_blocks = attach_layout_bridge(self.pipeline.transformer_ref)
             upstream = sys.modules[type(self.pipeline.transformer_ref).__module__]
+            self.fp8_linear_count = sum(isinstance(m, upstream.Fp8Linear)
+                                        for m in self.pipeline.transformer_ref.modules())
+            if bool(self.fp8_linear_count) != self.args.fp8:
+                raise RuntimeError("FP8 conversion does not match requested precision")
+            self.precision = "fp8-e4m3" if self.args.fp8 else "bf16"
             self._install_chunked_decomposed_attention(upstream)
             from vdn_memory import install_frame_statistics, install_linear_readout
             install_frame_statistics(upstream)
@@ -91,7 +99,8 @@ class Engine:
             torch.cuda.synchronize(index)
         if transformer._vdn_layout_calls != args.steps or transformer._vdn_linear_calls < args.steps*self.hybrid_blocks:
             raise RuntimeError('VDN branch execution was not verified')
-        return {'vdn_softmax_backend': self.softmax_backend, 'peak_allocated_bytes': [torch.cuda.max_memory_allocated(i) for i in range(2)],
+        return {'precision': self.precision, 'fp8_linear_count': self.fp8_linear_count,
+                'vdn_softmax_backend': self.softmax_backend, 'peak_allocated_bytes': [torch.cuda.max_memory_allocated(i) for i in range(2)],
                 'peak_reserved_bytes': [torch.cuda.max_memory_reserved(i) for i in range(2)],
                 'vdn_layout_calls':transformer._vdn_layout_calls, 'vdn_linear_calls':transformer._vdn_linear_calls,
                 'vdn_hybrid_blocks':self.hybrid_blocks}
@@ -183,7 +192,8 @@ def main():
         state.update(stage='loading')
         started = time.monotonic()
         engine = Engine(models)
-        state.update(ready=True, stage='ready', model_load_count=1, load_seconds=time.monotonic()-started)
+        state.update(ready=True, stage='ready', model_load_count=1, load_seconds=time.monotonic()-started,
+                     precision=engine.precision, fp8_linear_count=engine.fp8_linear_count)
         print(json.dumps(state.snapshot()), flush=True)
         while not stop.is_set():
             task = store.take()

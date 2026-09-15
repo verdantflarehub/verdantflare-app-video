@@ -113,6 +113,8 @@ export VDN_GPU_UUIDS=GPU_FIRST_UUID,GPU_SECOND_UUID
 python src/resident_worker.py
 ```
 
+`VDN_FP8` 默认为 `0`（BF16）；设置 `VDN_FP8=1` 启用 Transformer FP8 E4M3。健康接口和任务结果记录精度与 FP8 层数。
+
 容器使用 `--entrypoint python`，命令为 `/opt/verdantflare-vdn/src/resident_worker.py`。监听端口 8000；`GET /live` 检查进程，`GET /health` 在模型加载完成后返回 200。
 
 任务接口需要 `Authorization: Bearer <Token>`：
