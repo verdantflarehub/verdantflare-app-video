@@ -28,6 +28,8 @@ class Engine:
             self.hybrid_blocks = attach_layout_bridge(self.pipeline.transformer_ref)
             upstream = sys.modules[type(self.pipeline.transformer_ref).__module__]
             self._install_chunked_decomposed_attention(upstream)
+            from vdn_memory import install_frame_statistics
+            install_frame_statistics(upstream)
             self.softmax_backend = upstream.set_softmax_backend(self.pipeline.transformer_ref, "decomposed")
 
     @staticmethod
