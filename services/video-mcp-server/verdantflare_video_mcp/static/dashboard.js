@@ -51,6 +51,12 @@ const seconds = (v) =>
       ? `${v.toFixed(1)}s`
       : `${Math.floor(v / 60)}m ${Math.round(v % 60)}s`;
 function elapsed(t) {
+  if (t.timing) {
+    const q = t.timing.queue_seconds;
+    const r = t.timing.processing_seconds ?? t.timing.processing_elapsed_seconds;
+    if (q != null && r != null) return `排队 ${seconds(q)} / ${t.status === "running" ? "运行中" : "运行"} ${seconds(r)}`;
+    if (q != null) return `排队 ${seconds(q)}`;
+  }
   return seconds(
     Math.max(
       0,

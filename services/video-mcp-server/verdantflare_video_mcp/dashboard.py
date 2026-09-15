@@ -57,6 +57,7 @@ class ImportRequest(BaseModel):
 
 
 def public_task(record):
+    record = TaskRecord.with_timing(record)
     return {"video_task_id": record.video_task_id, "project_id": record.project_id,
             "idempotency_key": record.idempotency_key, "service": record.service, "route": record.runtime_route or record.request.get("route"),
             "model": record.request.get("model", "minimax-h3-ref2va"),
@@ -66,7 +67,8 @@ def public_task(record):
             "status": record.status, "created_at": record.created_at, "updated_at": record.updated_at,
             "completed_at": record.completed_at or (record.updated_at if record.status in {"succeeded", "failed", "cancelled"} else None),
             "artifact_id": record.artifact_id, "media": record.media, "error": record.error,
-            "input_digest": record.input_digest, "execution_instance_id": record.execution_instance_id, "association_source": "runtime" if record.execution_instance_id else None, "runtime_stage": record.runtime_stage}
+            "input_digest": record.input_digest, "execution_instance_id": record.execution_instance_id, "association_source": "runtime" if record.execution_instance_id else None, "runtime_stage": record.runtime_stage,
+            "dispatched_at": record.dispatched_at, "timing": record.timing, "runtime_metrics": record.runtime_metrics}
 
 
 class Dashboard:
@@ -103,7 +105,7 @@ class Dashboard:
                 self.services["h3-sol"] = "unavailable"
         errors = 0
         for record in self.records():
-            if record.status in {"queued", "running"} and (record.runtime_task_id or record.service == "depth"):
+            if record.status in {"queued", "running"} and (record.runtime_task_id or record.service in {"depth", "sr", "interpolate"}):
                 try:
                     self.executor.status(record.video_task_id)
                 except (ExecutionError, OSError, ValueError):
@@ -113,7 +115,7 @@ class Dashboard:
 
     def recover_incomplete_submissions(self):
         for record in self.records():
-            if record.status == "queued" and not record.runtime_task_id and record.service != "depth":
+            if record.status == "queued" and not record.runtime_task_id and record.service not in {"depth", "sr", "interpolate"}:
                 self.executor.tasks.update(record, status="failed", error={
                     "code": "submission_unconfirmed",
                     "message": "Submission interrupted; do not resubmit automatically"})
