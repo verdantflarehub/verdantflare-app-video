@@ -27,7 +27,52 @@ class Engine:
             self.pipeline = load_pipeline(self.args, 'ref2va')
             self.hybrid_blocks = attach_layout_bridge(self.pipeline.transformer_ref)
             upstream = sys.modules[type(self.pipeline.transformer_ref).__module__]
-            self.softmax_backend = upstream.set_softmax_backend(self.pipeline.transformer_ref, "flex")
+            self._install_chunked_decomposed_attention(upstream)
+            self.softmax_backend = upstream.set_softmax_backend(self.pipeline.transformer_ref, "decomposed")
+
+    @staticmethod
+    def _install_chunked_decomposed_attention(upstream):
+        """Keep the upstream decomposed mask exact while bounding KV gather memory.
+
+        The upstream implementation concatenates every window's gathered K/V rows
+        before calling FA4.  At 345 frames that temporary can exceed a 24 GiB card.
+        Execute the same varlen calls one window group at a time instead; the plan,
+        row sets and kernel are unchanged, only the lifetime of each gather is shorter.
+        """
+        import torch
+        from flash_attn.cute.interface import flash_attn_varlen_func
+        original = upstream.window_softmax_decomposed
+
+        def chunked(query, key, value, layout, bounds, scale, anchor_frames="none"):
+            plan = upstream._plan(layout, bounds, anchor_frames, query.device)
+            if not key.is_contiguous():
+                key = key.contiguous()
+            if not value.is_contiguous():
+                value = value.contiguous()
+            out = torch.empty(query.shape, dtype=query.dtype, device=query.device)
+            if len(plan.dense_q):
+                qd = query[plan.dense_q]
+                with upstream.sdpa_kernel(upstream.SDPBackend.CUDNN_ATTENTION):
+                    od = upstream.scaled_dot_product_attention(
+                        qd.transpose(0, 1).unsqueeze(0), key.transpose(0, 1).unsqueeze(0),
+                        value.transpose(0, 1).unsqueeze(0), scale=scale)
+                out[plan.dense_q] = od[0].transpose(0, 1)
+            if plan.has_windows:
+                for group in range(len(plan.cu_q) - 1):
+                    q0, q1 = (int(x) for x in plan.cu_q[group:group + 2].tolist())
+                    k0, k1 = (int(x) for x in plan.cu_k[group:group + 2].tolist())
+                    kw = key[plan.kv_gather[k0:k1]]
+                    vw = value[plan.kv_gather[k0:k1]]
+                    ow = flash_attn_varlen_func(
+                        query[plan.win_q[q0:q1]], kw, vw,
+                        cu_seqlens_q=torch.tensor([0, q1 - q0], device=query.device, dtype=torch.int32),
+                        cu_seqlens_k=torch.tensor([0, k1 - k0], device=query.device, dtype=torch.int32),
+                        max_seqlen_q=q1 - q0, max_seqlen_k=k1 - k0, softmax_scale=scale)
+                    ow = ow[0] if isinstance(ow, tuple) else ow
+                    out[plan.win_q[q0:q1]] = ow
+            return out
+
+        upstream.window_softmax_decomposed = chunked
 
     def generate(self, request, paths, output):
         import torch
