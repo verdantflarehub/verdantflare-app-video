@@ -252,7 +252,8 @@ class VideoExecutor:
             self.tasks.update(reserved, status="failed", error={"code": "submission_unconfirmed",
                               "message": "Runtime submission could not be confirmed; do not resubmit automatically"})
             raise ExecutionError("H3 runtime submission failed") from error
-        return self.tasks.update(reserved, runtime_task_id=runtime_task_id)
+        return self.tasks.update(reserved, runtime_task_id=runtime_task_id,
+                                 dispatched_at=__import__('datetime').datetime.now(__import__('datetime').UTC).isoformat())
 
     @serialized
     def status(self, video_task_id: str) -> TaskRecord:
@@ -291,7 +292,7 @@ class VideoExecutor:
         if stage not in {"queued", "downloading", "warming", "generating", "saving", "completed", "interrupted", "download_failed", "engine_failed"}:
             stage = None
         return self.tasks.update(record, status=mapped, error=error, execution_instance_id=identity,
-                                 runtime_stage=stage, timing=runtime_data.get("timing"))
+                                 runtime_stage=stage, runtime_metrics=runtime_data.get("runtime_metrics"))
 
     @serialized
     def result(self, video_task_id: str) -> TaskRecord:

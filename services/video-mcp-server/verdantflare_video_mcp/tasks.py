@@ -29,6 +29,7 @@ class TaskRecord(BaseModel):
     execution_instance_id: str | None = None
     runtime_stage: str | None = None
     timing: dict[str, object] | None = None
+    runtime_metrics: dict[str, object] | None = None
     video_task_id: str
     project_id: str
     idempotency_key: str
@@ -39,6 +40,7 @@ class TaskRecord(BaseModel):
     created_at: str
     updated_at: str
     completed_at: str | None = None
+    dispatched_at: str | None = None
     artifact_id: str | None = None
     media: dict[str, object] | None = None
     error: dict[str, str] | None = None
@@ -105,7 +107,22 @@ class TaskStore:
         path = self.root / f"{video_task_id}.json"
         if not path.is_file():
             raise TaskNotFound("video task does not exist")
-        return TaskRecord.model_validate_json(path.read_text(encoding="utf-8"))
+        record = TaskRecord.model_validate_json(path.read_text(encoding="utf-8"))
+        return self.with_timing(record)
+
+    @staticmethod
+    def with_timing(record: TaskRecord) -> TaskRecord:
+        def seconds(a, b):
+            if not a or not b: return None
+            return max(0.0, (datetime.fromisoformat(b) - datetime.fromisoformat(a)).total_seconds())
+        dispatched = record.dispatched_at
+        completed = record.completed_at
+        now = datetime.now(UTC).isoformat()
+        timing = {"queue_seconds": seconds(record.created_at, dispatched),
+                  "processing_seconds": seconds(dispatched, completed),
+                  "processing_elapsed_seconds": seconds(dispatched, now) if dispatched and not completed else None,
+                  "total_seconds": seconds(record.created_at, completed)}
+        return record.model_copy(update={"timing": timing})
 
     def update(self, record: TaskRecord, **values: object) -> TaskRecord:
         now = datetime.now(UTC).isoformat()
