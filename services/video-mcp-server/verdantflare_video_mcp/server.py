@@ -87,6 +87,7 @@ def video_status(video_task_id: str) -> types.CallToolResult:
     record = executor.status(video_task_id)
     return _result({"video_task_id": record.video_task_id, "status": record.status,
                     "created_at": record.created_at, "updated_at": record.updated_at, "error": record.error,
+                    "timing": record.timing, "runtime_metrics": record.runtime_metrics,
                     "service": record.service, "runtime_route": record.runtime_route,
                     "execution_instance_id": record.execution_instance_id, "stage": record.runtime_stage})
 

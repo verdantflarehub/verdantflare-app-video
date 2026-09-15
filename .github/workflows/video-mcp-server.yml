@@ -38,18 +38,8 @@ jobs:
           python3 -m pip install playwright==1.62.0
           python3 -m playwright install --with-deps chromium
           python3 services/${SERVICE}/tests/browser_dashboard.py
-  processing-check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      - run: python -m pip install -r services/video-processing-common/requirements-test.txt
-      - run: PYTHONPATH=services/video-processing-common:services/video-mcp-server python -m unittest discover -s services/video-processing-common/tests -v
   build:
-    needs: [check, processing-check]
+    needs: check
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

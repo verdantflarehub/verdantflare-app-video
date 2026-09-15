@@ -46,7 +46,11 @@ def main():
                                  request={'prompt':'Continuous orbit <img src=x onerror=alert(1)> <Picture 1> <Video 1> <Audio 1>', 'model':'minimax-h3-ref2va',
                                           'duration_seconds':5,'aspect_ratio':'9:16','references':{'images':[{'artifact_id':reference.artifact_id,'purpose':'identity'}], 'videos':[{'artifact_id':result.artifact_id,'purpose':'motion'}], 'audios':[{'artifact_id':audio_ref.artifact_id,'purpose':'rhythm'}]}})
             if i == 26:
-                tasks.update(record, artifact_id=result.artifact_id, media={'frame_rate':24,'width':240,'height':420})
+                from datetime import datetime, timedelta
+                created = datetime.fromisoformat(record.created_at)
+                tasks.update(record, dispatched_at=(created+timedelta(seconds=12)).isoformat(), artifact_id=result.artifact_id, media={'frame_rate':24,'width':240,'height':420})
+                record = tasks.get(record.video_task_id)
+                tasks._write(record.model_copy(update={'completed_at':(created+timedelta(seconds=506)).isoformat()}))
         executor = VideoExecutor(artifacts,tasks,httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200,content=image.read_bytes()) if r.method == 'GET' else httpx.Response(200,json={'id':'test-submission'}))))
         executor.allowed_origins = frozenset({'https://assets.example.com'})
         dashboard = Dashboard(executor)
@@ -101,6 +105,7 @@ def main():
                 page.locator('#nextPage').click(); expect(page.locator('.model-card')).to_have_count(3)
                 page.locator('#prevPage').click(); expect(page.locator('.model-card')).to_have_count(24)
                 page.locator('#searchInput').fill('shot-26'); expect(page.locator('.model-card')).to_have_count(1)
+                expect(page.locator('.card-times')).to_contain_text('排队 12s / 运行 8m14s')
                 page.locator('#btnViewTable').click(); expect(page.locator('#tableContainer')).to_be_visible()
                 page.locator('#taskRows button').click(); expect(page.locator('#taskPrompt')).to_contain_text('Continuous orbit <img')
                 assert '/dashboard/tasks/' in page.url

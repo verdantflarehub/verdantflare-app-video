@@ -87,8 +87,8 @@ class TaskStore:
                 raise TaskConflict("idempotency key already exists with different input")
             return existing
         now = datetime.now(UTC).isoformat()
-        if request.get("service") in {"depth", "sr", "interpolate"}:
-            service = str(request["service"])
+        if request.get("service") == "depth":
+            service = "depth"
         elif request.get("service") == "h3-sol":
             service = "h3-sol"
         else:
@@ -119,6 +119,7 @@ class TaskStore:
         completed = record.completed_at
         now = datetime.now(UTC).isoformat()
         timing = {"queue_seconds": seconds(record.created_at, dispatched),
+                  "queue_elapsed_seconds": seconds(record.created_at, now) if not dispatched and not completed and record.status == "queued" else None,
                   "processing_seconds": seconds(dispatched, completed),
                   "processing_elapsed_seconds": seconds(dispatched, now) if dispatched and not completed else None,
                   "total_seconds": seconds(record.created_at, completed)}
@@ -131,6 +132,8 @@ class TaskStore:
                 values["completed_at"] = record.updated_at
             elif values.get("status") in {"succeeded", "failed", "cancelled"}:
                 values["completed_at"] = now
-        updated = record.model_copy(update={**values, "updated_at": now})
+        if record.dispatched_at:
+            values["dispatched_at"] = record.dispatched_at
+        updated = self.with_timing(record.model_copy(update={**values, "updated_at": now}))
         self._write(updated)
         return updated

@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import threading
 import uuid
+from datetime import UTC, datetime
 from functools import wraps
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -68,8 +69,6 @@ class VideoExecutor:
         self.client = client or httpx.Client(timeout=httpx.Timeout(connect=10, read=3600, write=600, pool=10), follow_redirects=False)
         from .depth import DepthExecutor
         self.depth = DepthExecutor(self)
-        from .processing import ProcessingExecutor
-        self.processing = {name: ProcessingExecutor(self, name) for name in ("sr", "interpolate")}
 
     def _load_routes(self) -> dict[str, dict[str, object]]:
         raw = os.environ.get("H3_RUNTIME_ROUTES", "")
@@ -253,13 +252,11 @@ class VideoExecutor:
                               "message": "Runtime submission could not be confirmed; do not resubmit automatically"})
             raise ExecutionError("H3 runtime submission failed") from error
         return self.tasks.update(reserved, runtime_task_id=runtime_task_id,
-                                 dispatched_at=__import__('datetime').datetime.now(__import__('datetime').UTC).isoformat())
+                                 dispatched_at=datetime.now(UTC).isoformat())
 
     @serialized
     def status(self, video_task_id: str) -> TaskRecord:
         record = self.tasks.get(video_task_id)
-        if record.service in self.processing:
-            return self.processing[record.service].status(video_task_id)
         if record.service == "depth":
             return self.depth.status(video_task_id)
         if record.status in {"succeeded", "failed", "cancelled"}:
@@ -292,13 +289,11 @@ class VideoExecutor:
         if stage not in {"queued", "downloading", "warming", "generating", "saving", "completed", "interrupted", "download_failed", "engine_failed"}:
             stage = None
         return self.tasks.update(record, status=mapped, error=error, execution_instance_id=identity,
-                                 runtime_stage=stage, runtime_metrics=runtime_data.get("runtime_metrics"))
+                                 runtime_stage=stage, runtime_metrics=runtime_data.get("runtime_metrics") or ({"runtime_total_seconds": runtime_data["result"]["generate_seconds"]} if isinstance(runtime_data.get("result"), dict) and isinstance(runtime_data["result"].get("generate_seconds"), (int, float)) else None))
 
     @serialized
     def result(self, video_task_id: str) -> TaskRecord:
         record = self.status(video_task_id)
-        if record.service in self.processing:
-            return self.processing[record.service].result(video_task_id)
         if record.service == "depth":
             return self.depth.result(video_task_id)
         if record.status != "succeeded":

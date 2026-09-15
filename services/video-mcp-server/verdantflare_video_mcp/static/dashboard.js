@@ -44,18 +44,19 @@ const escapeHTML = (v) =>
       ],
   );
 const date = (v) => (v ? new Date(v).toLocaleString() : "—");
-const seconds = (v) =>
-  v == null
-    ? "—"
-    : v < 60
-      ? `${v.toFixed(1)}s`
-      : `${Math.floor(v / 60)}m ${Math.round(v % 60)}s`;
+const seconds = (v) => {
+  if (v == null || !Number.isFinite(v)) return "—";
+  const n = Math.max(0, Math.floor(v));
+  return n < 60 ? `${n}s` : `${Math.floor(n / 60)}m${n % 60}s`;
+};
 function elapsed(t) {
   if (t.timing) {
     const q = t.timing.queue_seconds;
     const r = t.timing.processing_seconds ?? t.timing.processing_elapsed_seconds;
-    if (q != null && r != null) return `排队 ${seconds(q)} / ${t.status === "running" ? "运行中" : "运行"} ${seconds(r)}`;
-    if (q != null) return `排队 ${seconds(q)}`;
+    if (q != null && r != null) return `排队 ${seconds(q)} / ${t.timing.processing_elapsed_seconds != null ? "运行中" : "运行"} ${seconds(r)}`;
+    if (t.status === "queued" && t.timing.queue_elapsed_seconds != null) return `排队中 ${seconds(t.timing.queue_elapsed_seconds)}`;
+    if (q != null) return `排队 ${seconds(q)} / 运行 —`;
+    if (t.timing.total_seconds != null) return `总耗时 ${seconds(t.timing.total_seconds)}（未记录分段）`;
   }
   return seconds(
     Math.max(
@@ -209,7 +210,7 @@ function render(data) {
   $("galleryContainer").innerHTML = data.tasks
     .map(
       (t) =>
-        `<article class="model-card" tabindex="0" role="button" data-task="${escapeHTML(t.video_task_id)}" aria-label="查看 ${escapeHTML(t.idempotency_key)}"><div class="card-thumb-wrap"><span>${t.status === "succeeded" ? "▶" : t.status === "running" ? "◌" : "◇"}</span>${taskIdentity(t)}<div class="card-badges">${badge(t)}</div><div class="card-times"><span title="开始时间">${date(t.created_at)}</span><span title="运行时间">${elapsed(t)}</span></div></div><div class="card-body"><div><div class="card-title-row"><span title="${escapeHTML(t.video_task_id)} · ${escapeHTML(t.project_id)} / ${escapeHTML(t.idempotency_key)}">${escapeHTML(t.project_id)} / ${escapeHTML(t.idempotency_key)}</span></div><p class="card-prompt">${escapeHTML(t.prompt)}</p></div><div class="card-footer"><div class="model-tags"><span>REF2VA</span><span>${escapeHTML(t.aspect_ratio)}</span><span>${escapeHTML(t.duration_seconds)}s</span>${t.media?.frame_rate ? `<span>${escapeHTML(t.media.frame_rate)} FPS</span>` : ""}</div><span class="card-footer-action">查看详情 →</span></div></div></article>`,
+        `<article class="model-card" tabindex="0" role="button" data-task="${escapeHTML(t.video_task_id)}" aria-label="查看 ${escapeHTML(t.idempotency_key)}"><div class="card-thumb-wrap"><span>${t.status === "succeeded" ? "▶" : t.status === "running" ? "◌" : "◇"}</span>${taskIdentity(t)}<div class="card-badges">${badge(t)}</div><div class="card-times"><span title="开始时间">${date(t.created_at)}</span><span title="排队 / 运行">${elapsed(t)}</span></div></div><div class="card-body"><div><div class="card-title-row"><span title="${escapeHTML(t.video_task_id)} · ${escapeHTML(t.project_id)} / ${escapeHTML(t.idempotency_key)}">${escapeHTML(t.project_id)} / ${escapeHTML(t.idempotency_key)}</span></div><p class="card-prompt">${escapeHTML(t.prompt)}</p></div><div class="card-footer"><div class="model-tags"><span>REF2VA</span><span>${escapeHTML(t.aspect_ratio)}</span><span>${escapeHTML(t.duration_seconds)}s</span>${t.media?.frame_rate ? `<span>${escapeHTML(t.media.frame_rate)} FPS</span>` : ""}</div><span class="card-footer-action">查看详情 →</span></div></div></article>`,
     )
     .join("");
   $("taskRows").innerHTML = data.tasks

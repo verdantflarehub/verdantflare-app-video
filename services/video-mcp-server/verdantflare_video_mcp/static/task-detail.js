@@ -156,7 +156,7 @@ async function refreshTaskDetail(id, version) {
   $("detailStatus").className = `detail-status ${task.status}`;
   $("detailStatus").textContent = labels[task.status] || task.status;
   $("outputCount").textContent = task.artifact ? "1 个视频" : "0 / 1 个视频";
-  const rows = [["任务 ID", task.video_task_id], ["模型", taskModel(task)], ["渠道", taskRoute(task)], ["执行实例", task.execution_instance_id || "未上报"], ["开始时间", date(task.created_at)], ["运行时间", elapsed(task)], ["时长 / 画幅", `${task.duration_seconds}s · ${task.aspect_ratio}`], ["Seed", task.seed], ["Runtime 版本", task.runtime_version], ["输入摘要", task.input_digest]];
+  const rows = [["任务 ID", task.video_task_id], ["模型", taskModel(task)], ["渠道", taskRoute(task)], ["执行实例", task.execution_instance_id || "未上报"], ["开始时间", date(task.created_at)], ["排队时间", seconds(task.timing?.queue_seconds)], ["运行时间", seconds(task.timing?.processing_seconds ?? task.timing?.processing_elapsed_seconds)], ["总耗时", seconds(task.timing?.total_seconds)], ["时长 / 画幅", `${task.duration_seconds}s · ${task.aspect_ratio}`], ["Seed", task.seed], ["Runtime 版本", task.runtime_version], ["输入摘要", task.input_digest]];
   if (task.error) rows.push(["失败原因", typeof task.error === "string" ? task.error : JSON.stringify(task.error)]);
   $("taskParameters").innerHTML = rows.map(([label,value]) => `<dt>${escapeHTML(label)}</dt><dd>${escapeHTML(value ?? "—")}</dd>`).join("");
   if (!detailRendered) {

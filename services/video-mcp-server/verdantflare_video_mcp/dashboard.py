@@ -18,7 +18,7 @@ from starlette.concurrency import run_in_threadpool
 from .artifacts import ArtifactError, ArtifactNotFound
 from .executor import ExecutionError
 from .resources import Resources
-from .tasks import TaskConflict, TaskNotFound, TaskRecord
+from .tasks import TaskConflict, TaskNotFound, TaskRecord, TaskStore
 
 STATIC = Path(__file__).parent / "static"
 
@@ -57,7 +57,7 @@ class ImportRequest(BaseModel):
 
 
 def public_task(record):
-    record = TaskRecord.with_timing(record)
+    record = TaskStore.with_timing(record)
     return {"video_task_id": record.video_task_id, "project_id": record.project_id,
             "idempotency_key": record.idempotency_key, "service": record.service, "route": record.runtime_route or record.request.get("route"),
             "model": record.request.get("model", "minimax-h3-ref2va"),
@@ -105,7 +105,7 @@ class Dashboard:
                 self.services["h3-sol"] = "unavailable"
         errors = 0
         for record in self.records():
-            if record.status in {"queued", "running"} and (record.runtime_task_id or record.service in {"depth", "sr", "interpolate"}):
+            if record.status in {"queued", "running"} and (record.runtime_task_id or record.service == "depth"):
                 try:
                     self.executor.status(record.video_task_id)
                 except (ExecutionError, OSError, ValueError):
@@ -115,7 +115,7 @@ class Dashboard:
 
     def recover_incomplete_submissions(self):
         for record in self.records():
-            if record.status == "queued" and not record.runtime_task_id and record.service not in {"depth", "sr", "interpolate"}:
+            if record.status == "queued" and not record.runtime_task_id and record.service != "depth":
                 self.executor.tasks.update(record, status="failed", error={
                     "code": "submission_unconfirmed",
                     "message": "Submission interrupted; do not resubmit automatically"})
