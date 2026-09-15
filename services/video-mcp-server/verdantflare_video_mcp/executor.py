@@ -68,6 +68,8 @@ class VideoExecutor:
         self.client = client or httpx.Client(timeout=httpx.Timeout(connect=10, read=3600, write=600, pool=10), follow_redirects=False)
         from .depth import DepthExecutor
         self.depth = DepthExecutor(self)
+        from .processing import ProcessingExecutor
+        self.processing = {name: ProcessingExecutor(self, name) for name in ("sr", "interpolate")}
 
     def _load_routes(self) -> dict[str, dict[str, object]]:
         raw = os.environ.get("H3_RUNTIME_ROUTES", "")
@@ -255,6 +257,8 @@ class VideoExecutor:
     @serialized
     def status(self, video_task_id: str) -> TaskRecord:
         record = self.tasks.get(video_task_id)
+        if record.service in self.processing:
+            return self.processing[record.service].status(video_task_id)
         if record.service == "depth":
             return self.depth.status(video_task_id)
         if record.status in {"succeeded", "failed", "cancelled"}:
@@ -286,11 +290,14 @@ class VideoExecutor:
         stage = runtime_data.get("stage")
         if stage not in {"queued", "downloading", "warming", "generating", "saving", "completed", "interrupted", "download_failed", "engine_failed"}:
             stage = None
-        return self.tasks.update(record, status=mapped, error=error, execution_instance_id=identity, runtime_stage=stage)
+        return self.tasks.update(record, status=mapped, error=error, execution_instance_id=identity,
+                                 runtime_stage=stage, timing=runtime_data.get("timing"))
 
     @serialized
     def result(self, video_task_id: str) -> TaskRecord:
         record = self.status(video_task_id)
+        if record.service in self.processing:
+            return self.processing[record.service].result(video_task_id)
         if record.service == "depth":
             return self.depth.result(video_task_id)
         if record.status != "succeeded":

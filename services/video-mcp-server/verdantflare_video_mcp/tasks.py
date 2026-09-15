@@ -28,6 +28,7 @@ class TaskRecord(BaseModel):
     runtime_route: str | None = None
     execution_instance_id: str | None = None
     runtime_stage: str | None = None
+    timing: dict[str, object] | None = None
     video_task_id: str
     project_id: str
     idempotency_key: str
@@ -84,8 +85,8 @@ class TaskStore:
                 raise TaskConflict("idempotency key already exists with different input")
             return existing
         now = datetime.now(UTC).isoformat()
-        if request.get("service") == "depth":
-            service = "depth"
+        if request.get("service") in {"depth", "sr", "interpolate"}:
+            service = str(request["service"])
         elif request.get("service") == "h3-sol":
             service = "h3-sol"
         else:
