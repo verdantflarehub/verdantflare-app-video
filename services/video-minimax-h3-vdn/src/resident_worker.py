@@ -41,7 +41,6 @@ class Engine:
         """
         import torch
         from flash_attn.cute.interface import flash_attn_varlen_func
-        original = upstream.window_softmax_decomposed
 
         def chunked(query, key, value, layout, bounds, scale, anchor_frames="none"):
             plan = upstream._plan(layout, bounds, anchor_frames, query.device)
@@ -131,8 +130,15 @@ def verify_gpus():
         a = torch.ones((64, 64), dtype=torch.bfloat16, device=f'cuda:{i}')
         if not torch.all(a @ a == 64).item():
             raise RuntimeError('BF16 check failed')
+        # cuSOLVER initializes lazily. Do this on the inference thread before
+        # long-sequence activations occupy the card, using the delta-rule ops.
+        eye = torch.eye(128, dtype=torch.float32, device=f'cuda:{i}').expand(2, -1, -1).contiguous()
+        chol = torch.linalg.cholesky(eye)
+        inverse_factor = torch.linalg.solve_triangular(chol, eye, upper=False, left=True)
+        if not torch.equal(inverse_factor, eye):
+            raise RuntimeError('FP32 delta-rule solver check failed')
         torch.cuda.synchronize(i)
-        del a
+        del a, eye, chol, inverse_factor
     if set(observed) != expected:
         raise RuntimeError('GPU allocation differs from manifest')
     return observed
