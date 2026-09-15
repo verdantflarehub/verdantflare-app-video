@@ -249,14 +249,18 @@ class Dashboard:
                 return RedirectResponse("../dashboard")
             return FileResponse(STATIC / "dashboard.html", headers={"Cache-Control": "no-store"})
 
+        async def task_shell(request):
+            return FileResponse(STATIC / "task-detail.html", headers={"Cache-Control": "no-store"})
+
         async def asset(request):
             name = request.path_params["name"]
-            if name not in {"dashboard.css", "dashboard.js", "resources.js"}:
+            if name not in {"dashboard.css", "dashboard.js", "resources.js", "task-detail.js"}:
                 return JSONResponse({"error": "not_found"}, status_code=404)
             return FileResponse(STATIC / name, headers={"Cache-Control": "no-cache"})
 
         return [*self.resources.routes(), Route("/dashboard", shell), Route("/dashboard/", shell),
                 Route("/dashboard/static/{name:str}", asset),
+                Route("/dashboard/tasks/{task_id:str}", task_shell),
                 Route("/api/dashboard", self.endpoint), Route("/api/tasks", self.endpoint, methods=["POST"]),
                 Route("/api/tasks/{task_id:str}", self.endpoint),
                 Route("/api/tasks/{task_id:str}/thumbnail", self.endpoint),

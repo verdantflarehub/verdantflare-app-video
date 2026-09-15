@@ -65,6 +65,8 @@ class DashboardTest(unittest.TestCase):
             self.assertEqual(self.client.get(path).status_code, 401)
         self.assertEqual(self.client.post('/api/tasks', json=self.payload).status_code, 401)
         self.assertEqual(self.client.get('/dashboard/static/dashboard.js').status_code, 200)
+        self.assertEqual(self.client.get('/dashboard/tasks/video_task_example').status_code, 200)
+        self.assertEqual(self.client.get('/dashboard/static/task-detail.js').status_code, 200)
         self.assertEqual(self.client.get('/dashboard/static/server.py').status_code, 404)
         self.assertEqual(self.client.get('/dashboard/').status_code, 200)
         with mock.patch.dict(os.environ, {'VIDEO_MCP_BEARER_TOKEN':''}):

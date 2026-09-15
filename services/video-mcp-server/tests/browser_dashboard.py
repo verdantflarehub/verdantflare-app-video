@@ -37,11 +37,14 @@ def main():
         subprocess.run(['ffmpeg','-v','error','-i',str(video),'-frames:v','1',str(image)], check=True)
         reference = artifacts.create_from_chunks(project_id='demo', operation='test', filename='reference.png', media_type='image/png', chunks=[image.read_bytes()])
         result = artifacts.create_from_chunks(project_id='demo', operation='test', filename='fixture.mp4', media_type='video/mp4', chunks=[video.read_bytes()])
+        audio = root/'fixture.wav'
+        subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','sine=frequency=440:duration=1',str(audio)],check=True)
+        audio_ref=artifacts.create_from_chunks(project_id='demo',operation='test',filename='fixture.wav',media_type='audio/wav',chunks=[audio.read_bytes()])
         for i in range(27):
             record = tasks.create(project_id='demo', idempotency_key=f'shot-{i:02d}/attempt-1',
                                  input_digest='sha256:test', runtime_task_id=f'private-{i}', status='succeeded' if i == 26 else 'queued',
-                                 request={'prompt':'Continuous orbit <img src=x onerror=alert(1)>', 'model':'minimax-h3-ref2va',
-                                          'duration_seconds':5,'aspect_ratio':'9:16','references':{'images':[{'artifact_id':reference.artifact_id,'purpose':'identity'}]}})
+                                 request={'prompt':'Continuous orbit <img src=x onerror=alert(1)> <Picture 1> <Video 1> <Audio 1>', 'model':'minimax-h3-ref2va',
+                                          'duration_seconds':5,'aspect_ratio':'9:16','references':{'images':[{'artifact_id':reference.artifact_id,'purpose':'identity'}], 'videos':[{'artifact_id':result.artifact_id,'purpose':'motion'}], 'audios':[{'artifact_id':audio_ref.artifact_id,'purpose':'rhythm'}]}})
             if i == 26:
                 tasks.update(record, artifact_id=result.artifact_id, media={'frame_rate':24,'width':240,'height':420})
         executor = VideoExecutor(artifacts,tasks,httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200,content=image.read_bytes()) if r.method == 'GET' else httpx.Response(200,json={'id':'test-submission'}))))
@@ -74,12 +77,13 @@ def main():
                 page = context.new_page()
                 errors=[]; page.on('pageerror',lambda error: errors.append(str(error)))
                 page.goto(f'http://127.0.0.1:{port}/video/dashboard/')
-                expect(page.locator('h1')).to_contain_text('视频业务工作台')
+                expect(page.locator('#view-tasks h1')).to_contain_text('任务')
                 page.locator('#tokenButton').click(); page.locator('#tokenInput').fill('browser-test-token'); page.locator('#tokenForm button[type=submit]').click()
                 expect(page.locator('#pageLabel')).to_contain_text('27 个任务')
                 expect(page.locator('#channelServices')).to_contain_text('h3-sol')
                 expect(page.locator('#channelServices')).to_contain_text('未部署')
                 expect(page.locator('main [data-resource=gpu]')).to_have_count(0)
+                page.locator('[data-nav=models]').click()
                 page.locator('#channelServices [data-model=h3]').click()
                 expect(page.locator('#resourceBody')).to_contain_text('h3-instance')
                 page.locator('#resourceBody [data-resource=instance]').click()
@@ -91,18 +95,40 @@ def main():
                 page.locator('#resourceCrumbs [data-resource=instance]').click()
                 expect(page.locator('#resourceBody')).to_contain_text('未上报执行实例身份')
                 page.keyboard.press('Escape')
+                page.locator('[data-nav=tasks]').click()
                 expect(page.locator('.model-card')).to_have_count(24)
                 expect(page.locator('.model-card img').first).to_be_visible(timeout=15000)
                 page.locator('#nextPage').click(); expect(page.locator('.model-card')).to_have_count(3)
                 page.locator('#prevPage').click(); expect(page.locator('.model-card')).to_have_count(24)
                 page.locator('#searchInput').fill('shot-26'); expect(page.locator('.model-card')).to_have_count(1)
                 page.locator('#btnViewTable').click(); expect(page.locator('#tableContainer')).to_be_visible()
-                page.locator('#taskRows button').click(); expect(page.locator('#inspectorBody')).to_contain_text('Continuous orbit <img')
-                page.get_by_role('button',name='加载视频回放').click()
+                page.locator('#taskRows button').click(); expect(page.locator('#taskPrompt')).to_contain_text('Continuous orbit <img')
+                assert '/dashboard/tasks/' in page.url
                 expect(page.locator('#videoArea video')).to_be_visible(); expect(page.locator('#videoArea video')).to_have_js_property('readyState', 4)
                 page.locator('#videoArea video').evaluate('(v) => v.play()'); expect(page.locator('#videoArea video')).to_have_js_property('paused', False)
                 expect(page.locator('#resultActions a')).to_have_attribute('download','fixture.mp4')
-                page.keyboard.press('Escape'); page.locator('#searchInput').fill(''); expect(page.locator('#taskRows tr')).to_have_count(24)
+                expect(page.locator('#reference-images-1 img')).to_be_visible()
+                expect(page.locator('#reference-videos-1 video')).to_be_visible()
+                expect(page.locator('#reference-audios-1 audio')).to_be_visible()
+                page.locator('#taskPrompt button').last.click()
+                expect(page.locator('#reference-audios-1')).to_have_class('reference-card audios reference-focus')
+                page.locator('#reference-images-1 button').click()
+                expect(page.locator('#imagePreview')).to_be_visible()
+                page.keyboard.press('Escape')
+                page.reload()
+                expect(page.locator('#taskPrompt')).to_contain_text('Continuous orbit <img')
+                for width in [1920,1440,800,390]:
+                    page.set_viewport_size({'width':width,'height':1000})
+                    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                    result_box=page.locator('#videoArea').bounding_box()
+                    assert abs(result_box['width']-result_box['height'])<1
+                    img_box=page.locator('#reference-images-1 .reference-preview').bounding_box()
+                    vid_box=page.locator('#reference-videos-1 .reference-preview').bounding_box()
+                    assert abs(img_box['width']-vid_box['width'])<1
+                    assert abs(img_box['height']-vid_box['height'])<1
+                page.set_viewport_size({'width':1440,'height':1000})
+
+                page.locator('#backToTasks').click(); expect(page.locator('.model-card')).to_have_count(24)
                 page.locator('#btnViewGallery').click()
                 output = Path(os.environ.get('BROWSER_OUTPUT_DIR','/tmp/video-dashboard-browser')); output.mkdir(parents=True, exist_ok=True)
                 page.evaluate('window.scrollTo({top:0,behavior:"instant"})')
@@ -139,12 +165,13 @@ def main():
                 expect(page.locator('#dispatchForm [name=duration_seconds]')).to_have_attribute('step','5')
                 page.locator('#dispatchForm [name=route]').select_option('h3')
                 page.unroute('**/api/models',models_connected)
-                page.locator('#submitTask').click(); expect(page.locator('#inspectorBody')).to_contain_text('A browser test task')
-                page.keyboard.press('Escape')
+                page.locator('#submitTask').click(); expect(page.locator('#taskPrompt')).to_contain_text('A browser test task')
+                page.locator('#backToTasks').click()
                 page.set_viewport_size({'width':390,'height':844})
                 page.evaluate('window.scrollTo({top:0,behavior:"instant"})')
                 page.screenshot(path=str(output/'mobile.png'))
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Mobile horizontal overflow'
+                page.locator('[data-nav=models]').click()
                 page.locator('#channelServices [data-model=h3]').click()
                 page.locator('#resourceBody [data-resource=instance]').click()
                 expect(page.locator('#resourceBody [data-resource=gpu]')).to_have_count(2)

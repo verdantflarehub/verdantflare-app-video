@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 env:
   SERVICE: video-mcp-server
-  VERSION: 0.6.3
+  VERSION: 0.7.0
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -28,6 +28,7 @@ jobs:
           python3 -m unittest discover -s services/${SERVICE}/tests -v
           node --check services/${SERVICE}/verdantflare_video_mcp/static/dashboard.js
           node --check services/${SERVICE}/verdantflare_video_mcp/static/resources.js
+          node --check services/${SERVICE}/verdantflare_video_mcp/static/task-detail.js
       - name: Browser integration
         env:
           PYTHONPATH: services/video-mcp-server

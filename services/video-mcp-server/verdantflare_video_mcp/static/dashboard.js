@@ -1,6 +1,7 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
-const base = location.pathname.replace(/\/dashboard\/?$/, "");
+const base = location.pathname.split("/dashboard")[0];
+const detailTaskId = location.pathname.match(/\/dashboard\/tasks\/([^/]+)$/)?.[1] || null;
 const tokenStorageKey = `verdantflare.video.dashboard.token:${base}`;
 function storeToken(value) {
   try {
@@ -20,7 +21,7 @@ const labels = {
 };
 const taskModel = (task) => task.model || "minimax-h3-ref2va";
 const taskRoute = (task) => task.route || (task.service === "h3-sol" ? "h3-sol" : task.service === "h3" ? "h3" : "历史任务");
-const taskIdentity = (task) => `<div class="task-identity"><div><span>模型服务</span><strong>${escapeHTML(taskModel(task))}</strong></div><div><span>渠道服务</span><strong>${escapeHTML(taskRoute(task))}</strong></div></div>`;
+const taskIdentity = (task) => `<div class="task-identity"><div><span>模型：</span><strong>${escapeHTML(taskModel(task))}</strong></div><div><span>渠道：</span><strong>${escapeHTML(taskRoute(task))}</strong></div></div>`;
 let token = "",
   authorized = false,
   page = 1,
@@ -76,11 +77,6 @@ function openModal(id) {
 }
 function closeModal(id) {
   $(id).hidden = true;
-  if (id === "inspectorModal") {
-    modalTask = null;
-    clearMedia();
-    $("inspectorBody").replaceChildren();
-  }
   restoreFocus?.focus();
 }
 function invalidate() {
@@ -91,8 +87,7 @@ function invalidate() {
   revision++;
   modalTask = null;
   clearMedia();
-  $("inspectorBody").replaceChildren();
-  $("inspectorModal").hidden = true;
+  clearTaskDetail();
   $("galleryContainer").replaceChildren();
   $("taskRows").replaceChildren();
   $("emptyState").hidden = false;
@@ -208,7 +203,7 @@ function render(data) {
   $("galleryContainer").innerHTML = data.tasks
     .map(
       (t) =>
-        `<article class="model-card" tabindex="0" role="button" data-task="${escapeHTML(t.video_task_id)}" aria-label="查看 ${escapeHTML(t.idempotency_key)}"><div class="card-thumb-wrap"><span>${t.status === "succeeded" ? "▶" : t.status === "running" ? "◌" : "◇"}</span><div class="card-badges">${badge(t)}</div></div><div class="card-body"><div><div class="card-title-row"><span>${escapeHTML(t.project_id)} / ${escapeHTML(t.idempotency_key)}</span><span>${elapsed(t)}</span></div>${taskIdentity(t)}<p class="card-prompt">${escapeHTML(t.prompt)}</p></div><div class="model-tags"><span>REF2VA</span><span>${escapeHTML(t.aspect_ratio)}</span><span>${escapeHTML(t.duration_seconds)}s</span><span>${t.media ? escapeHTML(t.media.frame_rate || "24") + " FPS" : "待验收"}</span></div><div class="card-footer"><span>${date(t.created_at)}</span><span class="card-footer-action">${t.status === "succeeded" ? "运镜回放" : "查看详情"} →</span></div></div></article>`,
+        `<article class="model-card" tabindex="0" role="button" data-task="${escapeHTML(t.video_task_id)}" aria-label="查看 ${escapeHTML(t.idempotency_key)}"><div class="card-thumb-wrap"><span>${t.status === "succeeded" ? "▶" : t.status === "running" ? "◌" : "◇"}</span>${taskIdentity(t)}<div class="card-badges">${badge(t)}</div><div class="card-times"><span title="开始时间">${date(t.created_at)}</span><span title="运行时间">${elapsed(t)}</span></div></div><div class="card-body"><div><div class="card-title-row"><span title="${escapeHTML(t.video_task_id)} · ${escapeHTML(t.project_id)} / ${escapeHTML(t.idempotency_key)}">${escapeHTML(t.project_id)} / ${escapeHTML(t.idempotency_key)}</span></div><p class="card-prompt">${escapeHTML(t.prompt)}</p></div><div class="card-footer"><div class="model-tags"><span>REF2VA</span><span>${escapeHTML(t.aspect_ratio)}</span><span>${escapeHTML(t.duration_seconds)}s</span>${t.media?.frame_rate ? `<span>${escapeHTML(t.media.frame_rate)} FPS</span>` : ""}</div><span class="card-footer-action">查看详情 →</span></div></div></article>`,
     )
     .join("");
   $("taskRows").innerHTML = data.tasks
@@ -240,9 +235,13 @@ async function refresh() {
   refreshBusiness();
   const version = revision;
   try {
-    const data = await api(`/api/dashboard?${query()}`);
-    if (version !== revision) return;
-    render(data);
+    if (detailTaskId) {
+      await refreshTaskDetail(decodeURIComponent(detailTaskId), version);
+    } else {
+      const data = await api(`/api/dashboard?${query()}`);
+      if (version !== revision) return;
+      render(data);
+    }
     $("pollState").textContent = "2s 自动刷新";
   } catch (error) {
     if (version === revision) {
@@ -268,89 +267,8 @@ async function mediaURL(id, taskId) {
   modalUrls.push(url);
   return url;
 }
-async function inspect(id) {
-  clearMedia();
-  modalTask = id;
-  $("inspectorBody").textContent = "正在读取任务…";
-  openModal("inspectorModal");
-  try {
-    const task = await api(`/api/tasks/${encodeURIComponent(id)}`);
-    if (modalTask !== id) return;
-    $("modalShotTitle").textContent =
-      `${task.project_id} / ${task.idempotency_key}`;
-    $("inspectorBody").innerHTML =
-      `${taskIdentity(task)}<p>${labels[task.status] || escapeHTML(task.status)} · ${date(task.created_at)}</p><p>执行渠道：<button class="button" data-resource="model" data-model="${escapeHTML(taskRoute(task))}">${escapeHTML(taskRoute(task))} →</button> · 执行实例：${task.execution_instance_id ? `<button class="button" data-resource="instance" data-model="${escapeHTML(taskRoute(task))}" data-instance="${escapeHTML(task.execution_instance_id)}">${escapeHTML(task.execution_instance_id)} →</button>` : task.status === "queued" ? "尚未分配" : "未知（未上报）"}</p><div id="videoArea"></div><div class="actions" id="resultActions"></div><p id="resultMessage" role="status"></p><h3>动态运镜 Prompt</h3><p>${escapeHTML(task.prompt)}</p><div class="reference-grid" id="referenceGrid"></div><pre>${escapeHTML(JSON.stringify({ video_task_id: task.video_task_id, seed: task.seed, duration_seconds: task.duration_seconds, aspect_ratio: task.aspect_ratio, runtime_version: task.runtime_version, input_digest: task.input_digest, media: task.media, error: task.error }, null, 2))}</pre><p>技术完成后仍需人工检查构图、连续性和动态运镜。参考素材不代表已锁定首尾帧。</p>`;
-    const loadResult = async () => {
-      $("resultMessage").textContent = "正在获取并校验视频…";
-      try {
-        const complete = task.artifact
-          ? task
-          : await api(`/api/tasks/${encodeURIComponent(id)}/result`, {
-              method: "POST",
-            });
-        if (modalTask !== id) return;
-        const url = await mediaURL(complete.artifact.artifact_id, id);
-        if (modalTask !== id) return;
-        const video = document.createElement("video");
-        video.controls = true;
-        video.preload = "metadata";
-        video.src = url;
-        $("videoArea").replaceChildren(video);
-        const link = document.createElement("a");
-        link.className = "button primary";
-        link.href = url;
-        link.download = complete.artifact.filename;
-        link.textContent = "下载视频";
-        $("resultActions").replaceChildren(link);
-        $("resultMessage").textContent =
-          `SHA-256: ${complete.artifact.sha256} · ${complete.artifact.size} bytes · 创作质量待人工审核`;
-      } catch (error) {
-        if (modalTask === id) $("resultMessage").textContent = error.message;
-      }
-    };
-    if (task.status === "succeeded") {
-      const button = document.createElement("button");
-      button.className = "button primary";
-      button.textContent = "加载视频回放";
-      button.addEventListener("click", async () => {
-        button.disabled = true;
-        await loadResult();
-        button.disabled = false;
-      });
-      $("resultActions").append(button);
-    }
-    for (const reference of task.references) {
-      if (modalTask !== id) break;
-      const box = document.createElement("div");
-      const caption = document.createElement("p");
-      caption.textContent = `${reference.kind} · ${reference.purpose}`;
-      box.append(caption);
-      $("referenceGrid").append(box);
-      if (reference.unavailable) {
-        box.append("参考素材不可用");
-        continue;
-      }
-      try {
-        const url = await mediaURL(reference.artifact_id, id);
-        if (modalTask !== id) break;
-        const element = document.createElement(
-          reference.kind === "images"
-            ? "img"
-            : reference.kind === "videos"
-              ? "video"
-              : "audio",
-        );
-        element.src = url;
-        element.alt = reference.purpose;
-        if (element.tagName !== "IMG") element.controls = true;
-        box.prepend(element);
-      } catch {
-        box.append("参考素材加载失败");
-      }
-    }
-  } catch (error) {
-    if (modalTask === id) $("inspectorBody").textContent = error.message;
-  }
+function inspect(id) {
+  location.href = `${base}/dashboard/tasks/${encodeURIComponent(id)}`;
 }
 function dispatch() {
   if (!authorized) {

@@ -107,7 +107,7 @@ async function inspectResource(kind,model='',id='',gpu='',focus=true){
 }
 document.addEventListener('click',e=>{
   const b=e.target.closest('[data-resource]');
-  if(b){if(!$("inspectorModal").hidden)closeModal('inspectorModal');inspectResource(b.dataset.resource,b.dataset.model||'',b.dataset.instance||'',b.dataset.gpu||'');}
+  if(b){inspectResource(b.dataset.resource,b.dataset.model||'',b.dataset.instance||'',b.dataset.gpu||'');}
   const w=e.target.closest('[data-resource-window]');
   if(w&&resourceSelection){resourceWindow=w.dataset.resourceWindow;inspectResource(...resourceSelection,false);}
 });
