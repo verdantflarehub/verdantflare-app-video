@@ -75,7 +75,7 @@ class Engine:
         self.runner.configure_diffusion()
         self.embeddings = {'texts_pos': [torch.load(self.root / 'pos_emb.pt', map_location='cpu', weights_only=True)],
                            'texts_neg': [torch.load(self.root / 'neg_emb.pt', map_location='cpu', weights_only=True)]}
-        self.metadata['runtime_version'] = 'video-super-resolution-api-v0.1.0'
+        self.metadata['runtime_version'] = 'video-super-resolution-api-v0.1.1'
 
     def capacity_identity(self):
         from video_sr import windowing, media, capacity
