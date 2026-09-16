@@ -2,7 +2,7 @@
 FROM docker.io/pytorch/pytorch:2.3.0-cuda12.1-cudnn8-devel
 LABEL org.opencontainers.image.source="https://github.com/verdantflarehub/verdantflare-app-video"
 LABEL org.opencontainers.image.title="VerdantFlare video-super-resolution-api"
-LABEL org.opencontainers.image.version="0.1.1"
+LABEL org.opencontainers.image.version="0.1.2"
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg git && rm -rf /var/lib/apt/lists/*
 # Conditioning tensors are supplied in the external model bundle, not the image.
 RUN git clone --filter=blob:none --no-checkout https://github.com/ByteDance-Seed/SeedVR.git /opt/seedvr \
@@ -20,6 +20,10 @@ RUN pip check
 COPY video_sr /app/video_sr
 COPY main.py engine.py seedvr_memory.py calibrate.py download_model.py backend-lock.json /app/
 ENV PYTHONPATH=/app VIDEO_UPSTREAM_ROOT=/opt/seedvr
+# Exercise the actual image's FFmpeg/FFprobe pair, including H.264 SEI side data.
+RUN ffmpeg -v error -f lavfi -i color=size=16x16:rate=24 -frames:v 6 -c:v libx264 -preset fast /tmp/media-smoke.mp4 \
+    && python -c "from video_sr.media import probe; assert probe('/tmp/media-smoke.mp4')['frames'] == 6" \
+    && rm /tmp/media-smoke.mp4
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=300s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)" || exit 1

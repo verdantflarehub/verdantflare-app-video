@@ -42,7 +42,7 @@ def _probe(path):
         raise MediaError('nonzero_stream_start_unsupported')
     (count, previous) = (0, None)
     with tempfile.TemporaryFile() as errors:
-        proc = subprocess.Popen(['ffprobe', '-v', 'error', '-protocol_whitelist', 'file,pipe', '-f', 'mov', '-select_streams', 'v:0', '-show_frames', '-show_entries', 'frame=best_effort_timestamp_time', '-of', 'compact=p=0:nk=0', str(path)], stdout=subprocess.PIPE, stderr=errors, text=True)
+        proc = subprocess.Popen(['ffprobe', '-v', 'error', '-protocol_whitelist', 'file,pipe', '-f', 'mov', '-select_streams', 'v:0', '-show_frames', '-show_entries', 'frame=best_effort_timestamp_time:side_data=', '-of', 'compact=p=0:nk=0', str(path)], stdout=subprocess.PIPE, stderr=errors, text=True)
         try:
             for line in proc.stdout:
                 fields = dict((part.split('=', 1) for part in line.strip().split('|') if '=' in part))

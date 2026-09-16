@@ -16,7 +16,7 @@ concurrency:
 
 env:
   SERVICE: video-frame-interpolation-api
-  VERSION: 0.1.1
+  VERSION: 0.1.2
 
 jobs:
   check:

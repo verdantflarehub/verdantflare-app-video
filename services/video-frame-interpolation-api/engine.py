@@ -27,7 +27,7 @@ class Engine:
         state = {k.removeprefix('module.'): v for k, v in state.items()}
         self.model.load_state_dict(state, strict=True)
         self.model.requires_grad_(False)
-        self.metadata['runtime_version'] = 'video-frame-interpolation-api-v0.1.1'
+        self.metadata['runtime_version'] = 'video-frame-interpolation-api-v0.1.2'
 
     def midpoint(self, left, right):
         torch = self.torch
