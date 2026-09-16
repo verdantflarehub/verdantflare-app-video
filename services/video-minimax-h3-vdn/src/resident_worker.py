@@ -99,7 +99,8 @@ class Engine:
             torch.cuda.synchronize(index)
         if transformer._vdn_layout_calls != args.steps or transformer._vdn_linear_calls < args.steps*self.hybrid_blocks:
             raise RuntimeError('VDN branch execution was not verified')
-        return {'precision': self.precision, 'fp8_linear_count': self.fp8_linear_count,
+        return {'encoder_profile': self.pipeline.text_encoder._vdn_encoder_profile,
+                'precision': self.precision, 'fp8_linear_count': self.fp8_linear_count,
                 'vdn_softmax_backend': self.softmax_backend, 'peak_allocated_bytes': [torch.cuda.max_memory_allocated(i) for i in range(2)],
                 'peak_reserved_bytes': [torch.cuda.max_memory_reserved(i) for i in range(2)],
                 'vdn_layout_calls':transformer._vdn_layout_calls, 'vdn_linear_calls':transformer._vdn_linear_calls,
@@ -193,7 +194,8 @@ def main():
         started = time.monotonic()
         engine = Engine(models)
         state.update(ready=True, stage='ready', model_load_count=1, load_seconds=time.monotonic()-started,
-                     precision=engine.precision, fp8_linear_count=engine.fp8_linear_count)
+                     precision=engine.precision, fp8_linear_count=engine.fp8_linear_count,
+                     encoder_profile=engine.pipeline.text_encoder._vdn_encoder_profile)
         print(json.dumps(state.snapshot()), flush=True)
         while not stop.is_set():
             task = store.take()

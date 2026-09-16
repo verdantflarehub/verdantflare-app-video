@@ -146,3 +146,7 @@ python src/resident_worker.py
 替换示例中的 Artifact ID、哈希和大小。支持图片、视频、音频参考；至少包含一张图片或一段视频，最多 9 张图片、3 段视频、3 段音频，总计不超过 12 个。时长档 5/10/15 秒对应 124/243/345 帧，实际时长写入结果。画布为 768×1344，24 FPS。
 
 每个任务目录只由一个常驻进程使用；重启后未完成任务标记失败，原幂等键不会重新生成。
+
+## v0.3.9 encoder runtime settings
+
+The resident service assigns Qwen3-VL conditioning to `cuda:1` and keeps DiT and video/audio VAE execution on `cuda:0`. CPU weight offload remains required. `VDN_ENCODER_DEVICE` defaults to `cuda:1` (also accepts `cuda:0`); `VDN_ENCODER_MLP_CHUNK` defaults to 512 tokens (range 1–4096). Token chunking applies only to text-layer MLPs, not attention or reference sampling. Encoder offload is synchronous. Health and output provenance include `encoder_profile`. No automatic generation retry is added. GPU capacity and latency for a given multimodal input require runtime validation.

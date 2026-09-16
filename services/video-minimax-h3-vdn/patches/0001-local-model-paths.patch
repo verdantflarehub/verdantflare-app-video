@@ -1,11 +1,13 @@
 --- a/infer_diffusers.py
 +++ b/infer_diffusers.py
-@@ -44,22 +44,24 @@
+@@ -43,23 +43,25 @@
+     only hook those fire. With `dit` the transformer streams in by block, and otherwise
      it stays on the GPU. It offloads whole or by block, never by leaf: its fused kernels
      read a child's weights without calling the child, so a leaf's hook never fires."""
-     apply_group_offloading(pipe.text_encoder, onload_device=device, offload_device="cpu",
+-    apply_group_offloading(pipe.text_encoder, onload_device=device, offload_device="cpu",
 -                           offload_type="leaf_level", use_stream=True)
-+                           offload_type="leaf_level", use_stream=True, low_cpu_mem_usage=True)
++    from vdn_encoder import configure_encoder
++    configure_encoder(pipe, device)
      _, vae = cpu_offload_with_hook(pipe.vae, execution_device=device)
 -    cpu_offload_with_hook(pipe.audio_vae, execution_device=device, prev_module_hook=vae)
 +    _, audio_vae = cpu_offload_with_hook(pipe.audio_vae, execution_device=device, prev_module_hook=vae)
