@@ -1,0 +1,25 @@
+{
+  "backend": "seedvr2",
+  "repository": "https://github.com/ByteDance-Seed/SeedVR",
+  "code_revision": "e4de8c24441a67e1b7df56abea10645059bb1185",
+  "weight_files": [
+    "seedvr2_ema_3b.pth",
+    "ema_vae.pth",
+    "pos_emb.pt",
+    "neg_emb.pt"
+  ],
+  "weights_repository": "ByteDance-Seed/SeedVR2-3B",
+  "weights_revision": "37255ff8cccfb01071b87f635a5948ca8d53117c",
+  "weight_sha256": {
+    "ema_vae.pth": "c7df8a67e68b7f9aca3d5d2153d2ce8ab4373687741a0f9ce87cb356ace51cac",
+    "neg_emb.pt": "6a43e5800ef2354f1c156d27535834da055cbec8248298b8923492bba2076581",
+    "pos_emb.pt": "fa07a14844314772266b66c3b95deb0027696d8fe7065721263db5176f45d799",
+    "seedvr2_ema_3b.pth": "6bcc5ac59447e97b100477480aebb01be2ec724c8340bb83faae21f64848604b"
+  },
+  "weight_size_bytes": {
+    "ema_vae.pth": 1002691902,
+    "neg_emb.pt": 656540,
+    "pos_emb.pt": 595100,
+    "seedvr2_ema_3b.pth": 13566090228
+  }
+}

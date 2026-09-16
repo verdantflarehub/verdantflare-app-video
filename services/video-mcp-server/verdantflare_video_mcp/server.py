@@ -55,6 +55,67 @@ def video_depth_preview(video_task_id: str) -> types.CallToolResult:
     return _result(executor.depth.public_result(executor.depth.result(video_task_id), preview=True))
 
 
+
+@mcp.tool(name="video.sr.generate")
+def video_sr_generate(project_id: str, idempotency_key: str, source_artifact_id: str,
+                      target_width: int, target_height: int, quality_mode: str = "standard",
+                      backend: str = "seedvr2", seed: int = 666) -> types.CallToolResult:
+    """Restore a project video with SeedVR2; preserve CFR timing and aspect ratio."""
+    adapter = executor.processing["sr"]
+    record = adapter.generate(project_id=project_id, idempotency_key=idempotency_key,
+        source_artifact_id=source_artifact_id, target_width=target_width, target_height=target_height,
+        quality_mode=quality_mode, backend=backend, seed=seed)
+    return _result(adapter.public_status(record))
+
+
+@mcp.tool(name="video.interpolate.generate")
+def video_interpolate_generate(project_id: str, idempotency_key: str, source_artifact_id: str,
+                               target_fps_num: int = 48, target_fps_den: int = 1,
+                               backend: str = "rife") -> types.CallToolResult:
+    """Double a project video's CFR frame rate with RIFE, preserving duration and dimensions."""
+    adapter = executor.processing["interpolate"]
+    record = adapter.generate(project_id=project_id, idempotency_key=idempotency_key,
+        source_artifact_id=source_artifact_id, target_fps_num=target_fps_num,
+        target_fps_den=target_fps_den, backend=backend)
+    return _result(adapter.public_status(record))
+
+
+@mcp.tool(name="video.sr.status")
+def video_sr_status(video_task_id: str) -> types.CallToolResult:
+    adapter = executor.processing["sr"]
+    return _result(adapter.public_status(adapter.status(video_task_id)))
+
+
+@mcp.tool(name="video.sr.result")
+def video_sr_result(video_task_id: str) -> types.CallToolResult:
+    adapter = executor.processing["sr"]
+    return _result(adapter.public_result(adapter.result(video_task_id)))
+
+
+@mcp.tool(name="video.sr.preview")
+def video_sr_preview(video_task_id: str) -> types.CallToolResult:
+    adapter = executor.processing["sr"]
+    return _result(adapter.public_result(adapter.result(video_task_id), preview=True))
+
+
+@mcp.tool(name="video.interpolate.status")
+def video_interpolate_status(video_task_id: str) -> types.CallToolResult:
+    adapter = executor.processing["interpolate"]
+    return _result(adapter.public_status(adapter.status(video_task_id)))
+
+
+@mcp.tool(name="video.interpolate.result")
+def video_interpolate_result(video_task_id: str) -> types.CallToolResult:
+    adapter = executor.processing["interpolate"]
+    return _result(adapter.public_result(adapter.result(video_task_id)))
+
+
+@mcp.tool(name="video.interpolate.preview")
+def video_interpolate_preview(video_task_id: str) -> types.CallToolResult:
+    adapter = executor.processing["interpolate"]
+    return _result(adapter.public_result(adapter.result(video_task_id), preview=True))
+
+
 def _result(value: dict[str, object]) -> types.CallToolResult:
     return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(value, ensure_ascii=False))], structuredContent=value)
 
@@ -95,6 +156,8 @@ def video_status(video_task_id: str) -> types.CallToolResult:
 @mcp.tool(name="video.result")
 def video_result(video_task_id: str) -> types.CallToolResult:
     record = executor.result(video_task_id)
+    if record.service in executor.processing:
+        return _result(executor.processing[record.service].public_result(record))
     if record.service == "depth":
         return _result(executor.depth.public_result(record))
     artifact = artifacts.get(record.artifact_id, record.project_id)

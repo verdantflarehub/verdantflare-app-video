@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+tests/
+*.mp4
+*.pth
+*.pkl
+*.pt
+.venv/

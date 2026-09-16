@@ -1,0 +1,16 @@
+{
+  "backend": "rife",
+  "repository": "https://github.com/hzwer/ECCV2022-RIFE",
+  "code_revision": "5d8adbdd40e12c2c8f91930eff838aebe561c086",
+  "weight_files": [
+    "flownet.pkl"
+  ],
+  "weights_source": "https://drive.google.com/file/d/1h42aGYPNJn2q8j_GVkS_yDu__G_UZ2GX/view",
+  "weights_revision": "sha256:620aad3e86f51bfb04b81d71a1246a08932366f8b03a1df254824b33cf3fbfba",
+  "weight_sha256": {
+    "flownet.pkl": "2b48d6f7c7c09c109ad50372e9d9dc722a75859dc20e8832a62826ecede35ad3"
+  },
+  "weight_size_bytes": {
+    "flownet.pkl": 42901317
+  }
+}

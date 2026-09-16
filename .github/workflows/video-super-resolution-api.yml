@@ -1,58 +1,42 @@
-name: Video MCP Server
+name: Video Super Resolution API
 
 on:
   push:
     branches: [release]
     paths:
-      - services/video-mcp-server/**
-      - .github/workflows/video-mcp-server.yml
+      - services/video-super-resolution-api/**
+      - .github/workflows/video-super-resolution-api.yml
+
 permissions:
   contents: read
+
 concurrency:
-  group: video-mcp-server-release
+  group: video-super-resolution-api-release
   cancel-in-progress: false
+
 env:
-  SERVICE: video-mcp-server
-  VERSION: 0.9.0
+  SERVICE: video-super-resolution-api
+  VERSION: 0.1.0
+
 jobs:
   check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run unit tests
-        env:
-          PYTHONDONTWRITEBYTECODE: "1"
-          PYTHONPATH: services/video-mcp-server
-        run: |
-          python3 -m pip install -r services/${SERVICE}/requirements.txt
-          python3 -m unittest discover -s services/${SERVICE}/tests -v
-          node --check services/${SERVICE}/verdantflare_video_mcp/static/dashboard.js
-          node --check services/${SERVICE}/verdantflare_video_mcp/static/resources.js
-          node --check services/${SERVICE}/verdantflare_video_mcp/static/task-detail.js
-      - name: Browser integration
-        env:
-          PYTHONPATH: services/video-mcp-server
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-          python3 -m pip install playwright==1.62.0
-          python3 -m playwright install --with-deps chromium
-          python3 services/${SERVICE}/tests/browser_dashboard.py
-  processing-check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: python -m pip install -r services/video-super-resolution-api/requirements-test.txt
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: python -m pip install -r services/video-mcp-server/requirements.txt
       - run: PYTHONPATH=services/video-super-resolution-api:services/video-frame-interpolation-api:services/video-mcp-server python -m unittest discover -s services/video-mcp-server/integration -v
+      - run: python -m pip install torch==2.3.0 --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pip install rotary-embedding-torch==0.5.3 einops==0.7.0
+      - run: PYTHONPATH=services/video-super-resolution-api python -m unittest discover -s services/video-super-resolution-api/tests -v
+      - run: python -m compileall -q services/${SERVICE}
   build:
-    needs: [check, processing-check]
+    needs: check
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -60,9 +44,7 @@ jobs:
         env:
           REGISTRY_ENDPOINT: ${{ secrets.REGISTRY_ENDPOINT_ALIYUN }}
         run: |
-          set -euo pipefail
           registry_endpoint="${REGISTRY_ENDPOINT%/}"
-          test -n "${registry_endpoint}"
           echo "registry_endpoint=${registry_endpoint}" >> "$GITHUB_OUTPUT"
           echo "name=${registry_endpoint}/wod/verdantflare-app" >> "$GITHUB_OUTPUT"
           echo "version=${SERVICE}-v${VERSION}" >> "$GITHUB_OUTPUT"
@@ -82,10 +64,9 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: services/${{ env.SERVICE }}
+          file: services/${{ env.SERVICE }}/Dockerfile
           push: true
           platforms: linux/amd64
           provenance: false
           sbom: false
           tags: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}
-
-# Registered on video repository default branch

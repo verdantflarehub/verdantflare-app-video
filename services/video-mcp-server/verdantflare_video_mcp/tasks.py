@@ -87,8 +87,8 @@ class TaskStore:
                 raise TaskConflict("idempotency key already exists with different input")
             return existing
         now = datetime.now(UTC).isoformat()
-        if request.get("service") == "depth":
-            service = "depth"
+        if request.get("service") in {"depth", "sr", "interpolate"}:
+            service = str(request["service"])
         elif request.get("service") == "h3-sol":
             service = "h3-sol"
         else:
