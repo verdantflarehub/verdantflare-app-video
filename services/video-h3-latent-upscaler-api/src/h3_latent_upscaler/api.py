@@ -101,7 +101,7 @@ def create_app(queue, sources, engine_factory, token):
             if not state['ready']:
                 raise HTTPException(503, 'not_ready')
             resources = sources.resolve(payload['project_id'], payload['source_video_task_id'])
-            state['engine'].validate_request(resources['manifest'], payload)
+            state['engine'].validate_request(resources, payload)
             return queue.submit(payload)
         except (ValueError, ResourceError, QueueError) as exc:
             code = str(exc)

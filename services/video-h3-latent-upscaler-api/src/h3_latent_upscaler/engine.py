@@ -1,6 +1,7 @@
 """GPU-resident H3 latent enlargement and optional explicit H3 resampling."""
 import gc
 import json
+import re
 import time
 from pathlib import Path
 import torch
@@ -53,6 +54,8 @@ class Engine:
             raise ResourceError('unsupported_profile')
         if self.profile.get('backend_lock_sha256') != sha256(Path(lock_path)):
             raise ResourceError('capacity_profile_mismatch')
+        if not re.fullmatch(r'[0-9a-f]{64}', self.profile.get('source_manifest_sha256', '')):
+            raise ResourceError('capacity_profile_mismatch')
         self.weights = {}
         needed = ['upscaler', 'video_vae'] + (['refiner'] if self.profile['mode'] == 'latent_refine' else [])
         for name in needed:
@@ -63,8 +66,13 @@ class Engine:
             self.weights[name] = path
         configure_comfy()
 
-    def validate_request(self, manifest, request):
+    def validate_request(self, resources, request):
         p = self.profile
+        # Initial profiles cover the exact calibrated source, including all
+        # conditioning hashes. Equal frame dimensions alone prove no capacity.
+        if resources.get('manifest_sha256') != p['source_manifest_sha256']:
+            raise ResourceError('capacity_profile_mismatch')
+        manifest = resources['manifest']
         if 'seed' in request and (type(request['seed']) is not int or not 0 <= request['seed'] <= 4294967295):
             raise ResourceError('invalid_seed')
         if request.get('profile_id', p['id']) != p['id']:
@@ -87,7 +95,7 @@ class Engine:
         from .media import finish_video
         import comfy.sd
         import comfy.utils
-        width, height = self.validate_request(resources['manifest'], request)
+        width, height = self.validate_request(resources, request)
         directory = Path(directory)
         video, audio = load_av(resources)
         started = time.monotonic()
