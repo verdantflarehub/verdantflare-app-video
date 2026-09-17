@@ -48,7 +48,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: python -m pip install --upgrade pip==25.3
       - run: python -m pip install --group services/video-super-resolution-api/pyproject.toml:test
-      - run: python -m pip install ./services/video-mcp-server
+      - run: python -m pip install --group services/video-mcp-server/pyproject.toml:processing
       - run: python -m pip check
       - run: PYTHONPATH=services/video-super-resolution-api:services/video-frame-interpolation-api:services/video-mcp-server python -m unittest discover -s services/video-mcp-server/integration -v
   build:

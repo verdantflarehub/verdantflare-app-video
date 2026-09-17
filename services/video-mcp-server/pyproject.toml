@@ -21,3 +21,7 @@ py-modules = []
 
 [project.optional-dependencies]
 browser = ["playwright==1.62.0"]
+
+[dependency-groups]
+# Processing integration uses the Runtime FastAPI stack, not the MCP web server.
+processing = ["boto3==1.40.76"]
