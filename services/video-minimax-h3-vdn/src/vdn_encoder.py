@@ -5,8 +5,85 @@ on GPU0. CPU offload is still required: Qwen weights do not fit on either card.
 """
 import functools
 import inspect
+import json
+import time
 import os
 import types
+
+
+def chunked_rmsnorm(original, x, chunk_size):
+    """Q/K are [batch, tokens, heads, head_dim]; normalize the same last axis."""
+    import torch
+    if x.ndim != 4:
+        raise RuntimeError('unsupported Qwen Q/K norm layout')
+    if x.shape[1] <= chunk_size:
+        return original(x)
+    first = original(x[:, :chunk_size])
+    output = torch.empty_like(x, dtype=first.dtype)
+    output[:, :chunk_size] = first
+    del first
+    for start in range(chunk_size, x.shape[1], chunk_size):
+        output[:, start:start + chunk_size] = original(x[:, start:start + chunk_size])
+    return output
+
+
+def install_qk_norm_chunking(encoder, chunk_size):
+    from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLTextAttention, Qwen3VLTextRMSNorm
+    attention = [m for m in encoder.modules() if type(m) is Qwen3VLTextAttention]
+    if len(attention) != encoder.config.text_config.num_hidden_layers:
+        raise RuntimeError('unsupported Qwen attention layout')
+    for layer in attention:
+        for module in (layer.q_norm, layer.k_norm):
+            if type(module) is not Qwen3VLTextRMSNorm or hasattr(module, '_vdn_original_forward'):
+                raise RuntimeError('unsupported or already patched Qwen Q/K norm')
+            module._vdn_original_forward = module.forward
+            def forward(self, x):
+                return chunked_rmsnorm(self._vdn_original_forward, x, chunk_size)
+            module.forward = types.MethodType(forward, module)
+    return len(attention) * 2
+
+
+def selected_qwen_prompt_embeds(text_encoder, processor, token_ids, vision_inputs=None,
+                               text_encoder_layer=50, device=None, dtype=None):
+    """Match pinned Diffusers embeddings without retaining every decoder state.
+
+    Transformers 5.15.0 captures decoder outputs before DeepStack injection and
+    replaces only the final collected state with post-norm output. Keep exactly
+    that intermediate output; run the full model, with cache/collection disabled.
+    """
+    import torch
+    from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLTextModel
+    language = text_encoder.model.language_model
+    count = text_encoder.config.text_config.num_hidden_layers
+    if type(language) is not Qwen3VLTextModel or len(language.layers) != count:
+        raise RuntimeError('unsupported Qwen text model layout')
+    if type(text_encoder_layer) is not int or not 0 <= text_encoder_layer < count:
+        raise ValueError('conditioning layer must precede final post-norm state')
+    input_ids = torch.tensor([token_ids], dtype=torch.long, device=device)
+    mm_ids = torch.tensor(processor.create_mm_token_type_ids([token_ids]), dtype=torch.long, device=device)
+    vision = {name: value.to(device, text_encoder.dtype) if name.startswith('pixel_') else value.to(device)
+              for name, value in (vision_inputs or {}).items()}
+    captured = []
+    def capture(module, args, output):
+        value = args[0] if text_encoder_layer == 0 else output
+        if not isinstance(value, torch.Tensor) or captured:
+            raise RuntimeError('unexpected Qwen hidden-state capture')
+        captured.append(value)
+    hook = language.layers[max(0, text_encoder_layer - 1)].register_forward_hook(capture)
+    try:
+        offload_hook = getattr(text_encoder, '_hf_hook', None)
+        if offload_hook is not None and hasattr(offload_hook, 'pre_forward'):
+            offload_hook.pre_forward(text_encoder)
+        outputs = text_encoder.model(input_ids=input_ids, attention_mask=torch.ones_like(input_ids),
+                                     mm_token_type_ids=mm_ids, use_cache=False,
+                                     output_hidden_states=False, **vision)
+        del outputs
+        if len(captured) != 1:
+            raise RuntimeError('Qwen conditioning state was not captured')
+        return captured[0].to(device=device, dtype=dtype)
+    finally:
+        hook.remove()
+        captured.clear()
 
 
 def encoder_config():
@@ -70,9 +147,15 @@ def install_device_boundary():
         target = encoder._vdn_generation_device
         bound.arguments['device'] = torch.device(device)
         # Also set the current CUDA device for helpers allocating without a device.
+        started = time.monotonic()
+        print(json.dumps({"stage": "reference_encoding", "state": "started",
+                          "tokens": len(bound.arguments["token_ids"])}), flush=True)
         with torch.cuda.device(device):
-            result = original(*bound.args, **bound.kwargs)
-        return result.to(device=target)
+            result = selected_qwen_prompt_embeds(*bound.args, **bound.kwargs)
+        result = result.to(device=target)
+        print(json.dumps({"stage": "reference_encoding", "state": "completed",
+                          "seconds": time.monotonic() - started}), flush=True)
+        return result
 
     encode._vdn_device_boundary = True
     # ModularPipeline otherwise infers its device from the first offload group,
@@ -93,6 +176,7 @@ def configure_encoder(pipe, generation_device):
     device, chunk = encoder_config()
     encoder = pipe.text_encoder
     count = install_chunking(encoder, chunk)
+    norm_count = install_qk_norm_chunking(encoder, chunk)
     encoder._vdn_encoder_device = device
     encoder._vdn_generation_device = str(generation_device)
     install_device_boundary()
@@ -100,4 +184,6 @@ def configure_encoder(pipe, generation_device):
     apply_group_offloading(encoder, onload_device=device, offload_device='cpu',
                            offload_type='leaf_level', use_stream=False)
     encoder._vdn_encoder_profile = dict(device=device, generation_device=str(generation_device),
-                                       mlp_chunk_tokens=chunk, mlp_layers=count, use_stream=False)
+                                       mlp_chunk_tokens=chunk, mlp_layers=count, use_stream=False,
+                                       qk_norm_chunk_tokens=chunk, qk_norm_modules=norm_count,
+                                       hidden_states='selected_intermediate_only')

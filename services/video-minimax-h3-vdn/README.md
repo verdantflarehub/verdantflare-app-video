@@ -147,6 +147,6 @@ python src/resident_worker.py
 
 每个任务目录只由一个常驻进程使用；重启后未完成任务标记失败，原幂等键不会重新生成。
 
-## v0.3.9 encoder runtime settings
+## v0.3.10 encoder runtime settings
 
-The resident service assigns Qwen3-VL conditioning to `cuda:1` and keeps DiT and video/audio VAE execution on `cuda:0`. CPU weight offload remains required. `VDN_ENCODER_DEVICE` defaults to `cuda:1` (also accepts `cuda:0`); `VDN_ENCODER_MLP_CHUNK` defaults to 512 tokens (range 1–4096). Token chunking applies only to text-layer MLPs, not attention or reference sampling. Encoder offload is synchronous. Health and output provenance include `encoder_profile`. No automatic generation retry is added. GPU capacity and latency for a given multimodal input require runtime validation.
+The resident service assigns Qwen3-VL conditioning to `cuda:1` and keeps DiT and video/audio VAE execution on `cuda:0`. CPU weight offload remains required. `VDN_ENCODER_DEVICE` defaults to `cuda:1` (also accepts `cuda:0`); `VDN_ENCODER_MLP_CHUNK` defaults to 512 tokens (range 1–4096). The same token chunk size bounds text-layer MLPs and Q/K RMSNorm temporaries. RMSNorm keeps its original FP32 variance computation; attention context and reference sampling are unchanged. Conditioning captures only the requested intermediate hidden state while executing the full decoder; it does not retain all layer outputs or substitute the final post-norm state. Encoder offload is synchronous. Health and output provenance include `encoder_profile`. No automatic generation retry is added. GPU capacity and latency for a given multimodal input require runtime validation.
