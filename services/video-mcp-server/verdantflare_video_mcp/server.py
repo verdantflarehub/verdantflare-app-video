@@ -52,6 +52,7 @@ def _latent_errors(function):
                 messages = {
                     'source_not_found': 'The source is unavailable in the authorized scope.',
                     'archive_unavailable': 'Result archival is unavailable; no processing task was submitted.',
+                    'runtime_not_ready': 'The post-processing runtime is not ready; no processing task was submitted.',
                     'source_not_ready': 'The source task has not completed successfully.',
                     'unsupported_source_route': 'The source route does not support latent post-processing.',
                     'missing_latent_bundle': 'The source has no retained latent bundle; MP4-only tasks cannot be processed.',
@@ -62,7 +63,7 @@ def _latent_errors(function):
                 }
                 if code in messages:
                     message = messages[code]
-                    retryable = code == 'archive_unavailable'
+                    retryable = code in {'archive_unavailable', 'runtime_not_ready'}
                 else:
                     code, message = 'postprocessing_unavailable', 'Post-processing is unavailable; retain the task ID and retry the query.'
                     retryable = True

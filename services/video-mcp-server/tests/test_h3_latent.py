@@ -31,6 +31,8 @@ class H3LatentTests(unittest.TestCase):
         self.bundle = {'schema': 'h3-latent-bundle/v1', 'source_video_task_id': self.source.video_task_id,
                        'node': 'node-a', 'manifest_path': 'h3-vdn/tasks/source/manifest.json', 'manifest_sha256': 'a' * 64}
         def handler(request):
+            if request.method == 'GET' and request.url.path == '/health':
+                return httpx.Response(200, json={'ready': True, 'gpu_count': 1, 'cpu_offload': False, 'profile_id': 'validated-test'})
             if request.method == 'GET' and request.url.host == 'vdn':
                 return httpx.Response(200, json={'id': self.source.runtime_task_id, 'status': 'completed',
                                                 'result': {'latent_bundle': self.bundle}})
@@ -134,3 +136,24 @@ class H3LatentTests(unittest.TestCase):
         self.assertEqual(len(list(self.executor.artifacts.artifacts_root.glob('art_*'))), 2)
         public = restarted.processing['h3-latent-upscale'].public_result(completed)
         self.assertEqual(public['download_url'], 'https://archive.invalid/content')
+
+    def test_runtime_not_ready_does_not_create_a_phantom_task(self):
+        for state in (None, {'ready': False}, {'ready': True, 'gpu_count': 2, 'cpu_offload': False, 'profile_id': 'test'},
+                      {'ready': True, 'gpu_count': 1, 'cpu_offload': True, 'profile_id': 'test'}):
+            with self.subTest(state=state):
+                def health(request):
+                    if state is None:
+                        raise httpx.ConnectError('internal host unavailable')
+                    return httpx.Response(200, json=state)
+                self.adapter.client = httpx.Client(transport=httpx.MockTransport(health))
+                with patch.object(self.adapter, 'register_source', return_value='a' * 64):
+                    with self.assertRaisesRegex(ExecutionError, 'runtime_not_ready'):
+                        self.adapter.generate(self.source.video_task_id)
+                self.assertEqual(len(list(self.tasks.root.glob('video_task_*.json'))), 1)
+                self.assertFalse(self.posts)
+
+    def test_existing_task_deduplication_does_not_depend_on_readiness(self):
+        record = self.adapter.generate(self.source.video_task_id)
+        self.adapter.client = httpx.Client(transport=httpx.MockTransport(lambda request: self.fail('must not query readiness for existing task')))
+        repeated = self.adapter.generate(self.source.video_task_id)
+        self.assertEqual(record.video_task_id, repeated.video_task_id)

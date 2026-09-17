@@ -116,6 +116,19 @@ class H3LatentExecutor:
             self.archive().preflight()
         except ArchiveError as exc:
             raise ExecutionError('archive_unavailable: result archival must be ready before processing') from exc
+        # Reject known unavailability before creating a queued task. Once a POST
+        # is attempted, keep the existing ambiguous-submission recovery rules.
+        try:
+            response = self.client.get(self.url + '/health', headers=self.headers, timeout=5)
+            response.raise_for_status()
+            ready = response.json()
+            if (not isinstance(ready, dict) or ready.get('ready') is not True
+                    or type(ready.get('gpu_count')) is not int or ready['gpu_count'] != 1
+                    or ready.get('cpu_offload') is not False
+                    or not isinstance(ready.get('profile_id'), str) or not ready['profile_id']):
+                raise ValueError('runtime_not_ready')
+        except (httpx.HTTPError, ValueError, TypeError) as exc:
+            raise ExecutionError('runtime_not_ready: no processing task was submitted') from exc
         record = self.tasks.create(project_id=source.project_id, idempotency_key=key, input_digest=digest,
                                    request=request, runtime_task_id=None, status='queued',
                                    error={'code': 'submission_unconfirmed', 'message': 'Submission is pending confirmation'})
