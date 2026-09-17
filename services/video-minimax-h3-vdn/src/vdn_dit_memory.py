@@ -7,6 +7,29 @@ projection so FP8 row scales and the output-channel reduction remain unchanged.
 import types
 
 
+def projection_shape(module):
+    weight = getattr(module, 'weight_fp8', None)
+    if weight is None:
+        weight = getattr(module, 'weight', None)
+    if weight is None or weight.ndim != 2:
+        raise RuntimeError('unsupported DiT projection weights')
+    return tuple(weight.shape)
+
+
+def validate_geometry(module):
+    """H3 trunk width (5376) and QKV width (56*128=7168) are independent."""
+    qkv_width = module.num_heads * module.head_dim
+    width = projection_shape(module.orig.to_q)[1]
+    if any(projection_shape(p) != (qkv_width, width)
+           for p in (module.orig.to_q, module.orig.to_k, module.orig.to_v)):
+        raise RuntimeError('unsupported DiT QKV projection geometry')
+    if (projection_shape(module.orig.to_out[0]) != (width, qkv_width)
+            or module.linear_attention.num_heads != module.num_heads
+            or module.linear_attention.head_dim != module.head_dim
+            or projection_shape(module.to_out_linear) != (width, qkv_width)):
+        raise RuntimeError('unsupported DiT branch projection geometry')
+
+
 def sliced_projection(upstream, module, x, channels, quantized=None):
     import torch
     if isinstance(module, upstream.Fp8Linear):
@@ -65,8 +88,8 @@ def grouped_attention(upstream, self, x, rotary_emb, head_group, token_group):
     linear = not full and self.linear_attention_enabled
     n, width = x.shape
     heads, dim = self.num_heads, self.head_dim
-    if heads*dim != width or self.linear_attention.head_dim != dim:
-        raise RuntimeError('unsupported DiT head geometry')
+    if projection_shape(self.orig.to_q) != (heads*dim, width) or self.linear_attention.head_dim != dim:
+        raise RuntimeError('unsupported DiT projection geometry')
     soft_bank = torch.empty((n, heads, dim), dtype=x.dtype, device='cpu')
     linear_bank = None
     if linear:
@@ -177,6 +200,7 @@ def install_dit_memory(upstream, transformer, head_group=4, token_group=512):
     if not hybrids:
         raise RuntimeError('no DiT hybrid attention modules')
     for module in hybrids:
+        validate_geometry(module)
         if hasattr(module, '_vdn_grouped'):
             raise RuntimeError('DiT memory profile already installed')
         conv = module.linear_attention.short_conv

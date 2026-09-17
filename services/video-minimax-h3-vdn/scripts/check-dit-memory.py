@@ -22,14 +22,14 @@ with torch.inference_mode():
     # Six heads in groups of four and 65-token chunks exercise both remainders.
     for fp8 in (False,True):
         for anchors,conv,text,full in [('none',(),False,False),('both',('k','v'),True,False),('rows',('k','v'),True,False),('columns',(),False,False),('none',(),False,True)]:
-            orig=MiniMaxH3Attention(768,6,128)
-            a=u.HybridAttention(orig,768,delta_rule='vdn_solve',radius=1,chunk=3,
+            orig=MiniMaxH3Attention(576,6,128)
+            a=u.HybridAttention(orig,576,delta_rule='vdn_solve',radius=1,chunk=3,
                  short_conv=conv,enable_text_state=text,anchor_frames=anchors,softmax_impl='decomposed')
             a=a.to('cuda:0',torch.bfloat16).eval();a.inference_mode=a.hybrid_inference_mode=True
             if fp8:u.convert_linear_to_fp8(a,skip_end_blocks=0,min_width=256)
             layout=u.SequenceLayout(seq_len=32+8*16,video_start=32,num_frames=8,tokens_per_frame=16,frame_height=4,frame_width=4,text_len=7)
             a.layout=None if full else layout
-            x=torch.randn(layout.seq_len,768,device='cuda:0',dtype=torch.bfloat16)*0.4
+            x=torch.randn(layout.seq_len,576,device='cuda:0',dtype=torch.bfloat16)*0.4
             angles=torch.randn(layout.seq_len,128,device='cuda:0',dtype=torch.float32)
             rope=(angles.cos(),angles.sin())
             expected=a._hybrid_forward(x,rope)
@@ -39,8 +39,8 @@ with torch.inference_mode():
     class Trunk(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            b=MiniMaxH3TransformerBlock(768,6,128,1536,768,1e-5,1e-5)
-            b.attn=u.HybridAttention(b.attn,768,delta_rule='vdn_solve',radius=1,chunk=3,
+            b=MiniMaxH3TransformerBlock(576,6,128,1536,288,1e-5,1e-5)
+            b.attn=u.HybridAttention(b.attn,576,delta_rule='vdn_solve',radius=1,chunk=3,
                     short_conv=('k','v'),enable_text_state=True,anchor_frames='both',softmax_impl='decomposed')
             b.attn.layout=layout
             self.transformer_blocks=torch.nn.ModuleList([b])
@@ -48,8 +48,8 @@ with torch.inference_mode():
             return self.transformer_blocks[0](x,t,indices,rope)
     model=Trunk().to('cuda:0',torch.bfloat16).eval();u.set_inference_mode(model,True)
     u.convert_linear_to_fp8(model,skip_end_blocks=0,min_width=256)
-    x=torch.randn(1,layout.seq_len,768,device='cuda:0',dtype=torch.bfloat16)*0.4
-    t=torch.randn(3,768,device='cuda:0',dtype=torch.bfloat16)*0.1
+    x=torch.randn(1,layout.seq_len,576,device='cuda:0',dtype=torch.bfloat16)*0.4
+    t=torch.randn(3,288,device='cuda:0',dtype=torch.bfloat16)*0.1
     indices=torch.arange(layout.seq_len,device='cuda:0')%3
     preserved=x.clone()
     expected=model(x,t,indices,rope)

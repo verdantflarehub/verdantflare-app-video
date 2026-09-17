@@ -151,8 +151,10 @@ python src/resident_worker.py
 
 The resident service assigns Qwen3-VL conditioning to `cuda:1` and keeps DiT and video/audio VAE execution on `cuda:0`. CPU weight offload remains required. `VDN_ENCODER_DEVICE` defaults to `cuda:1` (also accepts `cuda:0`); `VDN_ENCODER_MLP_CHUNK` defaults to 512 tokens (range 1–4096). The same token chunk size bounds text-layer MLPs and Q/K RMSNorm temporaries. RMSNorm keeps its original FP32 variance computation; attention context and reference sampling are unchanged. Conditioning captures only the requested intermediate hidden state while executing the full decoder; it does not retain all layer outputs or substitute the final post-norm state. Encoder offload is synchronous. Health and output provenance include `encoder_profile`. No automatic generation retry is added. GPU capacity and latency for a given multimodal input require runtime validation.
 
-### v0.3.11 DiT peak memory profile
+### v0.3.12 DiT peak memory profile
 
 DiT attention runs four heads at a time over the unchanged sequence/window plan. Complete branch rows are staged in CPU memory and assembled before output projection; FP8 activation scales are still computed over each full row. FFN and residual merges run in 512-token chunks. The caller's block input is not mutated, and existing block CPU-offload hooks remain active. This profile targets the pinned RTX 4090 rowwise FP8 path; per-tensor quantization and unsupported forward layouts fail explicitly.
 
-`check-dit-memory.py` compares real pinned attention branches and repeated offloaded blocks. `check-dit-capacity.py` exercises a 262,144-token, 7,168-wide block with 4 GiB of additional live GPU storage. These checks do not replace the original media-task acceptance. CPU staging increases transfer traffic; memory reduction is not a speed guarantee.
+`check-dit-memory.py` compares real pinned attention branches and repeated offloaded blocks. `check-dit-capacity.py` exercises a 261,905-token, 5,376-wide block (QKV width 7,168; time embedding width 2,688) with 4 GiB of additional live GPU storage. These checks do not replace the original media-task acceptance. CPU staging increases transfer traffic; memory reduction is not a speed guarantee.
+
+The trunk and QKV widths are validated independently when installing the profile, before accepting a task. v0.3.11 rejected the production geometry at its first DiT call; v0.3.12 corrects that check.

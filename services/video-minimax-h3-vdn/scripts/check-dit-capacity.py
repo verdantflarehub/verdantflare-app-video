@@ -17,11 +17,11 @@ install_frame_statistics(u);install_linear_readout(u);Engine._install_chunked_de
 class Trunk(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        b=MiniMaxH3TransformerBlock(7168,56,128,14336,512,1e-5,1e-5)
-        b.attn=u.HybridAttention(b.attn,7168,delta_rule='vdn_solve',radius=1,chunk=5,
+        b=MiniMaxH3TransformerBlock(5376,56,128,14336,2688,1e-5,1e-5)
+        b.attn=u.HybridAttention(b.attn,5376,delta_rule='vdn_solve',radius=1,chunk=5,
                   short_conv=('k','v'),enable_text_state=True,anchor_frames='both',softmax_impl='decomposed')
-        b.attn.layout=u.SequenceLayout(seq_len=262144,video_start=64,num_frames=65,
-                  tokens_per_frame=4032,frame_height=63,frame_width=64,text_len=32)
+        b.attn.layout=u.SequenceLayout(seq_len=261905,video_start=159089,num_frames=102,
+                  tokens_per_frame=1008,frame_height=42,frame_width=24,text_len=39219)
         self.transformer_blocks=torch.nn.ModuleList([b])
     def forward(self,x,t,indices,rope):return self.transformer_blocks[0](x,t,indices,rope)
 with torch.inference_mode():
@@ -31,19 +31,19 @@ with torch.inference_mode():
     install_dit_memory(u,model)
     # Keep 4 GiB alive to expose overlap with surrounding pipeline tensors.
     retained=torch.empty(4*1024**3,device='cuda:0',dtype=torch.uint8)
-    n=262144
-    x=torch.randn(1,n,7168,device='cuda:0',dtype=torch.bfloat16)*0.1
-    t=torch.randn(3,512,device='cuda:0',dtype=torch.bfloat16)*0.1
+    n=261905
+    x=torch.randn(1,n,5376,device='cuda:0',dtype=torch.bfloat16)*0.1
+    t=torch.randn(3,2688,device='cuda:0',dtype=torch.bfloat16)*0.1
     indices=torch.arange(n,device='cuda:0')%3
     angles=torch.randn(n,128,device='cuda:0',dtype=torch.float32)
     rope=(angles.cos(),angles.sin());del angles
     torch.cuda.empty_cache();torch.cuda.reset_peak_memory_stats(0)
     started=time.monotonic()
-    print(json.dumps({'dit_capacity':'started','tokens':n,'width':7168,'retained_bytes':retained.numel()}),flush=True)
+    print(json.dumps({'dit_capacity':'started','tokens':n,'hidden_width':5376,'qkv_width':7168,'retained_bytes':retained.numel()}),flush=True)
     y=model(x,t,indices,rope);torch.cuda.synchronize()
     # A chunked check avoids a large FP32 verification tensor becoming the peak.
     assert all(torch.isfinite(y[:,i:i+512]).all() for i in range(0,n,512))
-    result={'dit_capacity':'passed','tokens':n,'width':7168,'retained_bytes':retained.numel(),
+    result={'dit_capacity':'passed','tokens':n,'hidden_width':5376,'qkv_width':7168,'retained_bytes':retained.numel(),
             'peak_allocated_bytes':torch.cuda.max_memory_allocated(0),
             'peak_reserved_bytes':torch.cuda.max_memory_reserved(0),'seconds':time.monotonic()-started}
     print(json.dumps(result),flush=True)

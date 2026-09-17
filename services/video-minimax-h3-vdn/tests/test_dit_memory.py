@@ -5,7 +5,7 @@ try:
     import torch
 except ImportError:
     torch=None
-from vdn_dit_memory import project_bank, gate_heads, install_dit_memory
+from vdn_dit_memory import project_bank, gate_heads, install_dit_memory, validate_geometry
 
 @unittest.skipIf(torch is None,'Pinned PyTorch required')
 class BankTests(unittest.TestCase):
@@ -41,3 +41,17 @@ class BankTests(unittest.TestCase):
     def test_reject_nonpositive_and_boolean_groups(self):
         for h,t in [(0,512),(4,0),(True,512),(4,-1)]:
             with self.assertRaises(ValueError):install_dit_memory(None,None,h,t)
+
+    def test_geometry_accepts_distinct_trunk_qkv_widths_and_rejects_bad_projections(self):
+        from types import SimpleNamespace
+        attention=SimpleNamespace(num_heads=3,head_dim=6,
+            orig=SimpleNamespace(to_q=torch.nn.Linear(12,18),to_k=torch.nn.Linear(12,18),
+                 to_v=torch.nn.Linear(12,18),to_out=[torch.nn.Linear(18,12)]),
+            linear_attention=SimpleNamespace(num_heads=3,head_dim=6),
+            to_out_linear=torch.nn.Linear(18,12))
+        validate_geometry(attention)
+        attention.orig.to_k=torch.nn.Linear(11,18)
+        with self.assertRaisesRegex(RuntimeError,'QKV projection'):validate_geometry(attention)
+        attention.orig.to_k=torch.nn.Linear(12,18)
+        attention.to_out_linear=torch.nn.Linear(18,13)
+        with self.assertRaisesRegex(RuntimeError,'branch projection'):validate_geometry(attention)
