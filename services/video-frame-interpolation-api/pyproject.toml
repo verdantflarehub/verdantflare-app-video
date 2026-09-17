@@ -1,0 +1,32 @@
+[project]
+name = "verdantflare-video-frame-interpolation-api"
+version = "0.1.3"
+description = "VerdantFlare video-frame-interpolation-api service"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi==0.115.6",
+  "pydantic==2.12.5",
+  "uvicorn==0.40.0",
+  "numpy==1.26.4",
+  "opencv-python-headless==4.10.0.84",
+  "torch==2.3.0",
+  "torchvision==0.18.0",
+]
+
+[build-system]
+requires = ["setuptools==78.1.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Docker and tests run the explicitly copied source via PYTHONPATH.
+py-modules = []
+
+[dependency-groups]
+test = [
+  "fastapi==0.115.6",
+  "pydantic==2.12.5",
+  "uvicorn==0.40.0",
+  "numpy==1.26.4",
+  "opencv-python-headless==4.10.0.84",
+  "httpx==0.28.1",
+]

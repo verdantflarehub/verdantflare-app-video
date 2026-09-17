@@ -2,7 +2,7 @@
 FROM nvcr.io/nvidia/cuda:13.0.2-devel-ubuntu24.04@sha256:0eee3094c71518ad31d011a594ae6ed6de72959ee07e318cb31cffe71690e90c
 
 LABEL org.opencontainers.image.title="VerdantFlare MiniMax H3 Sol" \
-      org.opencontainers.image.version="0.1.1" \
+      org.opencontainers.image.version="0.2.13" \
       org.opencontainers.image.source="https://github.com/verdantflarehub/verdantflare-app-video" \
       org.opencontainers.image.licenses="Apache-2.0 AND LicenseRef-MiniMax-H3-Community"
 
@@ -12,12 +12,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python3.12 -m venv /opt/venv
 ENV UV_NO_CACHE=1 PATH=/opt/venv/bin:$PATH CUDNN_PATH=/opt/venv/lib/python3.12/site-packages/nvidia/cudnn
 WORKDIR /opt/verdantflare-sol
-COPY requirements.lock requirements.build.lock ./
+COPY pyproject.toml requirements.lock requirements.build.lock ./
 RUN python -m pip install --no-cache-dir uv==0.8.22 \
     && uv pip install --python /opt/venv/bin/python -r requirements.build.lock \
     && python -c "from pathlib import Path; p=Path('requirements.lock'); Path('/tmp/runtime.lock').write_text(''.join(l for l in p.read_text().splitlines(True) if not l.startswith('nvidia-cudnn-frontend ')))" \
     && uv pip install --python /opt/venv/bin/python --no-deps --index-strategy unsafe-best-match -r /tmp/runtime.lock
 RUN CMAKE_BUILD_PARALLEL_LEVEL=2 CMAKE_PREFIX_PATH=/opt/venv/lib/python3.12/site-packages/pybind11/share/cmake/pybind11 uv pip install --python /opt/venv/bin/python --no-deps --no-build-isolation --index-strategy unsafe-best-match -r requirements.lock \
+    && uv pip install --python /opt/venv/bin/python --no-deps . \
     && python -m pip check
 
 RUN git init /opt/sana \

@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: false
 env:
   SERVICE: video-minimax-h3-sol
-  VERSION: 0.2.12
+  VERSION: 0.2.13
 jobs:
   check:
     runs-on: ubuntu-latest

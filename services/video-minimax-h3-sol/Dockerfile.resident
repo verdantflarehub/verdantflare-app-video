@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1.7
 FROM registry.cn-qingdao.aliyuncs.com/wod/verdantflare-app:vedio-minimax-h3-sol-v0.1.1@sha256:09bd61ea754d279bd55b92448d5a1f6bd1e5cc6ab3cad426b025509faf0bab79
-LABEL org.opencontainers.image.version="0.2.12"
+LABEL org.opencontainers.image.version="0.2.13"
+COPY pyproject.toml /opt/verdantflare-sol/pyproject.toml
+RUN python -m pip install --no-deps /opt/verdantflare-sol
 COPY resident_api.py resident_worker.py sglang_backend.py /opt/verdantflare-sol/
 COPY patches/ /opt/verdantflare-sol/patches/
 RUN python /opt/verdantflare-sol/prepare-patched-source.py --source /opt/sol-h3 --output /opt/sol-h3-fixed \

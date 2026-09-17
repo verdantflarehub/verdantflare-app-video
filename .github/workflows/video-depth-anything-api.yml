@@ -16,7 +16,7 @@ concurrency:
 
 env:
   SERVICE: video-depth-anything-api
-  VERSION: 0.2.1
+  VERSION: 0.2.2
 
 jobs:
   check:
@@ -26,9 +26,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install -r services/${SERVICE}/requirements.txt
+      - run: python -m pip install "./services/${SERVICE}[test]"
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      - run: python -m pip install httpx==0.28.1
       - run: PYTHONPATH=services/${SERVICE} python -m unittest discover -s services/${SERVICE}/tests -v
   build:
     needs: check

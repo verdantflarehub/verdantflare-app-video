@@ -2,7 +2,7 @@
 FROM docker.io/pytorch/pytorch:2.3.0-cuda12.1-cudnn8-devel
 LABEL org.opencontainers.image.source="https://github.com/verdantflarehub/verdantflare-app-video"
 LABEL org.opencontainers.image.title="VerdantFlare video-frame-interpolation-api"
-LABEL org.opencontainers.image.version="0.1.2"
+LABEL org.opencontainers.image.version="0.1.3"
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg git && rm -rf /var/lib/apt/lists/*
 RUN git clone https://github.com/hzwer/ECCV2022-RIFE.git /opt/rife && git -C /opt/rife checkout 5d8adbdd40e12c2c8f91930eff838aebe561c086
 # Prefer the distribution FFmpeg with libx264 over Conda's minimal binary.
@@ -10,8 +10,8 @@ RUN mkdir -p /opt/video-bin && ln -s /usr/bin/ffmpeg /opt/video-bin/ffmpeg && ln
 ENV PATH=/opt/video-bin:${PATH}
 RUN ffmpeg -v error -f lavfi -i color=size=16x16:rate=1 -frames:v 1 -c:v libx264 -preset fast -f null -
 WORKDIR /app
-COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+COPY pyproject.toml /tmp/pyproject.toml
+RUN pip install --no-cache-dir /tmp
 RUN pip check
 COPY video_interpolation /app/video_interpolation
 COPY main.py engine.py backend-lock.json /app/

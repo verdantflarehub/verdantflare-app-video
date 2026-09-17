@@ -5,9 +5,12 @@ FROM ${BASE_IMAGE}
 
 USER root
 
+COPY pyproject.toml /opt/h3-service/pyproject.toml
+RUN python3 -m pip install --no-deps /opt/h3-service
+
 LABEL org.opencontainers.image.source="https://github.com/verdantflarehub/verdantflare-app-video"
 LABEL org.opencontainers.image.title="VerdantFlare MiniMax H3 Ref2VA Full INT8 API"
-LABEL org.opencontainers.image.version="0.3.0"
+LABEL org.opencontainers.image.version="0.3.2"
 LABEL org.opencontainers.image.licenses="Apache-2.0 AND LicenseRef-MiniMax-H3-Community"
 
 # Promote the exact SGLang/FlashInfer/comfy-kitchen image validated by the

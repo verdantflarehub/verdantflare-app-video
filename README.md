@@ -35,7 +35,7 @@ services/
 
 ```bash
 python3 -m unittest discover -s services/video-minimax-h3-sol/tests -v
-python3 -m pip install -r services/video-mcp-server/requirements.txt
+python3 -m pip install ./services/video-mcp-server
 PYTHONPATH=services/video-mcp-server python3 -m unittest discover -s services/video-mcp-server/tests -v
 ```
 
@@ -48,3 +48,23 @@ MCP 保持 `artifact.import`、`video.generate`、`video.status`、`video.result
 以中央部署公布的地址访问 `/video/dashboard`。数据接口及产物下载使用现有 Bearer Token；浏览器仅在页面内存保存 Token。内部 `/runtime-artifacts/` 不公开。工具不暴露内部 Runtime Task ID、服务地址或宿主路径。
 
 H3-Sol 部署、真实冷 / 热推理对比和人工质量审核仍按中央变更记录执行，未完成前不推进 `main`。
+
+## Python 依赖管理
+
+每个 `services/<service>/pyproject.toml` 独立声明项目元数据和依赖；仓库根不合并不同服务的 CUDA / PyTorch 环境。常规安装使用 `python -m pip install ./services/<service>`，容器仍按 Dockerfile 复制并运行源码，项目 wheel 仅承载依赖元数据。
+
+轻量 CPU 测试依赖放在 `[dependency-groups].test`，使用 pip 25.3：
+
+```bash
+python -m pip install --upgrade pip==25.3
+# 仅适用于声明了 test 组的服务；不安装 GPU 运行时。
+python -m pip install --group services/<service>/pyproject.toml:test
+```
+
+GPU 索引、预装运行时与需要关闭构建隔离的编译步骤仍由 Dockerfile 控制，普通本地安装不能替代 GPU 镜像验证。
+
+H3-Sol 的直接依赖源为 `pyproject.toml`；`requirements.lock` 与 `requirements.build.lock` 保留已验证的完整运行时和构建锁定结果，构建继续分阶段安装并执行 `pip check`。更新直接依赖时须同步重新解析锁文件。H3 API 的空依赖清单表示运行时完全继承已锁定基础镜像；Depth Anything 也继续继承固定镜像中的依赖。
+
+Depth Anything 的测试扩展使用 `python -m pip install "./services/video-depth-anything-api[test]"`；Video MCP 的浏览器扩展使用 `python -m pip install "./services/video-mcp-server[browser]"`。超分引擎测试的 `cpu-torch` 组使用 PyTorch CPU 索引安装，再安装 `engine-test` 组。
+
+H3-Sol 的清单版本对应现行 resident 服务；`Dockerfile.resident` 复制并安装该清单的元数据，运行依赖仍继承固定基础镜像。

@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 env:
   SERVICE: video-mcp-server
-  VERSION: 0.9.2
+  VERSION: 0.9.3
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -24,7 +24,7 @@ jobs:
           PYTHONDONTWRITEBYTECODE: "1"
           PYTHONPATH: services/video-mcp-server
         run: |
-          python3 -m pip install -r services/${SERVICE}/requirements.txt
+          python3 -m pip install ./services/${SERVICE}
           python3 -m unittest discover -s services/${SERVICE}/tests -v
           node --check services/${SERVICE}/verdantflare_video_mcp/static/dashboard.js
           node --check services/${SERVICE}/verdantflare_video_mcp/static/resources.js
@@ -35,7 +35,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
-          python3 -m pip install playwright==1.62.0
+          python3 -m pip install "./services/${SERVICE}[browser]"
           python3 -m playwright install --with-deps chromium
           python3 services/${SERVICE}/tests/browser_dashboard.py
   processing-check:
@@ -46,7 +46,8 @@ jobs:
         with:
           python-version: '3.12'
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      - run: python -m pip install -r services/video-super-resolution-api/requirements-test.txt
+      - run: python -m pip install --upgrade pip==25.3
+      - run: python -m pip install --group services/video-super-resolution-api/pyproject.toml:test
       - run: python -m pip check
       - run: PYTHONPATH=services/video-super-resolution-api:services/video-frame-interpolation-api:services/video-mcp-server python -m unittest discover -s services/video-mcp-server/integration -v
   build:

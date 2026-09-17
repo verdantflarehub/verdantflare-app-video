@@ -1,7 +1,7 @@
 # Explicit source allowlist: credentials, model files and generated media stay out.
 **
 !Dockerfile
-!requirements.in
+!pyproject.toml
 !requirements.lock
 !requirements.build.lock
 !upstream.lock.json

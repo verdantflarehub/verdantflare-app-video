@@ -2,7 +2,7 @@
 FROM docker.io/pytorch/pytorch:2.3.0-cuda12.1-cudnn8-devel
 LABEL org.opencontainers.image.source="https://github.com/verdantflarehub/verdantflare-app-video"
 LABEL org.opencontainers.image.title="VerdantFlare video-super-resolution-api"
-LABEL org.opencontainers.image.version="0.1.2"
+LABEL org.opencontainers.image.version="0.1.3"
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg git && rm -rf /var/lib/apt/lists/*
 # Conditioning tensors are supplied in the external model bundle, not the image.
 RUN git clone --filter=blob:none --no-checkout https://github.com/ByteDance-Seed/SeedVR.git /opt/seedvr \
@@ -13,8 +13,8 @@ RUN mkdir -p /opt/video-bin && ln -s /usr/bin/ffmpeg /opt/video-bin/ffmpeg && ln
 ENV PATH=/opt/video-bin:${PATH}
 RUN ffmpeg -v error -f lavfi -i color=size=16x16:rate=1 -frames:v 1 -c:v libx264 -preset fast -f null -
 WORKDIR /app
-COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+COPY pyproject.toml /tmp/pyproject.toml
+RUN pip install --no-cache-dir /tmp
 RUN MAX_JOBS=4 pip install --no-cache-dir flash-attn==2.5.9.post1 --no-build-isolation
 RUN pip check
 COPY video_sr /app/video_sr

@@ -3,11 +3,11 @@ FROM docker.io/library/python:3.11.10-slim
 ARG PYPI_INDEX_URL=https://pypi.org/simple
 LABEL org.opencontainers.image.source="https://github.com/verdantflarehub/verdantflare-app-video"
 LABEL org.opencontainers.image.title="VerdantFlare Video MCP Server"
-LABEL org.opencontainers.image.version="0.9.2"
+LABEL org.opencontainers.image.version="0.9.3"
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
-COPY requirements.txt .
-RUN pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" -r requirements.txt && pip check
+COPY pyproject.toml .
+RUN pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" . && pip check
 COPY verdantflare_video_mcp ./verdantflare_video_mcp
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \

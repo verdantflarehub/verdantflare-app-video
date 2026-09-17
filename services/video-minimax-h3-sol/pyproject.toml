@@ -1,0 +1,28 @@
+[project]
+name = "verdantflare-video-minimax-h3-sol"
+version = "0.2.13"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "accelerate>=1.9",
+  "av>=14",
+  "diffusers @ git+https://github.com/huggingface/diffusers.git@abc5e9bf71fd38f53cd471bc3acaa84bc5ecbfdc",
+  "huggingface-hub>=1.23,<2",
+  "numpy",
+  "nvidia-cudnn-frontend[cutedsl] @ git+https://github.com/NVIDIA/cudnn-frontend.git@29106622617bfd9031a53099a6fbbc5e74a474e9",
+  "Pillow",
+  "protobuf",
+  "safetensors>=0.8",
+  "sentencepiece",
+  "triton==3.6.0",
+  "transformers==5.8.1",
+  "torch==2.10.0+cu130",
+  "torchvision==0.25.0+cu130",
+  "torchaudio==2.10.0+cu130",
+]
+
+[build-system]
+requires = ["setuptools==78.1.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = []
