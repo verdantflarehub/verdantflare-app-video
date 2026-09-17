@@ -244,16 +244,39 @@ class VideoExecutor:
         reserved = self.tasks.create(project_id=project_id, idempotency_key=idempotency_key,
                                      input_digest=digest, request=request, runtime_task_id="", status="queued")
         reserved = self.tasks.update(reserved, service=service, runtime_version=runtime_version, runtime_route=runtime_route)
+        if service == "h3-vdn":
+            try:
+                health = self.client.get(f"{runtime_url}/health", headers=runtime_headers, timeout=10)
+                if health.status_code == 503:
+                    return self.tasks.update(reserved, status="failed", error={
+                        "code": "runtime_not_ready", "message": "H3 runtime is not ready; generation was not submitted"})
+                health.raise_for_status()
+                health_data = health.json()
+                if not isinstance(health_data, dict) or not isinstance(health_data.get("ready"), bool):
+                    raise ValueError("Invalid readiness response")
+                if not health_data["ready"]:
+                    return self.tasks.update(reserved, status="failed", error={
+                        "code": "runtime_not_ready", "message": "H3 runtime is not ready; generation was not submitted"})
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                return self.tasks.update(reserved, status="failed", error={
+                    "code": "runtime_unavailable", "message": "H3 runtime is unreachable; generation was not submitted"})
+            except (httpx.HTTPError, ValueError):
+                return self.tasks.update(reserved, status="failed", error={
+                    "code": "runtime_health_check_failed", "message": "H3 readiness check failed; generation was not submitted"})
         if service in {"h3-sol", "h3-vdn"}:
             payload["idempotency_key"] = reserved.video_task_id
         try:
             response = self.client.post(f"{runtime_url}/v1/videos", json=payload, headers=runtime_headers)
             response.raise_for_status()
             runtime_task_id = response.json()["id"]
-        except (httpx.HTTPError, KeyError, ValueError) as error:
-            self.tasks.update(reserved, status="failed", error={"code": "submission_unconfirmed",
+            if not isinstance(runtime_task_id, str) or not runtime_task_id.strip():
+                raise ValueError("Invalid runtime task id")
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            return self.tasks.update(reserved, status="failed", error={
+                "code": "runtime_unavailable", "message": "H3 runtime is unreachable; generation was not submitted"})
+        except (httpx.HTTPError, KeyError, ValueError, TypeError):
+            return self.tasks.update(reserved, status="failed", error={"code": "submission_unconfirmed",
                               "message": "Runtime submission could not be confirmed; do not resubmit automatically"})
-            raise ExecutionError("H3 runtime submission failed") from error
         return self.tasks.update(reserved, runtime_task_id=runtime_task_id,
                                  dispatched_at=datetime.now(UTC).isoformat())
 

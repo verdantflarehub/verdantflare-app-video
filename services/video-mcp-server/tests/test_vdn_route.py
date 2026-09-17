@@ -1,4 +1,5 @@
 import json
+import httpx
 import os
 from unittest.mock import patch
 import unittest
@@ -73,3 +74,69 @@ class VdnRouteTest(unittest.TestCase):
             with self.assertRaises(ExecutionError):
                 self.executor.generate(**self.kw,route=route)
         self.assertFalse(self.calls)
+
+    def test_readiness_failures_never_submit_and_remain_idempotent(self):
+        scenarios = [
+            (httpx.ConnectError("private-host secret-token"), "runtime_unavailable"),
+            (httpx.ConnectTimeout("private-host"), "runtime_unavailable"),
+            (httpx.ReadTimeout("private-host"), "runtime_health_check_failed"),
+            (httpx.Response(503, json={"ready": False}), "runtime_not_ready"),
+            (httpx.Response(200, json={"ready": False}), "runtime_not_ready"),
+            (httpx.Response(401, text="secret-token"), "runtime_health_check_failed"),
+            (httpx.Response(200, json={"ready": "true"}), "runtime_health_check_failed"),
+            (httpx.Response(200, json=[]), "runtime_health_check_failed"),
+            (httpx.Response(200, text="bad-json"), "runtime_health_check_failed"),
+        ]
+        for index, (outcome, code) in enumerate(scenarios):
+            with self.subTest(code=code, index=index):
+                calls = []
+                def handle(request):
+                    calls.append(request)
+                    self.assertEqual((request.method, request.url.path), ("GET", "/health"))
+                    self.assertEqual(request.headers["Authorization"], "Bearer test-vdn-token")
+                    if isinstance(outcome, Exception):
+                        raise outcome
+                    return outcome
+                with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+                    executor = VideoExecutor(self.assets, self.tasks, client)
+                    kw = dict(self.kw, idempotency_key=f"health-{index}", route="h3-vdn")
+                    row = executor.generate(**kw)
+                    self.assertEqual((row.status, row.error["code"]), ("failed", code))
+                    self.assertFalse(row.runtime_task_id)
+                    self.assertNotIn("secret-token", str(row.error))
+                    self.assertEqual(executor.generate(**kw).video_task_id, row.video_task_id)
+                    self.assertEqual(executor.status(row.video_task_id).error, row.error)
+                    self.assertEqual(len(calls), 1)
+
+    def test_post_failure_classification_and_no_automatic_replay(self):
+        scenarios = [
+            (httpx.ConnectError("private-host"), "runtime_unavailable"),
+            (httpx.ConnectTimeout("private-host"), "runtime_unavailable"),
+            (httpx.ReadTimeout("private-host"), "submission_unconfirmed"),
+            (httpx.WriteError("private-host"), "submission_unconfirmed"),
+            (httpx.Response(500, text="secret-token"), "submission_unconfirmed"),
+            (httpx.Response(200, json={}), "submission_unconfirmed"),
+            (httpx.Response(200, json={"id": ""}), "submission_unconfirmed"),
+            (httpx.Response(200, json={"id": None}), "submission_unconfirmed"),
+            (httpx.Response(200, json=[]), "submission_unconfirmed"),
+        ]
+        for index, (outcome, code) in enumerate(scenarios):
+            with self.subTest(code=code, index=index):
+                calls = []
+                def handle(request):
+                    calls.append(request)
+                    if request.url.path == "/health":
+                        return httpx.Response(200, json={"ready": True})
+                    if isinstance(outcome, Exception):
+                        raise outcome
+                    return outcome
+                with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+                    executor = VideoExecutor(self.assets, self.tasks, client)
+                    kw = dict(self.kw, idempotency_key=f"post-{index}", route="h3-vdn")
+                    row = executor.generate(**kw)
+                    self.assertEqual((row.status, row.error["code"]), ("failed", code))
+                    self.assertFalse(row.runtime_task_id)
+                    self.assertNotIn("secret-token", str(row.error))
+                    self.assertEqual(executor.generate(**kw).video_task_id, row.video_task_id)
+                    executor.status(row.video_task_id)
+                    self.assertEqual([r.method for r in calls], ["GET", "POST"])

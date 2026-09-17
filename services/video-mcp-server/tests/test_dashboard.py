@@ -131,11 +131,14 @@ class DashboardTest(unittest.TestCase):
             raise httpx.ReadTimeout('private request payload')
         self.executor.client = httpx.Client(transport=httpx.MockTransport(fail))
         first = self.client.post('/api/tasks', json=self.payload, headers=self.headers)
-        self.assertEqual(first.status_code, 502)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json()["status"], "failed")
+        self.assertEqual(first.json()["error"]["code"], "submission_unconfirmed")
         self.assertNotIn('private', first.text)
         second = self.client.post('/api/tasks', json=self.payload, headers=self.headers)
         self.assertEqual(second.status_code, 200)
         self.assertEqual(second.json()['error']['code'], 'submission_unconfirmed')
+        self.assertEqual(first.json()['video_task_id'], second.json()['video_task_id'])
 
     def test_recover_interrupted_submission_and_reject_result_before_success(self):
         record = self.tasks.create(project_id='demo', idempotency_key='interrupted', request={}, input_digest='x', runtime_task_id='', status='queued')
@@ -154,3 +157,16 @@ class DashboardTest(unittest.TestCase):
                 response = client.post('/mcp', headers={**self.headers, 'Host':'localhost:8000', 'Accept':'application/json, text/event-stream'},
                                        json={'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-03-26','capabilities':{},'clientInfo':{'name':'test','version':'1'}}})
                 self.assertEqual(response.status_code, 200, response.text)
+
+    def test_mcp_submission_failure_returns_task_id_and_safe_error(self):
+        from verdantflare_video_mcp import server
+        def fail(request):
+            raise httpx.ConnectError("private-secret")
+        self.executor.client = httpx.Client(transport=httpx.MockTransport(fail))
+        with mock.patch.object(server, "executor", self.executor):
+            result = server.video_generate(model="minimax-h3-ref2va", **self.payload)
+        data = result.model_dump(by_alias=True)["structuredContent"]
+        self.assertEqual(data["status"], "failed")
+        self.assertEqual(data["error"]["code"], "runtime_unavailable")
+        self.assertEqual(self.tasks.get(data["video_task_id"]).error, data["error"])
+        self.assertNotIn("private-secret", str(data))

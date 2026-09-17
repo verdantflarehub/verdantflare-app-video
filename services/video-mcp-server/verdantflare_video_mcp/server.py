@@ -140,7 +140,8 @@ def video_generate(project_id: str, idempotency_key: str, model: str, prompt: st
     record = executor.generate(project_id=project_id, idempotency_key=idempotency_key, model=model,
                                prompt=prompt, duration_seconds=duration_seconds,
                                aspect_ratio=aspect_ratio, references=references, route=route)
-    return _result({"video_task_id": record.video_task_id, "status": record.status, "created_at": record.created_at})
+    return _result({"video_task_id": record.video_task_id, "status": record.status,
+                    "created_at": record.created_at, "error": record.error})
 
 
 @mcp.tool(name="video.status")

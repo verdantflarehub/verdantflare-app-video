@@ -15,6 +15,7 @@ class SolRouteTest(unittest.TestCase):
   self.assets=ArtifactStore(root);self.tasks=TaskStore(root);self.calls=[]
   def handle(request):
    self.calls.append(request)
+   if request.url.path=='/health':return httpx.Response(200,json={'ready':True})
    if request.method=='POST':return httpx.Response(200,json={'id':'sol_'+'c'*32})
    return httpx.Response(200,json={'status':'completed','execution_instance_id':'11111111-1111-1111-1111-111111111111','stage':'completed'})
   self.http=httpx.Client(transport=httpx.MockTransport(handle))
