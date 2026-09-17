@@ -22,9 +22,11 @@ def validate(payload, source):
         raise ValueError('invalid prompt')
     if payload['target']!={'short_edge':768,'aspect_ratio':'9:16','duration_seconds':float(payload['seconds'])}:
         raise ValueError('unsupported target')
-    for key, expected in [('seed',7),('num_outputs_per_prompt',1),('num_inference_steps',8)]:
+    for key, expected in [('seed',7),('num_outputs_per_prompt',1)]:
         if type(payload[key]) is not int or payload[key]!=expected:
             raise ValueError('invalid inference profile')
+    if type(payload['num_inference_steps']) is not int or payload['num_inference_steps'] not in (4, 8):
+        raise ValueError('sampling NFE must be 4 or 8')
     if payload['flow_shift']!=12.0 or payload['audio_flow_shift']!=3.0:
         raise ValueError('unsupported schedules')
     key=payload['idempotency_key']

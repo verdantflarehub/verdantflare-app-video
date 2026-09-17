@@ -26,7 +26,7 @@ class VdnRouteTest(unittest.TestCase):
         self.assertEqual(call.url.host, 'vdn.example')
         self.assertEqual(call.headers['Authorization'], 'Bearer test-vdn-token')
         body = json.loads(call.content)
-        self.assertEqual((body['task'], body['num_inference_steps']), ('ref2va', 8))
+        self.assertEqual((body['task'], body['num_inference_steps']), ('ref2va', 4))
         self.assertEqual(body['idempotency_key'], row.video_task_id)
         self.assertEqual(body['conditions'][0]['size'], 7)
         self.assertEqual(len(body['conditions'][0]['sha256']), 64)

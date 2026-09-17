@@ -239,7 +239,7 @@ class VideoExecutor:
         payload = {"model": "MiniMaxAI/MiniMax-H3", "task": "ref2va", "prompt": compiled_prompt,
                    "seconds": duration_seconds, "conditions": conditions,
                    "target": {"short_edge": 768, "aspect_ratio": aspect_ratio, "duration_seconds": float(duration_seconds)},
-                   "num_outputs_per_prompt": 1, "num_inference_steps": 8 if service == "h3-vdn" else 4 if service == "h3-sol" else 21, "flow_shift": 12.0,
+                   "num_outputs_per_prompt": 1, "num_inference_steps": 4 if service in {"h3-vdn", "h3-sol"} else 21, "flow_shift": 12.0,
                    "audio_flow_shift": 3.0, "seed": 7}
         # Persist the attempt before calling the runtime. An ambiguous network
         # failure must not permit a duplicate GPU request under the same key.

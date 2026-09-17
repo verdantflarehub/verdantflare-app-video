@@ -103,7 +103,7 @@ class Engine:
             torch.cuda.synchronize(index)
         if transformer._vdn_layout_calls != args.steps or transformer._vdn_linear_calls < args.steps*self.hybrid_blocks:
             raise RuntimeError('VDN branch execution was not verified')
-        return {'latent_export_error': pipeline.export_error if isinstance(pipeline, ExportingPipeline) else None,
+        return {'sampling_nfe': args.steps, 'latent_export_error': pipeline.export_error if isinstance(pipeline, ExportingPipeline) else None,
                 'dit_memory_profile': self.dit_memory_profile, 'encoder_profile': self.pipeline.text_encoder._vdn_encoder_profile,
                 'precision': self.precision, 'fp8_linear_count': self.fp8_linear_count,
                 'vdn_softmax_backend': self.softmax_backend, 'peak_allocated_bytes': [torch.cuda.max_memory_allocated(i) for i in range(2)],
@@ -127,7 +127,7 @@ def execute(store, task, engine, provenance):
     gpu = engine.generate(task['request'], paths, partial)
     store.progress(task['id'], 'saving')
     media = inspect_media(partial, FRAMES[task['request']['seconds']])
-    result = dict(provenance, sha256=sha256(partial), size=partial.stat().st_size,
+    result = dict(provenance, sampling_nfe=task['request']['num_inference_steps'], sha256=sha256(partial), size=partial.stat().st_size,
                   media=media, gpu=gpu, generate_seconds=time.monotonic()-started)
     partial.replace(directory / 'video.mp4')
     if task['request'].get('project_id'):
@@ -213,7 +213,7 @@ def main():
         state.update(ready=True, stage='ready', model_load_count=1, load_seconds=time.monotonic()-started,
                      precision=engine.precision, fp8_linear_count=engine.fp8_linear_count,
                      encoder_profile=engine.pipeline.text_encoder._vdn_encoder_profile,
-                     dit_memory_profile=engine.dit_memory_profile)
+                     dit_memory_profile=engine.dit_memory_profile, supported_sampling_nfe=[4, 8])
         print(json.dumps(state.snapshot()), flush=True)
         while not stop.is_set():
             task = store.take()
