@@ -30,6 +30,36 @@ dashboard = Dashboard(executor)
 mcp = MCPServer("VerdantFlare Video")
 
 
+@mcp.tool(name="video.h3.latent.upscale.generate")
+def video_h3_latent_generate(source_video_task_id: str, project_id: str | None = None,
+                            idempotency_key: str | None = None, profile_id: str | None = None,
+                            target_width: int | None = None, target_height: int | None = None,
+                            seed: int | None = None) -> types.CallToolResult:
+    """Post-process a completed H3 task using retained same-node latent resources; never accept MP4 input."""
+    adapter = executor.processing["h3-latent-upscale"]
+    record = adapter.generate(source_video_task_id, project_id=project_id, idempotency_key=idempotency_key,
+                              profile_id=profile_id, target_width=target_width, target_height=target_height, seed=seed)
+    return _result(adapter.public_status(record))
+
+
+@mcp.tool(name="video.h3.latent.upscale.status")
+def video_h3_latent_status(video_task_id: str) -> types.CallToolResult:
+    adapter = executor.processing["h3-latent-upscale"]
+    return _result(adapter.public_status(adapter.status(video_task_id)))
+
+
+@mcp.tool(name="video.h3.latent.upscale.result")
+def video_h3_latent_result(video_task_id: str) -> types.CallToolResult:
+    adapter = executor.processing["h3-latent-upscale"]
+    return _result(adapter.public_result(adapter.result(video_task_id)))
+
+
+@mcp.tool(name="video.h3.latent.upscale.preview")
+def video_h3_latent_preview(video_task_id: str) -> types.CallToolResult:
+    adapter = executor.processing["h3-latent-upscale"]
+    return _result(adapter.public_result(adapter.result(video_task_id), preview=True))
+
+
 @mcp.tool(name="video.depth.generate")
 def video_depth_generate(project_id: str, idempotency_key: str, source_artifact_id: str,
                          model: str = "video-depth-anything", output_format: str = "mp4") -> types.CallToolResult:

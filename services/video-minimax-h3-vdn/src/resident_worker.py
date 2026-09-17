@@ -96,12 +96,15 @@ class Engine:
         transformer._vdn_linear_calls = 0
         args = SimpleNamespace(**vars(self.args), out=str(output), frames=FRAMES[request['seconds']],
                                steps=request['num_inference_steps'], seed=request['seed'])
-        render_ref2va(self.pipeline, args, request['prompt'], paths)
+        from latent_export import ExportingPipeline
+        pipeline = ExportingPipeline(self.pipeline, Path(output).parent) if request.get('project_id') else self.pipeline
+        render_ref2va(pipeline, args, request['prompt'], paths)
         for index in range(2):
             torch.cuda.synchronize(index)
         if transformer._vdn_layout_calls != args.steps or transformer._vdn_linear_calls < args.steps*self.hybrid_blocks:
             raise RuntimeError('VDN branch execution was not verified')
-        return {'dit_memory_profile': self.dit_memory_profile, 'encoder_profile': self.pipeline.text_encoder._vdn_encoder_profile,
+        return {'latent_export_error': pipeline.export_error if isinstance(pipeline, ExportingPipeline) else None,
+                'dit_memory_profile': self.dit_memory_profile, 'encoder_profile': self.pipeline.text_encoder._vdn_encoder_profile,
                 'precision': self.precision, 'fp8_linear_count': self.fp8_linear_count,
                 'vdn_softmax_backend': self.softmax_backend, 'peak_allocated_bytes': [torch.cuda.max_memory_allocated(i) for i in range(2)],
                 'peak_reserved_bytes': [torch.cuda.max_memory_reserved(i) for i in range(2)],
@@ -126,8 +129,20 @@ def execute(store, task, engine, provenance):
     media = inspect_media(partial, FRAMES[task['request']['seconds']])
     result = dict(provenance, sha256=sha256(partial), size=partial.stat().st_size,
                   media=media, gpu=gpu, generate_seconds=time.monotonic()-started)
-    (directory / 'record.json').write_text(json.dumps(dict(request=task['request'], result=result), indent=2) + '\n')
     partial.replace(directory / 'video.mp4')
+    if task['request'].get('project_id'):
+        from latent_export import finalize
+        if gpu.get('latent_export_error'):
+            result['latent_bundle_status'] = 'export_failed'
+        else:
+            try:
+                result['latent_bundle'] = finalize(directory, task, provenance, media)
+                result['latent_bundle_status'] = 'ready'
+            except Exception:
+                # The validated source video remains a successful generation.
+                # No descriptor is published for an incomplete resource bundle.
+                result['latent_bundle_status'] = 'export_failed'
+    (directory / 'record.json').write_text(json.dumps(dict(request=task['request'], result=result), indent=2) + '\n')
     store.finish(task['id'], result=result)
 
 

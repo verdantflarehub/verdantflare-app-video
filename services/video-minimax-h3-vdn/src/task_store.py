@@ -83,6 +83,7 @@ class TaskStore:
                   'result':json.loads(row['result']) if row['result'] else None}
         if include_request:
             result['request'] = json.loads(row['request'])
+            result['idempotency_key'] = row['idempotency_key']
         return result
 
     def take(self):

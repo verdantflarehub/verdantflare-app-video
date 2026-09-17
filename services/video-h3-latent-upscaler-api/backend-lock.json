@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "upstream": {
+    "repo": "https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler",
+    "revision": "40316cf008b2fd8663263270669eb4da23f89d2c"
+  },
+  "comfyui": {
+    "repo": "https://github.com/Comfy-Org/ComfyUI",
+    "revision": "387f98aa2822f684b8597959a52a467d88cc4806"
+  },
+  "upscaler": {
+    "repo": "LBH-123-AI/Minimax_h3_latent_Upscaler",
+    "revision": "13ccf95d85d120bdbc92c05b1247a6e147bf54bf",
+    "file": "minimax_h3_latent_upscaler_3d_fp16.safetensors",
+    "size": 690592672,
+    "sha256": "043e5a48e161610ef6c3ea974645220354d06fa618abca15f76d084812eb55c2",
+    "verification": "hub_metadata_only"
+  },
+  "execution": {
+    "gpu_count": 1,
+    "cpu_offload": false
+  },
+  "video_vae": {
+    "repo": "Comfy-Org/MiniMax-H3",
+    "revision": "7e75982b97cd5a41d2dcfa1904ee88d0686d6fd1",
+    "file": "vae/minimax_h3_video_vae_fp16.safetensors",
+    "size": 5207808496,
+    "sha256": "7c1f131492e7eddacaac9069a61b81bdd39de5cc96561e677c5eab1cdce5e522",
+    "verification": "hub_metadata_only"
+  },
+  "refiner": {
+    "repo": "Comfy-Org/MiniMax-H3",
+    "revision": "7e75982b97cd5a41d2dcfa1904ee88d0686d6fd1",
+    "file": "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+    "size": 20970379616,
+    "sha256": "9255f52b6677845ad238f20dfaafa94727053694127ab7f255c048f0f9365779",
+    "verification": "hub_metadata_only"
+  }
+}

@@ -71,6 +71,8 @@ class VideoExecutor:
         self.depth = DepthExecutor(self)
         from .processing import ProcessingExecutor
         self.processing = {name: ProcessingExecutor(self, name) for name in ("sr", "interpolate")}
+        from .h3_latent import H3LatentExecutor
+        self.processing["h3-latent-upscale"] = H3LatentExecutor(self)
 
     def _load_routes(self) -> dict[str, dict[str, object]]:
         raw = os.environ.get("H3_RUNTIME_ROUTES", "")
@@ -263,6 +265,8 @@ class VideoExecutor:
             except (httpx.HTTPError, ValueError):
                 return self.tasks.update(reserved, status="failed", error={
                     "code": "runtime_health_check_failed", "message": "H3 readiness check failed; generation was not submitted"})
+        if service == "h3-vdn":
+            payload["project_id"] = project_id
         if service in {"h3-sol", "h3-vdn"}:
             payload["idempotency_key"] = reserved.video_task_id
         try:

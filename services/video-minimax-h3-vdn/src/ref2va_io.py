@@ -10,8 +10,10 @@ FRAMES = {5:124, 10:243, 15:345}
 def validate(payload, source):
     fields = {'model','task','prompt','seconds','conditions','target','num_outputs_per_prompt',
               'num_inference_steps','flow_shift','audio_flow_shift','seed','idempotency_key'}
-    if not isinstance(payload,dict) or set(payload)!=fields:
+    if not isinstance(payload,dict) or set(payload) - {'project_id'} != fields:
         raise ValueError('invalid Ref2VA fields')
+    if 'project_id' in payload and (not isinstance(payload['project_id'], str) or not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}', payload['project_id'])):
+        raise ValueError('invalid project id')
     if payload['model']!='MiniMaxAI/MiniMax-H3' or payload['task']!='ref2va':
         raise ValueError('only Ref2VA is served')
     if type(payload['seconds']) is not int or payload['seconds'] not in FRAMES:

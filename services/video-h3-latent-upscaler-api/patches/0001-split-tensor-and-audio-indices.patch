@@ -1,0 +1,36 @@
+--- a/nodes/MMH3_Split_Upscale.py
++++ b/nodes/MMH3_Split_Upscale.py
+@@ -124,7 +124,7 @@
+     if audio_latent is not None:
+         rt = audio_latent.shape[-1]
+         a_start = max(0, math.ceil((f0 - idx) * FRAME_RESCALE))
+-        a_end = min(rt, math.floor((f1 - idx) / FRAME_RESCALE))
++        a_end = min(rt, math.floor((f1 - idx) * FRAME_RESCALE))
+         if a_end > a_start:
+             out["audio_latent"] = audio_latent[..., a_start:a_end].contiguous()
+             if "resolved_frame_index" not in out:
+@@ -145,8 +145,8 @@
+                         if lt is not None and (lt.shape[3] != spatial[0] or lt.shape[4] != spatial[1]):
+                             B, C, T, H, W = lt.shape
+                             kf["latent"] = torch.nn.functional.interpolate(
+-                                lt.view(B * T, C, H, W), size=spatial, mode="bilinear",
+-                                align_corners=False).view(B, C, T, spatial[0], spatial[1])
++                                lt.permute(0, 2, 1, 3, 4).reshape(B * T, C, H, W), size=spatial, mode="bilinear",
++                                align_corners=False).reshape(B, T, C, spatial[0], spatial[1]).permute(0, 2, 1, 3, 4).contiguous()
+                 nd["minimax_keyframes"] = trimmed
+             else:
+                 nd.pop("minimax_keyframes", None)
+@@ -217,9 +217,11 @@
+                     if lt.shape[3] == src_h and lt.shape[4] == src_w:
+                         nkf["latent"] = lt[:, :, :, r0:r0 + tr, c0:c0 + tc].contiguous()
+                     else:
++                        batch, channels, frames, height, width = lt.shape
+                         lt_r = torch.nn.functional.interpolate(
+-                            lt.to(torch.float32), size=(src_h, src_w),
+-                            mode="bilinear", align_corners=False)
++                            lt.float().permute(0, 2, 1, 3, 4).reshape(batch * frames, channels, height, width),
++                            size=(src_h, src_w), mode="bilinear", align_corners=False
++                        ).reshape(batch, frames, channels, src_h, src_w).permute(0, 2, 1, 3, 4).to(lt.dtype).contiguous()
+                         nkf["latent"] = lt_r[:, :, :, r0:r0 + tr, c0:c0 + tc].contiguous()
+                 cropped.append(nkf)
+             nd["minimax_keyframes"] = cropped

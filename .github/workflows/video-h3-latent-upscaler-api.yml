@@ -1,40 +1,38 @@
-name: VDN H3 Release
+name: Video H3 Latent Upscaler API
+
 on:
   push:
     branches: [release]
     paths:
-      [
-        services/video-minimax-h3-vdn/**,
-        .github/workflows/video-minimax-h3-vdn.yml,
-      ]
+      - services/video-h3-latent-upscaler-api/**
+      - .github/workflows/video-h3-latent-upscaler-api.yml
+
 permissions:
   contents: read
+
 concurrency:
-  group: video-minimax-h3-vdn-release
+  group: video-h3-latent-upscaler-api-release
   cancel-in-progress: false
+
 env:
-  SERVICE: video-minimax-h3-vdn
-  VERSION: 0.3.13
+  SERVICE: video-h3-latent-upscaler-api
+  VERSION: 0.1.0
+
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install media validation tools
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - run: python -m pip install torch safetensors numpy --extra-index-url https://download.pytorch.org/whl/cpu
-      - name: Contract tests
-        run: |
-          python3 -m unittest discover -s services/${SERVICE}/tests -v
-          python3 -m compileall -q services/${SERVICE}
-      - name: Verify project configuration
-        run: |
-          python3 -c 'import os, pathlib, re, tomllib; p = pathlib.Path("services") / os.environ["SERVICE"] / "pyproject.toml"; config = tomllib.loads(p.read_text()); upstream = config["tool"]["vdn"]["upstream"]; assert upstream["repository"]; assert all(re.fullmatch("[0-9a-f]{40}", upstream[k]) for k in ("commit", "diffusers_commit"))'
+          python-version: '3.12'
+      - run: python -m pip install --upgrade pip==25.3
+      - run: python -m pip install services/${SERVICE} httpx torch --extra-index-url https://download.pytorch.org/whl/cpu
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: python -m pip check
+      - run: PYTHONPATH=services/${SERVICE}/src python -m unittest discover -s services/${SERVICE}/tests -v
+      - run: python -m compileall -q services/${SERVICE}/src
   build:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/release'
     needs: check
     timeout-minutes: 120
     runs-on: ubuntu-latest
@@ -45,9 +43,7 @@ jobs:
         env:
           REGISTRY_ENDPOINT: ${{ secrets.REGISTRY_ENDPOINT_ALIYUN }}
         run: |
-          set -euo pipefail
           registry_endpoint="${REGISTRY_ENDPOINT%/}"
-          test -n "${registry_endpoint}"
           echo "registry_endpoint=${registry_endpoint}" >> "$GITHUB_OUTPUT"
           echo "name=${registry_endpoint}/wod/verdantflare-app" >> "$GITHUB_OUTPUT"
           echo "version=${SERVICE}-v${VERSION}" >> "$GITHUB_OUTPUT"
@@ -69,10 +65,10 @@ jobs:
         with:
           context: services/${{ env.SERVICE }}
           file: services/${{ env.SERVICE }}/Dockerfile
-          platforms: linux/amd64
-          tags: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}
           push: true
+          platforms: linux/amd64
           provenance: false
           sbom: false
+          tags: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}
       - name: Verify published manifest
         run: docker buildx imagetools inspect "${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}"
