@@ -158,3 +158,7 @@ DiT attention runs four heads at a time over the unchanged sequence/window plan.
 `check-dit-memory.py` compares real pinned attention branches and repeated offloaded blocks. `check-dit-capacity.py` exercises a 261,905-token, 5,376-wide block (QKV width 7,168; time embedding width 2,688) with 4 GiB of additional live GPU storage. These checks do not replace the original media-task acceptance. CPU staging increases transfer traffic; memory reduction is not a speed guarantee.
 
 The trunk and QKV widths are validated independently when installing the profile, before accepting a task. v0.3.11 rejected the production geometry at its first DiT call; v0.3.12 corrects that check.
+
+## Ref2VA 采样次数
+
+常驻 Runtime 接受 4 或 8 NFE，MCP 的新 H3-VDN 任务默认 4 NFE。二者都沿用 8-step DMD checkpoint 与模型锁；4 NFE 不是新训练权重。结果以 `sampling_nfe` 记录采样次数，`gpu.vdn_layout_calls` 必须与其相等。CLI 的 8/50 步模型选择保持原有含义。

@@ -66,6 +66,22 @@ class ResidentTests(unittest.TestCase):
         for payload in cases:
             self.assertEqual(self.call('POST', '/v1/videos', payload)[0], 400)
 
+    def test_four_step_sampling_and_eight_step_compatibility(self):
+        self.state.update(ready=True, stage='ready')
+        for steps in (4, 8):
+            payload = dict(request(), num_inference_steps=steps, idempotency_key=f'nfe-{steps}')
+            status, task = self.call('POST', '/v1/videos', payload)
+            self.assertEqual(status, 200)
+            accepted = self.store.take()
+            self.assertEqual(accepted['id'], task['id'])
+            self.assertEqual(accepted['request']['num_inference_steps'], steps)
+            self.assertEqual(self.call('POST', '/v1/videos', payload)[1]['id'], task['id'])
+            changed = dict(payload, num_inference_steps=8 if steps == 4 else 4)
+            self.assertEqual(self.call('POST', '/v1/videos', changed)[0], 409)
+            self.store.finish(task['id'], error='test_finished')
+        for steps in (True, 4.0, '4', 0, 5, 50):
+            self.assertEqual(self.call('POST', '/v1/videos', dict(request(), num_inference_steps=steps))[0], 400)
+
     def test_second_process_owner_cannot_invalidate_active_tasks(self):
         task=self.store.submit('key', {})
         with self.assertRaisesRegex(RuntimeError, 'another runtime'):
