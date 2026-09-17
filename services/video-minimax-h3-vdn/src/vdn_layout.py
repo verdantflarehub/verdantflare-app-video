@@ -1,5 +1,6 @@
 """Bind Diffusers' target-only geometry to the upstream VDN attention modules."""
 import sys
+import json
 
 
 def attach_layout_bridge(transformer):
@@ -36,6 +37,9 @@ def attach_layout_bridge(transformer):
             raise ValueError('generated video must be the final packed segment')
         upstream.set_layout(transformer, layout)
         transformer._vdn_layout_calls += 1
+        print(json.dumps({"stage": "dit_layout", "step": transformer._vdn_layout_calls,
+                          "sequence_tokens": layout.seq_len, "target_frames": frames,
+                          "tokens_per_frame": layout.tokens_per_frame}), flush=True)
 
     transformer._prepare_vdn_layout = prepare
     return len(hybrids)

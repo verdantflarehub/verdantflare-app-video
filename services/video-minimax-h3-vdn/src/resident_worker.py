@@ -39,6 +39,8 @@ class Engine:
             from vdn_memory import install_frame_statistics, install_linear_readout
             install_frame_statistics(upstream)
             install_linear_readout(upstream)
+            from vdn_dit_memory import install_dit_memory
+            self.dit_memory_profile = install_dit_memory(upstream, self.pipeline.transformer_ref)
             self.softmax_backend = upstream.set_softmax_backend(self.pipeline.transformer_ref, "decomposed")
 
     @staticmethod
@@ -99,7 +101,7 @@ class Engine:
             torch.cuda.synchronize(index)
         if transformer._vdn_layout_calls != args.steps or transformer._vdn_linear_calls < args.steps*self.hybrid_blocks:
             raise RuntimeError('VDN branch execution was not verified')
-        return {'encoder_profile': self.pipeline.text_encoder._vdn_encoder_profile,
+        return {'dit_memory_profile': self.dit_memory_profile, 'encoder_profile': self.pipeline.text_encoder._vdn_encoder_profile,
                 'precision': self.precision, 'fp8_linear_count': self.fp8_linear_count,
                 'vdn_softmax_backend': self.softmax_backend, 'peak_allocated_bytes': [torch.cuda.max_memory_allocated(i) for i in range(2)],
                 'peak_reserved_bytes': [torch.cuda.max_memory_reserved(i) for i in range(2)],
@@ -195,7 +197,8 @@ def main():
         engine = Engine(models)
         state.update(ready=True, stage='ready', model_load_count=1, load_seconds=time.monotonic()-started,
                      precision=engine.precision, fp8_linear_count=engine.fp8_linear_count,
-                     encoder_profile=engine.pipeline.text_encoder._vdn_encoder_profile)
+                     encoder_profile=engine.pipeline.text_encoder._vdn_encoder_profile,
+                     dit_memory_profile=engine.dit_memory_profile)
         print(json.dumps(state.snapshot()), flush=True)
         while not stop.is_set():
             task = store.take()
