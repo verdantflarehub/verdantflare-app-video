@@ -42,6 +42,7 @@ class TaskRecord(BaseModel):
     completed_at: str | None = None
     dispatched_at: str | None = None
     artifact_id: str | None = None
+    collection: dict[str, object] | None = None
     media: dict[str, object] | None = None
     error: dict[str, str] | None = None
 

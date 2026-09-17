@@ -8,6 +8,8 @@ import sqlite3
 import httpx
 from .executor import ExecutionError, serialized
 from .tasks import TaskConflict
+from .archive import ArchiveError, S3Archive
+from .artifacts import ArtifactError
 
 
 class H3LatentExecutor:
@@ -21,6 +23,9 @@ class H3LatentExecutor:
         self.token = os.environ.get('H3_LATENT_RUNTIME_TOKEN', '')
         self.index = Path(os.environ.get('H3_LATENT_SOURCE_INDEX', '/data/h3-latent/source-index.sqlite'))
         self.node = os.environ.get('H3_LATENT_NODE_NAME', '')
+
+    def archive(self):
+        return S3Archive.from_environment()
 
     @property
     def headers(self):
@@ -107,6 +112,10 @@ class H3LatentExecutor:
                 raise TaskConflict('idempotency key has different input')
             return old
         self.register_source(source)
+        try:
+            self.archive().preflight()
+        except ArchiveError as exc:
+            raise ExecutionError('archive_unavailable: result archival must be ready before processing') from exc
         record = self.tasks.create(project_id=source.project_id, idempotency_key=key, input_digest=digest,
                                    request=request, runtime_task_id=None, status='queued',
                                    error={'code': 'submission_unconfirmed', 'message': 'Submission is pending confirmation'})
@@ -136,19 +145,42 @@ class H3LatentExecutor:
     def collect(self, record, result):
         if result.get('source_video_task_id') != record.request['source_video_task_id']:
             raise ValueError('source mismatch')
-        ids = {}
         for name in ('content', 'preview'):
-            digest = result.get(name + '_sha256')
-            if not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest):
+            if not re.fullmatch('[0-9a-f]{64}', str(result.get(name + '_sha256', ''))):
                 raise ValueError('invalid output digest')
-            with self.client.stream('GET', f'{self.url}/v1/upscales/{record.video_task_id}/{name}', headers=self.headers, timeout=180) as response:
-                response.raise_for_status()
-                artifact = self.artifacts.create_from_chunks(project_id=record.project_id, operation=f'video.h3.latent.upscale.{name}',
-                    filename=f'{record.video_task_id}-{name}.mp4', media_type='video/mp4',
-                    chunks=response.iter_bytes(), expected_sha256=digest)
-            ids[name] = artifact.artifact_id
-        return self.tasks.update(record, status='succeeded', artifact_id=ids['content'], error=None,
-            media={**result['media'], 'preview_artifact_id': ids['preview'], 'source_video_task_id': result['source_video_task_id']},
+        if not isinstance(result.get('media'), dict):
+            raise ValueError('invalid output media')
+        state = record.collection or {'result': result, 'artifacts': {}, 'archives': {}}
+        if state['result'] != result:
+            raise ValueError('runtime result changed after collection began')
+        record = self.tasks.update(record, status='running', runtime_stage='archiving',
+                                   collection=state, error=None)
+        try:
+            archive = self.archive()
+            for name in ('content', 'preview'):
+                digest = result[name + '_sha256']
+                artifact_id = state['artifacts'].get(name)
+                if artifact_id:
+                    artifact = self.artifacts.get(artifact_id, record.project_id)
+                    if artifact.sha256 != digest:
+                        raise ValueError('collected output changed')
+                else:
+                    with self.client.stream('GET', f'{self.url}/v1/upscales/{record.video_task_id}/{name}', headers=self.headers, timeout=180) as response:
+                        response.raise_for_status()
+                        artifact = self.artifacts.create_from_chunks(project_id=record.project_id, operation=f'video.h3.latent.upscale.{name}',
+                            filename=f'{record.video_task_id}-{name}.mp4', media_type='video/mp4',
+                            chunks=response.iter_bytes(), expected_sha256=digest)
+                    state['artifacts'][name] = artifact.artifact_id
+                    record = self.tasks.update(record, collection=state)
+                if name not in state['archives']:
+                    state['archives'][name] = archive.store(artifact, self.artifacts.content_path(artifact), record.video_task_id, name)
+                    record = self.tasks.update(record, collection=state)
+        except (ArchiveError, ArtifactError, httpx.HTTPError, OSError):
+            return self.tasks.update(record, error={'code': 'archive_pending',
+                'message': 'Result delivery is pending; query this task to retry without repeating inference'})
+        return self.tasks.update(record, status='succeeded', runtime_stage='completed',
+            artifact_id=state['artifacts']['content'], error=None,
+            media={**result['media'], 'preview_artifact_id': state['artifacts']['preview'], 'source_video_task_id': result['source_video_task_id']},
             runtime_metrics=result.get('runtime_metrics'))
 
     @serialized
@@ -159,6 +191,8 @@ class H3LatentExecutor:
         if record.status in {'succeeded', 'failed'}:
             return record
         try:
+            if record.collection:
+                return self.collect(record, record.collection['result'])
             response = self.client.get(f'{self.url}/v1/upscales/{task_id}', headers=self.headers, timeout=15)
             if response.status_code == 404 and record.error and record.error.get('code') == 'submission_unconfirmed':
                 return self.submit(record)
@@ -182,4 +216,5 @@ class H3LatentExecutor:
         artifact_id = record.media['preview_artifact_id'] if preview else record.artifact_id
         artifact = self.artifacts.get(artifact_id, record.project_id)
         return {**self.public_status(record), 'artifact_id': artifact_id, 'download_path': self.artifacts.download_path(artifact_id),
-                'sha256': artifact.sha256, 'media': record.media}
+                'sha256': artifact.sha256, 'media': record.media,
+                'download_url': record.collection['archives']['preview' if preview else 'content']['download_url']}

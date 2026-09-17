@@ -20,6 +20,9 @@ class H3LatentTests(unittest.TestCase):
             'H3_VDN_RUNTIME_TOKEN': 'vdn-test', 'H3_RUNTIME_ROUTES': json.dumps({'h3-vdn': {
                 'url': 'http://vdn', 'service': 'h3-vdn', 'version': 'test', 'task': 'ref2va'}})})
         self.env.start(); self.addCleanup(self.env.stop)
+        archive_patch = patch('verdantflare_video_mcp.h3_latent.S3Archive.from_environment')
+        self.archive = archive_patch.start().return_value
+        self.addCleanup(archive_patch.stop)
         self.tasks = TaskStore(self.root)
         self.source = self.tasks.create(project_id='project-a', idempotency_key='source', input_digest='source',
             request={'route': 'h3-vdn'}, runtime_task_id='vdn_' + 'b' * 32, status='succeeded')
@@ -84,3 +87,50 @@ class H3LatentTests(unittest.TestCase):
         with self.assertRaisesRegex(ExecutionError, 'source_node_mismatch'):
             self.adapter.generate(self.source.video_task_id)
         self.assertFalse(self.posts)
+
+    def test_archive_unavailable_rejects_before_gpu_submission(self):
+        from verdantflare_video_mcp.archive import ArchiveError
+        self.archive.preflight.side_effect = ArchiveError('unavailable')
+        with self.assertRaisesRegex(ExecutionError, 'archive_unavailable'):
+            self.adapter.generate(self.source.video_task_id)
+        self.assertFalse(self.posts)
+        self.assertEqual(len(list(self.tasks.root.glob('video_task_*.json'))), 1)
+
+    def test_restart_retries_archive_without_inference_or_redownload(self):
+        import hashlib
+        from verdantflare_video_mcp.archive import ArchiveError
+        record = self.adapter.generate(self.source.video_task_id)
+        payloads = {'content': b'content-bytes', 'preview': b'preview-bytes'}
+        downloads = []
+        def download(request):
+            self.assertEqual(request.method, 'GET')
+            name = request.url.path.rsplit('/', 1)[-1]
+            self.assertIn(name, payloads)  # No runtime status lookup or submission on resume.
+            downloads.append(name)
+            return httpx.Response(200, content=payloads[name])
+        client = httpx.Client(transport=httpx.MockTransport(download))
+        self.adapter.client = client
+        result = {'source_video_task_id': self.source.video_task_id, 'media': {'width': 1152},
+                  **{name + '_sha256': hashlib.sha256(data).hexdigest() for name, data in payloads.items()}}
+        archived = []
+        def archive(artifact, path, task_id, name):
+            self.assertEqual(path.read_bytes(), payloads[name])
+            archived.append(name)
+            if len(archived) == 2:
+                raise ArchiveError('temporary preview failure')
+            return {'download_url': 'https://archive.invalid/' + name, 'sha256': artifact.sha256}
+        self.archive.store.side_effect = archive
+        pending = self.adapter.collect(record, result)
+        self.assertEqual(pending.status, 'running')
+        self.assertEqual(pending.error['code'], 'archive_pending')
+        self.assertIsNone(pending.completed_at)
+        self.assertEqual(downloads, ['content', 'preview'])
+        restarted = VideoExecutor(ArtifactStore(self.root), TaskStore(self.root), client)
+        completed = restarted.status(record.video_task_id)
+        self.assertEqual(completed.status, 'succeeded')
+        self.assertEqual(downloads, ['content', 'preview'])
+        self.assertEqual(archived, ['content', 'preview', 'preview'])
+        self.assertEqual(len(self.posts), 1)
+        self.assertEqual(len(list(self.executor.artifacts.artifacts_root.glob('art_*'))), 2)
+        public = restarted.processing['h3-latent-upscale'].public_result(completed)
+        self.assertEqual(public['download_url'], 'https://archive.invalid/content')

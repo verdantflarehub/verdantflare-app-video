@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hmac
+from functools import wraps
+
+import httpx
 import json
 import logging
 import os
@@ -30,7 +33,50 @@ dashboard = Dashboard(executor)
 mcp = MCPServer("VerdantFlare Video")
 
 
+def _latent_errors(function):
+    """Expose stable post-processing errors without forwarding internal messages."""
+    @wraps(function)
+    def guarded(*args, **kwargs):
+        try:
+            return function(*args, **kwargs)
+        except (TaskNotFound, TaskConflict, ValueError, ExecutionError, ArtifactError, httpx.HTTPError) as exc:
+            retryable = False
+            if isinstance(exc, TaskNotFound):
+                code, message = 'task_not_found', 'The task is unavailable in the authorized scope.'
+            elif isinstance(exc, TaskConflict):
+                code, message = 'idempotency_conflict', 'The idempotency key belongs to different inputs.'
+            elif isinstance(exc, ValueError):
+                code, message = 'invalid_request', 'Provide a valid public task ID and supported parameters; MP4 input is not accepted.'
+            elif isinstance(exc, ExecutionError):
+                code = str(exc).split(':', 1)[0]
+                messages = {
+                    'source_not_found': 'The source is unavailable in the authorized scope.',
+                    'archive_unavailable': 'Result archival is unavailable; no processing task was submitted.',
+                    'source_not_ready': 'The source task has not completed successfully.',
+                    'unsupported_source_route': 'The source route does not support latent post-processing.',
+                    'missing_latent_bundle': 'The source has no retained latent bundle; MP4-only tasks cannot be processed.',
+                    'source_node_mismatch': 'The source resources are not available on the processing node.',
+                    'source_identity_mismatch': 'The source resource identity does not match the task.',
+                    'invalid_source_descriptor': 'The source resource descriptor is invalid.',
+                    'source_changed_after_registration': 'The registered source resources have changed.',
+                }
+                if code in messages:
+                    message = messages[code]
+                    retryable = code == 'archive_unavailable'
+                else:
+                    code, message = 'postprocessing_unavailable', 'Post-processing is unavailable; retain the task ID and retry the query.'
+                    retryable = True
+            else:
+                code, message = 'postprocessing_unavailable', 'Resource access is unavailable; retain the task ID and retry the query.'
+                retryable = True
+            result = _result({'error': {'code': code, 'message': message, 'retryable': retryable}})
+            result.is_error = True
+            return result
+    return guarded
+
+
 @mcp.tool(name="video.h3.latent.upscale.generate")
+@_latent_errors
 def video_h3_latent_generate(source_video_task_id: str, project_id: str | None = None,
                             idempotency_key: str | None = None, profile_id: str | None = None,
                             target_width: int | None = None, target_height: int | None = None,
@@ -43,18 +89,21 @@ def video_h3_latent_generate(source_video_task_id: str, project_id: str | None =
 
 
 @mcp.tool(name="video.h3.latent.upscale.status")
+@_latent_errors
 def video_h3_latent_status(video_task_id: str) -> types.CallToolResult:
     adapter = executor.processing["h3-latent-upscale"]
     return _result(adapter.public_status(adapter.status(video_task_id)))
 
 
 @mcp.tool(name="video.h3.latent.upscale.result")
+@_latent_errors
 def video_h3_latent_result(video_task_id: str) -> types.CallToolResult:
     adapter = executor.processing["h3-latent-upscale"]
     return _result(adapter.public_result(adapter.result(video_task_id)))
 
 
 @mcp.tool(name="video.h3.latent.upscale.preview")
+@_latent_errors
 def video_h3_latent_preview(video_task_id: str) -> types.CallToolResult:
     adapter = executor.processing["h3-latent-upscale"]
     return _result(adapter.public_result(adapter.result(video_task_id), preview=True))

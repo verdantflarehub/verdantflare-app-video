@@ -1,11 +1,12 @@
 [project]
 name = "verdantflare-video-mcp-server"
-version = "0.9.7"
+version = "0.9.8"
 description = "VerdantFlare video-mcp-server service"
 requires-python = ">=3.11"
 dependencies = [
   "mcp==2.1.0",
   "httpx==0.28.1",
+  "boto3==1.40.76",
   "pydantic==2.12.5",
   "uvicorn==0.40.0",
 ]
