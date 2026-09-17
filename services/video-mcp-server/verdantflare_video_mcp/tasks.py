@@ -80,23 +80,26 @@ class TaskStore:
         return None
 
     def create(self, *, project_id: str, idempotency_key: str, input_digest: str,
-               request: dict[str, object], runtime_task_id: str, status: str) -> TaskRecord:
+               request: dict[str, object], runtime_task_id: str | None, status: str,
+               error: dict[str, str] | None = None) -> TaskRecord:
         existing = self.find_idempotency(project_id, idempotency_key)
         if existing:
             if existing.input_digest != input_digest:
                 raise TaskConflict("idempotency key already exists with different input")
             return existing
         now = datetime.now(UTC).isoformat()
-        if request.get("service") in {"depth", "sr", "interpolate"}:
+        if request.get("service") in {"depth", "sr", "interpolate", "h3-latent-upscale"}:
             service = str(request["service"])
         elif request.get("service") == "h3-sol":
             service = "h3-sol"
         else:
             route = str(request.get("route", "h3"))
             service = "h3-sol" if route.startswith("h3-sol") else "h3"
-        record = TaskRecord(video_task_id=f"video_task_{uuid.uuid4().hex}", service=service, project_id=project_id,
+        task_id = f"video_task_{uuid.uuid4().hex}"
+        record = TaskRecord(video_task_id=task_id, service=service, project_id=project_id,
                             idempotency_key=idempotency_key, input_digest=input_digest,
-                            request=request, runtime_task_id=runtime_task_id, status=status,
+                            request=request, runtime_task_id=task_id if runtime_task_id is None else runtime_task_id,
+                            status=status, error=error,
                             created_at=now, updated_at=now)
         self._write(record)
         return record

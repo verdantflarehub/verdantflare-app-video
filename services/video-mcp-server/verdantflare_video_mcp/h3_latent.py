@@ -108,9 +108,8 @@ class H3LatentExecutor:
             return old
         self.register_source(source)
         record = self.tasks.create(project_id=source.project_id, idempotency_key=key, input_digest=digest,
-                                   request=request, runtime_task_id='', status='queued')
-        record = self.tasks.update(record, service=self.service, runtime_task_id=record.video_task_id,
-            error={'code': 'submission_unconfirmed', 'message': 'Submission is pending confirmation'})
+                                   request=request, runtime_task_id=None, status='queued',
+                                   error={'code': 'submission_unconfirmed', 'message': 'Submission is pending confirmation'})
         return self.submit(record)
 
     def submit(self, record):
