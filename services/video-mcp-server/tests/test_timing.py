@@ -1,8 +1,8 @@
 import tempfile
 import unittest
 from pathlib import Path
-from verdantflare_video_mcp.tasks import TaskStore
-from verdantflare_video_mcp.dashboard import public_task
+from app.tasks import TaskStore
+from app.dashboard import public_task
 
 class TimingTests(unittest.TestCase):
     def setUp(self):

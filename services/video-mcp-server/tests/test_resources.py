@@ -3,7 +3,7 @@ import copy
 import unittest
 from unittest import mock
 
-from verdantflare_video_mcp.resources import Resources, parse_metrics
+from app.resources import Resources, parse_metrics
 
 GPU1 = 'GPU-11111111-1111-1111-1111-111111111111'
 GPU2 = 'GPU-22222222-2222-2222-2222-222222222222'
@@ -119,7 +119,7 @@ class ResourcesTest(unittest.TestCase):
         import os
         from starlette.testclient import TestClient
         from starlette.applications import Starlette
-        from verdantflare_video_mcp.server import BearerAuthMiddleware
+        from app.server import BearerAuthMiddleware
         app=Starlette(routes=self.resources.routes()); app.add_middleware(BearerAuthMiddleware)
         with mock.patch.dict(os.environ,{'VIDEO_MCP_BEARER_TOKEN':'test-only'}),TestClient(app) as client:
             paths=['/api/mcp/status','/api/models','/api/models/h3/instances', '/api/models/h3/instances/pod-1',f'/api/models/h3/instances/pod-1/gpus/{GPU1}']

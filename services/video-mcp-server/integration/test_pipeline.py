@@ -20,9 +20,9 @@ from video_interpolation.schemas import InterpolationRequest
 from video_sr.media import probe, validate_request, MediaError
 from video_interpolation.media import is_scene_cut, interpolate_frames, validate_request as validate_interpolation, MediaError as InterpolationMediaError
 from video_interpolation.integrity import verify_bundle
-from verdantflare_video_mcp.artifacts import ArtifactStore
-from verdantflare_video_mcp.executor import VideoExecutor
-from verdantflare_video_mcp.tasks import TaskStore
+from app.artifacts import ArtifactStore
+from app.executor import VideoExecutor
+from app.tasks import TaskStore
 
 
 class FixtureEngine:

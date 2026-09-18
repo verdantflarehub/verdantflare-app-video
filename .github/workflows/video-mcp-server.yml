@@ -13,12 +13,15 @@ concurrency:
   cancel-in-progress: false
 env:
   SERVICE: video-mcp-server
-  VERSION: 0.10.3
+  VERSION: 0.10.4
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Run unit tests
         env:
           PYTHONDONTWRITEBYTECODE: "1"
@@ -26,10 +29,16 @@ jobs:
         run: |
           python3 -m pip install ./services/${SERVICE}
           python3 -m unittest discover -s services/${SERVICE}/tests -v
-          node --check services/${SERVICE}/verdantflare_video_mcp/static/dashboard.js
-          node --check services/${SERVICE}/verdantflare_video_mcp/static/resources.js
-          node --check services/${SERVICE}/verdantflare_video_mcp/static/task-detail.js
-          node --check services/${SERVICE}/verdantflare_video_mcp/static/studio-embed.js
+          node --check services/${SERVICE}/frontend/dashboard.js
+          node --check services/${SERVICE}/frontend/resources.js
+          node --check services/${SERVICE}/frontend/task-detail.js
+          node --check services/${SERVICE}/frontend/studio-embed.js
+      - name: Build Vue frontend
+        working-directory: services/${{ env.SERVICE }}/frontend
+        run: |
+          corepack enable
+          pnpm install --no-frozen-lockfile
+          pnpm run build
       - name: Browser integration
         env:
           PYTHONPATH: services/video-mcp-server

@@ -4,9 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 import httpx
-from verdantflare_video_mcp.artifacts import ArtifactNotFound, ArtifactStore
-from verdantflare_video_mcp.executor import VideoExecutor, ExecutionError
-from verdantflare_video_mcp.tasks import TaskConflict, TaskStore
+from app.artifacts import ArtifactNotFound, ArtifactStore
+from app.executor import VideoExecutor, ExecutionError
+from app.tasks import TaskConflict, TaskStore
 
 
 class DepthMCPTest(unittest.TestCase):
@@ -122,7 +122,7 @@ class DepthMCPTest(unittest.TestCase):
         self.assertEqual(len([r for r in self.requests if r.method == 'POST']), 1)
 
     def test_all_depth_tools_registered(self):
-        from verdantflare_video_mcp import server
+        from app import server
         import asyncio
         names = {t.name for t in asyncio.run(server.mcp.list_tools())}
         self.assertTrue({'video.depth.generate','video.depth.status','video.depth.result','video.depth.preview','video.generate'} <= names)

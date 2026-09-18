@@ -17,10 +17,10 @@ from starlette.applications import Starlette
 from starlette.responses import FileResponse
 from starlette.routing import Route
 
-from verdantflare_video_mcp.artifacts import ArtifactStore
-from verdantflare_video_mcp.dashboard import Dashboard
-from verdantflare_video_mcp.executor import VideoExecutor
-from verdantflare_video_mcp.tasks import TaskStore
+from app.artifacts import ArtifactStore
+from app.dashboard import Dashboard
+from app.executor import VideoExecutor
+from app.tasks import TaskStore
 
 
 def main():
@@ -28,7 +28,7 @@ def main():
         root = Path(temporary)
         os.environ['VIDEO_ARTIFACT_ROOT'] = str(root)
         os.environ['VIDEO_MCP_BEARER_TOKEN'] = 'browser-test-token'
-        from verdantflare_video_mcp.server import BearerAuthMiddleware
+        from app.server import BearerAuthMiddleware
         artifacts, tasks = ArtifactStore(root), TaskStore(root)
         video = root/'fixture.mp4'
         subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','color=c=darkgreen:s=240x420:r=24',
@@ -56,7 +56,7 @@ def main():
         dashboard = Dashboard(executor)
         dashboard.services['h3'] = 'ready'
         from test_resources import Source
-        from verdantflare_video_mcp.resources import Resources
+        from app.resources import Resources
         dashboard.resources = Resources(Source())
         dashboard.resources.sync_inventory(); dashboard.resources.sync_metrics()
         async def content(request):

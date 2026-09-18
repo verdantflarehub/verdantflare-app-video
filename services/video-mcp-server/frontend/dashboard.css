@@ -1040,7 +1040,7 @@ td {
 
 .business-card{overflow-wrap:anywhere}.business-counts button.active{border-color:var(--green)}
 
-.task-identity{display:grid;gap:4px;margin:10px 0 12px;padding:8px 10px;border-left:2px solid var(--amber);background:#0d1712}.task-identity div{display:flex;gap:8px;align-items:baseline}.task-identity span{color:var(--muted);font-size:11px;min-width:56px}.task-identity strong{font-size:12px;font-weight:500;color:var(--paper);overflow-wrap:anywhere}.task-identity div+div strong{color:var(--amber)}
+.task-identity{display:grid;gap:4px;margin:10px 0 12px;padding:8px 10px;border-left:2px solid var(--amber);background:#0d1712}.task-identity div{display:flex;gap:8px;align-items:baseline}.task-identity span{color:var(--muted);font-size:11px;min-width:56px}.task-identity strong{font-size:12px;font-weight:500;color:var(--paper);overflow-wrap:anywhere}.task-identity .task-channel strong{color:var(--amber)}
 
 /* Approved workspace layout: fixed gallery cards and a separate task page. */
 [hidden]{display:none!important}
@@ -1069,7 +1069,7 @@ body{background:#0d120f;color:#e3e9e5}
 .task-identity>div{display:grid;grid-template-columns:3em minmax(0,1fr);gap:5px;text-align:left}
 .task-identity>div>span{width:auto}
 .task-identity strong{font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.task-identity>div:last-child{color:#ddb16c}
+.task-identity>.task-channel{color:#ddb16c}
 .card-badges{top:12px;right:12px;left:auto}
 .card-times{position:absolute;bottom:0;left:0;right:0;display:flex;justify-content:space-between;gap:12px;padding:30px 12px 12px;background:linear-gradient(transparent,#08120de8);font-size:10px;font-variant-numeric:tabular-nums;color:#ecf1ed;white-space:nowrap}
 .card-body{padding:14px 15px;flex:none;min-height:0;display:flex;flex-direction:column;justify-content:initial;gap:0}

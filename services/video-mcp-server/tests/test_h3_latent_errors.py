@@ -4,9 +4,9 @@ import unittest
 from unittest.mock import patch
 
 import httpx
-from verdantflare_video_mcp import server
-from verdantflare_video_mcp.executor import ExecutionError
-from verdantflare_video_mcp.tasks import TaskNotFound
+from app import server
+from app.executor import ExecutionError
+from app.tasks import TaskNotFound
 
 
 class LatentToolErrorsTests(unittest.TestCase):

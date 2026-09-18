@@ -12,10 +12,10 @@ from unittest import mock
 import httpx
 from starlette.testclient import TestClient
 
-from verdantflare_video_mcp.artifacts import ArtifactStore
-from verdantflare_video_mcp.dashboard import Dashboard
-from verdantflare_video_mcp.executor import ExecutionError, VideoExecutor
-from verdantflare_video_mcp.tasks import TaskStore
+from app.artifacts import ArtifactStore
+from app.dashboard import Dashboard
+from app.executor import ExecutionError, VideoExecutor
+from app.tasks import TaskStore
 
 
 class DashboardTest(unittest.TestCase):
@@ -38,7 +38,7 @@ class DashboardTest(unittest.TestCase):
         self.dashboard = Dashboard(self.executor)
         self.env = mock.patch.dict(os.environ, {'VIDEO_MCP_BEARER_TOKEN':'test-only-token'})
         self.env.start()
-        from verdantflare_video_mcp.server import BearerAuthMiddleware
+        from app.server import BearerAuthMiddleware
         from starlette.applications import Starlette
         app = Starlette(routes=self.dashboard.routes())
         app.add_middleware(BearerAuthMiddleware)
@@ -64,10 +64,10 @@ class DashboardTest(unittest.TestCase):
         for path in ('/api/dashboard', '/api/tasks/video_task_'+'a'*32):
             self.assertEqual(self.client.get(path).status_code, 401)
         self.assertEqual(self.client.post('/api/tasks', json=self.payload).status_code, 401)
-        self.assertEqual(self.client.get('/dashboard/static/dashboard.js').status_code, 200)
+        self.assertEqual(self.client.get('/dashboard/frontend/dashboard.js').status_code, 200)
         self.assertEqual(self.client.get('/dashboard/tasks/video_task_example').status_code, 200)
-        self.assertEqual(self.client.get('/dashboard/static/task-detail.js').status_code, 200)
-        self.assertEqual(self.client.get('/dashboard/static/server.py').status_code, 404)
+        self.assertEqual(self.client.get('/dashboard/frontend/task-detail.js').status_code, 200)
+        self.assertEqual(self.client.get('/dashboard/frontend/server.py').status_code, 404)
         self.assertEqual(self.client.get('/dashboard/').status_code, 200)
         with mock.patch.dict(os.environ, {'VIDEO_MCP_BEARER_TOKEN':''}):
             self.assertEqual(self.client.get('/api/dashboard').status_code, 503)
@@ -147,7 +147,7 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual(self.client.post('/api/tasks/'+record.video_task_id+'/result', headers=self.headers).status_code, 502)
 
     def test_lifespan_runs_without_affecting_mcp_route(self):
-        from verdantflare_video_mcp import server
+        from app import server
         async def poll_once():
             await asyncio.sleep(3600)
         with mock.patch.object(server, 'dashboard', self.dashboard), mock.patch.object(self.dashboard, 'poll', poll_once), \
@@ -159,7 +159,7 @@ class DashboardTest(unittest.TestCase):
                 self.assertEqual(response.status_code, 200, response.text)
 
     def test_mcp_submission_failure_returns_task_id_and_safe_error(self):
-        from verdantflare_video_mcp import server
+        from app import server
         def fail(request):
             raise httpx.ConnectError("private-secret")
         self.executor.client = httpx.Client(transport=httpx.MockTransport(fail))

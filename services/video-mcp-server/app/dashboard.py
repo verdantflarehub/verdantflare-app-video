@@ -20,7 +20,8 @@ from .executor import ExecutionError
 from .resources import Resources
 from .tasks import TaskConflict, TaskNotFound, TaskRecord, TaskStore
 
-STATIC = Path(__file__).parent / "static"
+STATIC = Path(__file__).parent.parent / "frontend"
+DIST = STATIC / "dist"
 
 
 class Reference(BaseModel):
@@ -58,9 +59,17 @@ class ImportRequest(BaseModel):
 
 def public_task(record):
     record = TaskStore.with_timing(record)
+    model = record.request.get("model")
+    if not model:
+        model = {
+            "sr": "seedvr2",
+            "interpolate": "rife",
+            "depth": "video-depth-anything",
+            "h3-latent-upscale": "h3-latent-upscaler",
+        }.get(record.service)
     return {"video_task_id": record.video_task_id, "project_id": record.project_id,
             "idempotency_key": record.idempotency_key, "service": record.service, "route": record.runtime_route or record.request.get("route"),
-            "model": record.request.get("model", "minimax-h3-ref2va"),
+            "model": model,
             "prompt": record.request.get("prompt", ""),
             "duration_seconds": record.request.get("duration_seconds"),
             "aspect_ratio": record.request.get("aspect_ratio"), "seed": record.request.get("seed", 7),
@@ -249,19 +258,22 @@ class Dashboard:
         async def shell(request):
             if request.url.path.endswith("/"):
                 return RedirectResponse("../dashboard")
-            return FileResponse(STATIC / "dashboard.html", headers={"Cache-Control": "no-store"})
+            entry = DIST / "index.html" if (DIST / "index.html").is_file() else STATIC / "dashboard.html"
+            return FileResponse(entry, headers={"Cache-Control": "no-store"})
 
         async def task_shell(request):
             return FileResponse(STATIC / "task-detail.html", headers={"Cache-Control": "no-store"})
 
         async def asset(request):
             name = request.path_params["name"]
-            if name not in {"dashboard.css", "dashboard.js", "resources.js", "task-detail.js", "studio-embed.js", "studio-theme.css"}:
+            candidate = (DIST / name).resolve() if DIST.is_dir() else (STATIC / name).resolve()
+            root = DIST.resolve() if DIST.is_dir() else STATIC.resolve()
+            if candidate != root and root not in candidate.parents or not candidate.is_file():
                 return JSONResponse({"error": "not_found"}, status_code=404)
-            return FileResponse(STATIC / name, headers={"Cache-Control": "no-cache"})
+            return FileResponse(candidate, headers={"Cache-Control": "no-cache"})
 
         return [*self.resources.routes(), Route("/dashboard", shell), Route("/dashboard/", shell),
-                Route("/dashboard/static/{name:str}", asset),
+                Route("/dashboard/frontend/{name:path}", asset),
                 Route("/dashboard/tasks/{task_id:str}", task_shell),
                 Route("/api/dashboard", self.endpoint), Route("/api/tasks", self.endpoint, methods=["POST"]),
                 Route("/api/tasks/{task_id:str}", self.endpoint),

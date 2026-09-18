@@ -9,8 +9,8 @@ import boto3
 from botocore.stub import Stubber, ANY
 from botocore.response import StreamingBody
 import httpx
-from verdantflare_video_mcp.archive import S3Archive, ArchiveError
-from verdantflare_video_mcp.artifacts import ArtifactStore
+from app.archive import S3Archive, ArchiveError
+from app.artifacts import ArtifactStore
 
 
 class ArchiveTests(unittest.TestCase):
@@ -43,7 +43,7 @@ class ArchiveTests(unittest.TestCase):
             'ContentType': 'video/mp4', 'Metadata': {'sha256': self.artifact.sha256}, 'IfNoneMatch': '*'})
         self.stub.add_response('get_object', self.get_response(self.data), self.params)
         response = httpx.Response(200, content=self.data, request=httpx.Request('GET', 'https://public.invalid'))
-        with patch('verdantflare_video_mcp.archive.httpx.stream') as stream:
+        with patch('app.archive.httpx.stream') as stream:
             stream.return_value.__enter__.return_value = response
             result = self.run_store()
         self.assertEqual(result['sha256'], hashlib.sha256(self.data).hexdigest())
@@ -62,7 +62,7 @@ class ArchiveTests(unittest.TestCase):
         self.stub.add_client_error('put_object', 'PreconditionFailed', http_status_code=412)
         self.stub.add_response('get_object', self.get_response(self.data), self.params)
         response = httpx.Response(200, content=b'wrong-public-bytes', request=httpx.Request('GET', 'https://public.invalid'))
-        with patch('verdantflare_video_mcp.archive.httpx.stream') as stream:
+        with patch('app.archive.httpx.stream') as stream:
             stream.return_value.__enter__.return_value = response
             with self.assertRaisesRegex(ArchiveError, 'archive_content_mismatch'):
                 self.run_store()

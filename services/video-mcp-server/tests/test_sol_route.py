@@ -5,9 +5,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 import httpx
-from verdantflare_video_mcp.artifacts import ArtifactStore
-from verdantflare_video_mcp.tasks import TaskStore,TaskConflict
-from verdantflare_video_mcp.executor import VideoExecutor
+from app.artifacts import ArtifactStore
+from app.tasks import TaskStore,TaskConflict
+from app.executor import VideoExecutor
 
 class SolRouteTest(unittest.TestCase):
  def setUp(self):

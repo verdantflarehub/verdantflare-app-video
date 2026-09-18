@@ -8,9 +8,9 @@ from unittest import mock
 
 import httpx
 
-from verdantflare_video_mcp.artifacts import ArtifactStore
-from verdantflare_video_mcp.executor import ExecutionError, VideoExecutor
-from verdantflare_video_mcp.tasks import TaskConflict, TaskStore
+from app.artifacts import ArtifactStore
+from app.executor import ExecutionError, VideoExecutor
+from app.tasks import TaskConflict, TaskStore
 
 
 class VideoMCPTest(unittest.TestCase):
@@ -106,7 +106,7 @@ class VideoMCPTest(unittest.TestCase):
             ],
             "format": {"duration": "13.675"},
         }))
-        with mock.patch("verdantflare_video_mcp.executor.subprocess.run", return_value=probe):
+        with mock.patch("app.executor.subprocess.run", return_value=probe):
             result = executor.result(record.video_task_id)
         self.assertEqual(result.media["duration_ms"], 13675)
         self.assertIsNotNone(result.artifact_id)
@@ -124,7 +124,7 @@ class VideoMCPTest(unittest.TestCase):
                          "height": 1344, "r_frame_rate": "24/1"}],
             "format": {"duration": "14.001"},
         }))
-        with mock.patch("verdantflare_video_mcp.executor.subprocess.run", return_value=probe):
+        with mock.patch("app.executor.subprocess.run", return_value=probe):
             with self.assertRaisesRegex(ExecutionError, "duration"):
                 executor.result(record.video_task_id)
 

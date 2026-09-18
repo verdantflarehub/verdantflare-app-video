@@ -4,8 +4,8 @@ import os
 from unittest.mock import patch
 import unittest
 import test_sol_route
-from verdantflare_video_mcp.executor import ExecutionError, VideoExecutor
-from verdantflare_video_mcp.resources import Resources
+from app.executor import ExecutionError, VideoExecutor
+from app.resources import Resources
 
 
 class VdnRouteTest(unittest.TestCase):

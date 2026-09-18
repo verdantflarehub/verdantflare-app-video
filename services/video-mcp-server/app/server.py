@@ -275,7 +275,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.url.path == "/health" or request.url.path.startswith("/runtime-artifacts/"):
             return await call_next(request)
-        if request.url.path in {"/dashboard", "/dashboard/"} or request.url.path.startswith(("/dashboard/static/", "/dashboard/tasks/")):
+        if request.url.path in {"/dashboard", "/dashboard/"} or request.url.path.startswith(("/dashboard/frontend/", "/dashboard/tasks/")):
             response = await call_next(request)
             response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
             response.headers["X-Content-Type-Options"] = "nosniff"

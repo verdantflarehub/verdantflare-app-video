@@ -5,9 +5,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import httpx
-from verdantflare_video_mcp.artifacts import ArtifactStore
-from verdantflare_video_mcp.tasks import TaskStore
-from verdantflare_video_mcp.executor import VideoExecutor, ExecutionError
+from app.artifacts import ArtifactStore
+from app.tasks import TaskStore
+from app.executor import VideoExecutor, ExecutionError
 
 
 class H3LatentTests(unittest.TestCase):
@@ -20,7 +20,7 @@ class H3LatentTests(unittest.TestCase):
             'H3_VDN_RUNTIME_TOKEN': 'vdn-test', 'H3_RUNTIME_ROUTES': json.dumps({'h3-vdn': {
                 'url': 'http://vdn', 'service': 'h3-vdn', 'version': 'test', 'task': 'ref2va'}})})
         self.env.start(); self.addCleanup(self.env.stop)
-        archive_patch = patch('verdantflare_video_mcp.h3_latent.S3Archive.from_environment')
+        archive_patch = patch('app.h3_latent.S3Archive.from_environment')
         self.archive = archive_patch.start().return_value
         self.addCleanup(archive_patch.stop)
         self.tasks = TaskStore(self.root)
@@ -91,7 +91,7 @@ class H3LatentTests(unittest.TestCase):
         self.assertFalse(self.posts)
 
     def test_archive_unavailable_rejects_before_gpu_submission(self):
-        from verdantflare_video_mcp.archive import ArchiveError
+        from app.archive import ArchiveError
         self.archive.preflight.side_effect = ArchiveError('unavailable')
         with self.assertRaisesRegex(ExecutionError, 'archive_unavailable'):
             self.adapter.generate(self.source.video_task_id)
@@ -100,7 +100,7 @@ class H3LatentTests(unittest.TestCase):
 
     def test_restart_retries_archive_without_inference_or_redownload(self):
         import hashlib
-        from verdantflare_video_mcp.archive import ArchiveError
+        from app.archive import ArchiveError
         record = self.adapter.generate(self.source.video_task_id)
         payloads = {'content': b'content-bytes', 'preview': b'preview-bytes'}
         downloads = []
