@@ -20,7 +20,9 @@ from .executor import ExecutionError
 from .resources import Resources
 from .tasks import TaskConflict, TaskNotFound, TaskRecord, TaskStore
 
-STATIC = Path(__file__).parent.parent / "frontend"
+_PACKAGE_FRONTEND = Path(__file__).parent.parent / "frontend"
+_WORKSPACE_FRONTEND = Path.cwd() / "services" / "video-mcp-server" / "frontend"
+STATIC = _WORKSPACE_FRONTEND if (_WORKSPACE_FRONTEND / "dist").is_dir() else _PACKAGE_FRONTEND
 DIST = STATIC / "dist"
 
 
