@@ -104,10 +104,13 @@ def finalize(directory, task, provenance, media):
     if not project or not node:
         raise ValueError('latent_export_requires_project_and_node')
     video_stream = next(stream for stream in media['streams'] if stream['codec_type'] == 'video')
+    fps = video_stream.get('avg_frame_rate', '24/1')
+    if isinstance(fps, str) and fps.endswith('/1'):
+        fps = int(fps[:-2])
     manifest = {'schema': 'h3-latent-bundle/v1', 'representation': 'h3-normalized-av/v1',
                 'project_id': project, 'source_video_task_id': public_id, 'runtime_task_id': task['id'],
                 'node': node, 'latent_state': 'clean', 'source_route': 'h3-vdn',
-                'media': {'fps': video_stream.get('avg_frame_rate', '24/1'),
+                'media': {'fps': fps,
                           'width': int(video_stream['width']), 'height': int(video_stream['height']),
                           'frames': int(video_stream['nb_read_frames'])},
                 'request': request, 'provenance': provenance, 'files': {}}
