@@ -86,7 +86,7 @@ def main():
                 expect(page.get_by_role('heading', name='连接 Video MCP')).to_be_visible()
                 # Package-installed CI may expose the legacy shell when frontend assets are unavailable.
                 # The image build performs the definitive Vue asset check; keep this smoke test non-blocking there.
-                if page.get_by_role('button', name='连接').count() == 0:
+                if page.locator('.token-form').count() == 0:
                     browser.close()
                     print('Browser integration passed: dashboard shell reachable (frontend assets unavailable in package smoke environment)')
                     return
