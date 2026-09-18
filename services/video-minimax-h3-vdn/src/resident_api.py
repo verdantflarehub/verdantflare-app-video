@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from task_store import Conflict, QueueFull
 from ref2va_io import validate
 
-VERSION = 'video-minimax-h3-vdn-v0.3.16'
+VERSION = 'video-minimax-h3-vdn-v0.3.17'
 
 
 

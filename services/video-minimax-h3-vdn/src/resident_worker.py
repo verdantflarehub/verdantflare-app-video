@@ -97,7 +97,9 @@ class Engine:
         args = SimpleNamespace(**vars(self.args), out=str(output), frames=FRAMES[request['seconds']],
                                steps=request['num_inference_steps'], seed=request['seed'])
         from latent_export import ExportingPipeline
-        pipeline = ExportingPipeline(self.pipeline, Path(output).parent) if request.get('project_id') else self.pipeline
+        # Every generation runs through the exporter. Project tasks publish the
+        # bundle below; non-project probes still exercise the same contract.
+        pipeline = ExportingPipeline(self.pipeline, Path(output).parent)
         render_ref2va(pipeline, args, request['prompt'], paths)
         for index in range(2):
             torch.cuda.synchronize(index)
@@ -134,14 +136,18 @@ def execute(store, task, engine, provenance):
         from latent_export import finalize
         if gpu.get('latent_export_error'):
             result['latent_bundle_status'] = 'export_failed'
+            (directory / 'record.json').write_text(json.dumps(dict(request=task['request'], result=result), indent=2) + '\n')
+            store.finish(task['id'], error='latent_bundle_export_failed')
+            return
         else:
             try:
                 result['latent_bundle'] = finalize(directory, task, provenance, media)
                 result['latent_bundle_status'] = 'ready'
             except Exception:
-                # The validated source video remains a successful generation.
-                # No descriptor is published for an incomplete resource bundle.
                 result['latent_bundle_status'] = 'export_failed'
+                (directory / 'record.json').write_text(json.dumps(dict(request=task['request'], result=result), indent=2) + '\n')
+                store.finish(task['id'], error='latent_bundle_export_failed')
+                return
     (directory / 'record.json').write_text(json.dumps(dict(request=task['request'], result=result), indent=2) + '\n')
     store.finish(task['id'], result=result)
 

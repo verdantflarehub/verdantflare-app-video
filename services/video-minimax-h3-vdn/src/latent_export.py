@@ -3,6 +3,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
+import tempfile
 
 
 def digest(path):
@@ -40,47 +42,54 @@ class ExportingPipeline:
     def _export(self, result):
         import torch
         from safetensors.torch import save_file
-        directory = self.directory / 'latent-bundle'
-        directory.mkdir(exist_ok=False)
+        if (self.directory / 'latent-bundle').exists():
+            raise FileExistsError('latent_bundle_already_exists')
+        temporary = Path(tempfile.mkdtemp(prefix='.latent-bundle-', dir=self.directory))
+        directory = temporary
         metadata, conditions = {}, {}
-        for name in self.FIELDS:
-            value = result[name]
-            if name == 'normalized_references':
-                metadata[name] = [{'kind': ref.kind, 'has_audio': bool(ref.has_audio)} for ref in value]
-            elif isinstance(value, torch.Tensor):
-                tensor = value.detach().cpu().contiguous()
-                if tensor.is_floating_point() and not torch.isfinite(tensor).all():
-                    raise ValueError('nonfinite_export_tensor')
-                if name == 'latents':
-                    if tensor.ndim != 5 or tensor.shape[:2] != (1, 24):
-                        raise ValueError('invalid_video_latent_shape')
-                    save_file({'samples': tensor}, directory / 'video.safetensors')
-                elif name == 'audio_latents':
-                    if tensor.ndim != 3 or tensor.shape[:2] != (2, 32):
-                        raise ValueError('invalid_audio_latent_shape')
-                    save_file({'samples': tensor.permute(1, 0, 2).unsqueeze(0).contiguous()}, directory / 'audio.safetensors')
+        try:
+            for name in self.FIELDS:
+                value = result[name]
+                if name == 'normalized_references':
+                    metadata[name] = [{'kind': ref.kind, 'has_audio': bool(ref.has_audio)} for ref in value]
+                elif isinstance(value, torch.Tensor):
+                    tensor = value.detach().cpu().contiguous()
+                    if tensor.is_floating_point() and not torch.isfinite(tensor).all():
+                        raise ValueError('nonfinite_export_tensor')
+                    if name == 'latents':
+                        if tensor.ndim != 5 or tensor.shape[:2] != (1, 24):
+                            raise ValueError('invalid_video_latent_shape')
+                        save_file({'samples': tensor}, directory / 'video.safetensors')
+                    elif name == 'audio_latents':
+                        if tensor.ndim != 3 or tensor.shape[:2] != (2, 32):
+                            raise ValueError('invalid_audio_latent_shape')
+                        save_file({'samples': tensor.permute(1, 0, 2).unsqueeze(0).contiguous()}, directory / 'audio.safetensors')
+                    else:
+                        conditions[name] = tensor
+                elif isinstance(value, list):
+                    names = []
+                    for index, tensor in enumerate(value):
+                        if tensor is None:
+                            names.append(None)
+                            continue
+                        if not isinstance(tensor, torch.Tensor):
+                            raise ValueError('unsupported_condition_export')
+                        key = f'{name}.{index}'
+                        conditions[key] = tensor.detach().cpu().contiguous()
+                        if conditions[key].is_floating_point() and not torch.isfinite(conditions[key]).all():
+                            raise ValueError('nonfinite_condition_tensor')
+                        names.append(key)
+                    metadata[name] = names
+                elif type(value) in (int, float, str, bool) or value is None:
+                    metadata[name] = value
                 else:
-                    conditions[name] = tensor
-            elif isinstance(value, list):
-                names = []
-                for index, tensor in enumerate(value):
-                    if tensor is None:
-                        names.append(None)
-                        continue
-                    if not isinstance(tensor, torch.Tensor):
-                        raise ValueError('unsupported_condition_export')
-                    key = f'{name}.{index}'
-                    conditions[key] = tensor.detach().cpu().contiguous()
-                    if conditions[key].is_floating_point() and not torch.isfinite(conditions[key]).all():
-                        raise ValueError('nonfinite_condition_tensor')
-                    names.append(key)
-                metadata[name] = names
-            elif type(value) in (int, float, str, bool) or value is None:
-                metadata[name] = value
-            else:
-                raise ValueError(f'unsupported_export_field:{name}')
-        save_file(conditions, directory / 'conditions.safetensors')
-        (directory / 'geometry.json').write_text(json.dumps(metadata, indent=2, allow_nan=False) + '\n')
+                    raise ValueError(f'unsupported_export_field:{name}')
+            save_file(conditions, directory / 'conditions.safetensors')
+            (directory / 'geometry.json').write_text(json.dumps(metadata, indent=2, allow_nan=False) + '\n')
+            directory.replace(self.directory / 'latent-bundle')
+        except Exception:
+            shutil.rmtree(directory, ignore_errors=True)
+            raise
 
 
 def finalize(directory, task, provenance, media):
@@ -94,10 +103,13 @@ def finalize(directory, task, provenance, media):
     node = os.environ.get('VDN_NODE_NAME')
     if not project or not node:
         raise ValueError('latent_export_requires_project_and_node')
+    video_stream = next(stream for stream in media['streams'] if stream['codec_type'] == 'video')
     manifest = {'schema': 'h3-latent-bundle/v1', 'representation': 'h3-normalized-av/v1',
                 'project_id': project, 'source_video_task_id': public_id, 'runtime_task_id': task['id'],
                 'node': node, 'latent_state': 'clean', 'source_route': 'h3-vdn',
-                'media': {'fps': 24, 'width': 768, 'height': 1344, 'frames': int(next(stream for stream in media['streams'] if stream['codec_type'] == 'video')['nb_read_frames'])},
+                'media': {'fps': video_stream.get('avg_frame_rate', '24/1'),
+                          'width': int(video_stream['width']), 'height': int(video_stream['height']),
+                          'frames': int(video_stream['nb_read_frames'])},
                 'request': request, 'provenance': provenance, 'files': {}}
     files = {'video_latent': bundle / 'video.safetensors', 'audio_latent': bundle / 'audio.safetensors',
              'conditions': bundle / 'conditions.safetensors', 'geometry': bundle / 'geometry.json',

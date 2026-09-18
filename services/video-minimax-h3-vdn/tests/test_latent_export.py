@@ -55,16 +55,20 @@ class LatentExportTest(unittest.TestCase):
             (root / 'video.mp4').write_bytes(b'media-validation-is-performed-before-finalize')
             task = {'id': 'vdn_' + 'b' * 32, 'idempotency_key': 'video_task_' + 'a' * 32,
                     'request': {'project_id': 'project-a', 'conditions': []}}
+            media = {'streams': [{'codec_type': 'video', 'nb_read_frames': '124',
+                                  'width': 768, 'height': 1344, 'avg_frame_rate': '24/1'}]}
             with patch.dict(os.environ, {'VDN_PROJECTS_ROOT': tmp, 'VDN_NODE_NAME': 'node-a'}):
-                descriptor = finalize(root, task, {'model_revision': 'fixed'}, {'streams': [
-                    {'codec_type': 'video', 'nb_read_frames': '124'}]})
+                descriptor = finalize(root, task, {'model_revision': 'fixed'}, media)
             manifest = json.loads((root / descriptor['manifest_path']).read_text())
             self.assertEqual(manifest['source_video_task_id'], task['idempotency_key'])
             self.assertEqual(manifest['media']['frames'], 124)
+            self.assertEqual(manifest['media']['width'], 768)
+            self.assertEqual(manifest['media']['height'], 1344)
+            self.assertEqual(manifest['media']['fps'], '24/1')
             self.assertEqual(manifest['project_id'], 'project-a')
             with patch.dict(os.environ, {'VDN_PROJECTS_ROOT': tmp, 'VDN_NODE_NAME': 'node-a'}):
                 with self.assertRaises(FileExistsError):
-                    finalize(root, task, {}, {'streams': [{'codec_type': 'video', 'nb_read_frames': '124'}]})
+                    finalize(root, task, {}, media)
 
 
 if __name__ == '__main__':
