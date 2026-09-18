@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 env:
   SERVICE: video-mcp-server
-  VERSION: 0.10.6
+  VERSION: 0.10.7
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -43,6 +43,9 @@ jobs:
         env:
           PYTHONPATH: services/video-mcp-server
         run: |
+          corepack enable
+          pnpm --dir "services/${SERVICE}/frontend" install --no-frozen-lockfile
+          pnpm --dir "services/${SERVICE}/frontend" run build
           sudo apt-get update
           sudo apt-get install -y ffmpeg
           python3 -m pip install "./services/${SERVICE}[browser]"
