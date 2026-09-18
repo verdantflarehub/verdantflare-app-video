@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 env:
   SERVICE: video-mcp-server
-  VERSION: 0.10.7
+  VERSION: 0.10.8
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -44,6 +44,7 @@ jobs:
           PYTHONPATH: services/video-mcp-server
         run: |
           corepack enable
+          corepack prepare pnpm@9.15.9 --activate
           pnpm --dir "services/${SERVICE}/frontend" install --no-frozen-lockfile
           pnpm --dir "services/${SERVICE}/frontend" run build
           sudo apt-get update
