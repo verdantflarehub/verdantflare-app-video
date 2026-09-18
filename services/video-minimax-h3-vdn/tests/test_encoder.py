@@ -9,7 +9,8 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).parents[1] / 'src'))
 from vdn_encoder import (chunked_mlp, encoder_config, install_device_boundary, install_chunking,
-                         chunked_rmsnorm, install_qk_norm_chunking, selected_qwen_prompt_embeds)
+                         chunked_rmsnorm, install_qk_norm_chunking, install_mlp_residency,
+                         selected_qwen_prompt_embeds)
 try:
     import torch
 except ImportError:
@@ -19,9 +20,10 @@ except ImportError:
 class DeviceTests(unittest.TestCase):
     def test_config_rejects_invalid_capacity_and_device(self):
         with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(encoder_config(), ('cuda:1', 512))
+            self.assertEqual(encoder_config(), ('cuda:1', 512, False))
         for env in ({'VDN_ENCODER_DEVICE': 'cuda:2'}, {'VDN_ENCODER_MLP_CHUNK': '0'},
-                    {'VDN_ENCODER_MLP_CHUNK': '4097'}, {'VDN_ENCODER_MLP_CHUNK': 'abc'}):
+                    {'VDN_ENCODER_MLP_CHUNK': '4097'}, {'VDN_ENCODER_MLP_CHUNK': 'abc'},
+                    {'VDN_ENCODER_MLP_RESIDENCY': '2'}):
             with patch.dict(os.environ, env, clear=True), self.assertRaises(ValueError):
                 encoder_config()
 
@@ -62,6 +64,36 @@ class DeviceTests(unittest.TestCase):
 
 @unittest.skipIf(torch is None, 'PyTorch numerical tests run in image build or CPU torch environment')
 class NumericalTests(unittest.TestCase):
+    def test_mlp_residency_groups_three_projections_and_preserves_output(self):
+        try:
+            from transformers import Qwen3VLConfig, Qwen3VLForConditionalGeneration
+            from diffusers.hooks import apply_group_offloading
+        except ImportError:
+            self.skipTest('Pinned Transformers/Diffusers integration runs in image build')
+        cfg = Qwen3VLConfig(
+            text_config=dict(vocab_size=64, hidden_size=32, intermediate_size=64,
+                             num_hidden_layers=2, num_attention_heads=4, num_key_value_heads=2,
+                             head_dim=8, pad_token_id=0, rope_parameters={
+                                 'rope_type': 'default', 'rope_theta': 10000.0,
+                                 'mrope_section': [1, 1, 2]}),
+            vision_config=dict(depth=1, hidden_size=32, intermediate_size=64,
+                               num_heads=4, patch_size=2, temporal_patch_size=2,
+                               spatial_merge_size=2, out_hidden_size=32,
+                               num_position_embeddings=16, deepstack_visual_indexes=[0]),
+            image_token_id=61, video_token_id=62, vision_start_token_id=60,
+            vision_end_token_id=59)
+        encoder = Qwen3VLForConditionalGeneration(cfg).eval().to(dtype=torch.bfloat16)
+        x = torch.randn(1, 19, 32, dtype=torch.bfloat16)
+        mlp = encoder.model.language_model.layers[0].mlp
+        with torch.inference_mode():
+            expected = mlp(x)
+            install_chunking(encoder, 8)
+            apply_group_offloading(encoder, onload_device='cpu', offload_device='cpu',
+                                   offload_type='leaf_level', use_stream=False)
+            self.assertEqual(install_mlp_residency(encoder, 'cpu'), 2)
+            actual = mlp(x)
+        torch.testing.assert_close(actual, expected, rtol=1e-2, atol=2e-3)
+
     def test_pinned_qwen_class_accepts_chunking_and_rejects_double_install(self):
         try:
             from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLTextMLP

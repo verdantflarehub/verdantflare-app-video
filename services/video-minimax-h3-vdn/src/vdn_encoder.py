@@ -89,9 +89,10 @@ def selected_qwen_prompt_embeds(text_encoder, processor, token_ids, vision_input
 def encoder_config():
     device = os.environ.get('VDN_ENCODER_DEVICE', 'cuda:1')
     chunk = int(os.environ.get('VDN_ENCODER_MLP_CHUNK', '512'))
-    if device not in {'cuda:0', 'cuda:1'} or not 1 <= chunk <= 4096:
+    residency = os.environ.get('VDN_ENCODER_MLP_RESIDENCY', '0')
+    if device not in {'cuda:0', 'cuda:1'} or not 1 <= chunk <= 4096 or residency not in {'0', '1'}:
         raise ValueError('invalid VDN encoder device or MLP chunk size')
-    return device, chunk
+    return device, chunk, residency == '1'
 
 
 def chunked_mlp(module, x, chunk_size):
@@ -120,6 +121,44 @@ def install_chunking(encoder, chunk_size):
         def forward(self, hidden_state):
             return chunked_mlp(self, hidden_state, chunk_size)
         module.forward = types.MethodType(forward, module)
+    return len(targets)
+
+
+def install_mlp_residency(encoder, onload_device, offload_device='cpu'):
+    """Keep one Qwen MLP's three projections resident across token chunks.
+
+    The encoder is first given leaf-level hooks for its memory bound.  For each
+    text MLP, replace the three child hooks with one parent group so gate/up/down
+    are transferred once per MLP forward instead of once per 512-token chunk.
+    """
+    import torch
+    from diffusers.hooks import HookRegistry
+    from diffusers.hooks.group_offloading import (GroupOffloadingConfig, GroupOffloadingHook,
+                                                   ModuleGroup, _GROUP_OFFLOADING)
+    from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLTextMLP
+
+    targets = [m for m in encoder.modules() if type(m) is Qwen3VLTextMLP]
+    if len(targets) != encoder.config.text_config.num_hidden_layers:
+        raise RuntimeError('unsupported Qwen text MLP layout')
+    onload = torch.device(onload_device)
+    offload = torch.device(offload_device)
+    config = GroupOffloadingConfig(onload_device=onload, offload_device=offload,
+                                   offload_type='block_level', num_blocks_per_group=1,
+                                   non_blocking=False, stream=None, record_stream=False,
+                                   low_cpu_mem_usage=False, offload_to_disk_path=None,
+                                   block_modules=None, exclude_kwargs=None, module_prefix='')
+    for mlp in targets:
+        projections = [mlp.gate_proj, mlp.up_proj, mlp.down_proj]
+        for projection in projections:
+            registry = getattr(projection, '_diffusers_hook', None)
+            if registry is None or registry.get_hook(_GROUP_OFFLOADING) is None:
+                raise RuntimeError('Qwen MLP projection leaf hook missing')
+            registry.remove_hook(_GROUP_OFFLOADING, recurse=False)
+        group = ModuleGroup(modules=projections, offload_device=offload,
+                            onload_device=onload, offload_leader=mlp,
+                            onload_leader=mlp, onload_self=True, group_id='qwen_mlp')
+        HookRegistry.check_if_exists_or_initialize(mlp).register_hook(
+            GroupOffloadingHook(group, config=config), _GROUP_OFFLOADING)
     return len(targets)
 
 
@@ -173,7 +212,7 @@ def install_device_boundary():
 
 def configure_encoder(pipe, generation_device):
     from diffusers.hooks import apply_group_offloading
-    device, chunk = encoder_config()
+    device, chunk, mlp_residency = encoder_config()
     encoder = pipe.text_encoder
     count = install_chunking(encoder, chunk)
     norm_count = install_qk_norm_chunking(encoder, chunk)
@@ -183,7 +222,9 @@ def configure_encoder(pipe, generation_device):
     # No asynchronous weight prefetch overlapping the long-sequence activations.
     apply_group_offloading(encoder, onload_device=device, offload_device='cpu',
                            offload_type='leaf_level', use_stream=False)
+    residency_count = install_mlp_residency(encoder, device) if mlp_residency else 0
     encoder._vdn_encoder_profile = dict(device=device, generation_device=str(generation_device),
                                        mlp_chunk_tokens=chunk, mlp_layers=count, use_stream=False,
+                                       mlp_residency=mlp_residency, mlp_residency_layers=residency_count,
                                        qk_norm_chunk_tokens=chunk, qk_norm_modules=norm_count,
                                        hidden_states='selected_intermediate_only')
