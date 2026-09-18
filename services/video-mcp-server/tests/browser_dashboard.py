@@ -84,12 +84,9 @@ def main():
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 page.goto(f'http://127.0.0.1:{port}/video/dashboard/')
                 expect(page.get_by_role('heading', name='连接 Video MCP')).to_be_visible()
-                # Package-installed CI may expose the legacy shell when frontend assets are unavailable.
-                # The image build performs the definitive Vue asset check; keep this smoke test non-blocking there.
-                if not page.locator('button').filter(has_text='连接').first.is_visible():
-                    browser.close()
-                    print('Browser integration passed: dashboard shell reachable (frontend assets unavailable in package smoke environment)')
-                    return
+                # Package-installed CI may expose a legacy shell; image build validates Vue assets.
+                if page.locator('button').filter(has_text='连接').count() == 0:
+                    browser.close(); print('Browser integration passed: dashboard shell reachable'); return
                 page.get_by_placeholder('Video MCP Token').fill('browser-test-token')
                 page.get_by_role('button', name='连接').click()
                 expect(page.get_by_role('heading', name='任务')).to_be_visible()
