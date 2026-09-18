@@ -84,6 +84,21 @@ def main():
                 expect(page.locator('#view-tasks h1')).to_contain_text('任务')
                 page.locator('#tokenButton').click(); page.locator('#tokenInput').fill('browser-test-token'); page.locator('#tokenForm button[type=submit]').click()
                 expect(page.locator('#pageLabel')).to_contain_text('27 个任务')
+                expect(page.locator('#galleryContainer .model-card img').first).to_be_visible()
+                # Polls and elapsed-time changes must retain the actual card/image nodes.
+                page.evaluate("""async () => {
+                  const data=await api('/api/dashboard?'+query());
+                  const card=document.querySelector('#galleryContainer .model-card');
+                  const img=card.querySelector('img');card.focus();
+                  for(let i=0;i<3;i++)render({...data,tasks:data.tasks.map(t=>({...t,updated_at:new Date().toISOString()}))});
+                  if(document.querySelector('#galleryContainer .model-card')!==card || card.querySelector('img')!==img || document.activeElement!==card)throw Error('Polling replaced card, image or focus');
+                  render({...data,tasks:[...data.tasks].reverse()});
+                  if(!card.isConnected || card.querySelector('img')!==img)throw Error('Reordering replaced thumbnail');
+                  render(data);
+                  const box=card.getBoundingClientRect(),footer=card.querySelector('.card-footer').getBoundingClientRect(),prompt=card.querySelector('.card-prompt').getBoundingClientRect();
+                  if(box.height>=390 || footer.top-prompt.bottom>24)throw Error('Excess card whitespace');
+                }""")
+
                 expect(page.locator('#channelServices')).to_contain_text('h3-sol')
                 expect(page.locator('#channelServices')).to_contain_text('未部署')
                 expect(page.locator('main [data-resource=gpu]')).to_have_count(0)

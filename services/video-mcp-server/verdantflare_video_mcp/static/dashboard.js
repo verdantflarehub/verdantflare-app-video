@@ -148,44 +148,70 @@ function query() {
     q: $("searchInput").value.trim(),
   });
 }
+const thumbnailRequests = new Map();
+const previewKey = task => `${task.video_task_id}:${task.artifact_id || ''}`;
 async function previews(tasks) {
-  const active = new Set(tasks.map((t) => t.video_task_id));
-  for (const [id, item] of thumbnails)
-    if (!active.has(id)) {
-      URL.revokeObjectURL(item.url);
-      thumbnails.delete(id);
-    }
+  const active = new Set(tasks.map(t => t.video_task_id));
+  for (const [id, item] of thumbnails) if (!active.has(id)) {
+    URL.revokeObjectURL(item.url); thumbnails.delete(id);
+  }
   const version = revision;
   for (const task of tasks) {
     if (version !== revision || !authorized) return;
+    const key = previewKey(task);
     let cached = thumbnails.get(task.video_task_id);
-    if (cached && cached.artifact !== task.artifact_id) {
-      URL.revokeObjectURL(cached.url);
-      thumbnails.delete(task.video_task_id);
-      cached = null;
-    }
-    if (!cached) {
-      try {
-        const blob = await api(`/api/tasks/${task.video_task_id}/thumbnail`, {
-          blob: true,
-        });
-        if (version !== revision || !authorized) return;
-        cached = { url: URL.createObjectURL(blob), artifact: task.artifact_id };
-        thumbnails.set(task.video_task_id, cached);
-      } catch {
-        continue;
+    if (!cached || cached.artifact !== task.artifact_id) {
+      if (!thumbnailRequests.has(key)) {
+        const request = api(`/api/tasks/${task.video_task_id}/thumbnail`, {blob:true}).then(blob => {
+          const card = [...$("galleryContainer").children].find(el => el.dataset.task === task.video_task_id);
+          if (version !== revision || !authorized || card?.dataset.previewKey !== key) return null;
+          const old = thumbnails.get(task.video_task_id);
+          const item = {url:URL.createObjectURL(blob),artifact:task.artifact_id};
+          thumbnails.set(task.video_task_id,item);
+          if (old) URL.revokeObjectURL(old.url);
+          return item;
+        }).catch(() => null).finally(() => thumbnailRequests.delete(key));
+        thumbnailRequests.set(key, request);
       }
+      cached = await thumbnailRequests.get(key);
     }
-    const card = [...$("galleryContainer").children].find(
-      (el) => el.dataset.task === task.video_task_id,
-    );
-    if (card && !card.querySelector("img")) {
-      const img = document.createElement("img");
-      img.src = cached.url;
-      img.alt = task.artifact_id ? "生成视频首帧" : "参考素材预览";
+    if (!cached || version !== revision || !authorized) continue;
+    const card = [...$("galleryContainer").children].find(el => el.dataset.task === task.video_task_id);
+    if (!card || card.dataset.previewKey !== key) continue;
+    let img = card.querySelector(".card-thumb-wrap > img");
+    if (!img) {
+      img = document.createElement("img");
       card.querySelector(".card-thumb-wrap > span").replaceWith(img);
     }
+    if (img.getAttribute('src') !== cached.url) img.src = cached.url;
+    img.alt = task.artifact_id ? "生成视频首帧" : "参考素材预览";
   }
+}
+// Keep task and image nodes across polling; update only changed metadata.
+function reconcileGallery(html, tasks) {
+  const gallery = $("galleryContainer"), template = document.createElement('template');
+  template.innerHTML = html;
+  const existing = new Map([...gallery.children].map(el => [el.dataset.task,el]));
+  const taskMap = new Map(tasks.map(t => [t.video_task_id,t]));
+  [...template.content.children].forEach((next,index) => {
+    const id = next.dataset.task, task = taskMap.get(id);
+    let card = existing.get(id);
+    if (card) {
+      existing.delete(id);
+      card.setAttribute('aria-label',next.getAttribute('aria-label'));
+      for (const selector of ['.task-identity','.card-badges','.card-body']) {
+        const current = card.querySelector(selector), replacement = next.querySelector(selector);
+        if (current.innerHTML !== replacement.innerHTML) current.innerHTML = replacement.innerHTML;
+      }
+      const times = card.querySelectorAll('.card-times span'), nextTimes = next.querySelectorAll('.card-times span');
+      times.forEach((el,i) => {if(el.textContent !== nextTimes[i].textContent) el.textContent=nextTimes[i].textContent});
+      const placeholder = card.querySelector('.card-thumb-wrap > span');
+      if (placeholder) placeholder.textContent=next.querySelector('.card-thumb-wrap > span').textContent;
+    } else card=next;
+    card.dataset.previewKey=previewKey(task);
+    if (gallery.children[index] !== card) gallery.insertBefore(card,gallery.children[index] || null);
+  });
+  existing.forEach(card => card.remove());
 }
 function render(data) {
   total = data.total;
@@ -207,18 +233,20 @@ function render(data) {
     : "暂无符合条件的任务。可调整筛选，或新建运镜任务。";
   const badge = (t) =>
     `<span class="badge-status ${t.status === "succeeded" ? "completed" : escapeHTML(t.status)}">${labels[t.status] || escapeHTML(t.status)}</span>`;
-  $("galleryContainer").innerHTML = data.tasks
+  const galleryHTML = data.tasks
     .map(
       (t) =>
-        `<article class="model-card" tabindex="0" role="button" data-task="${escapeHTML(t.video_task_id)}" aria-label="查看 ${escapeHTML(t.idempotency_key)}"><div class="card-thumb-wrap"><span>${t.status === "succeeded" ? "▶" : t.status === "running" ? "◌" : "◇"}</span>${taskIdentity(t)}<div class="card-badges">${badge(t)}</div><div class="card-times"><span title="开始时间">${date(t.created_at)}</span><span title="排队 / 运行">${elapsed(t)}</span></div></div><div class="card-body"><div><div class="card-title-row"><span title="${escapeHTML(t.video_task_id)} · ${escapeHTML(t.project_id)} / ${escapeHTML(t.idempotency_key)}">${escapeHTML(t.project_id)} / ${escapeHTML(t.idempotency_key)}</span></div><p class="card-prompt">${escapeHTML(t.prompt)}</p></div><div class="card-footer"><div class="model-tags"><span>REF2VA</span><span>${escapeHTML(t.aspect_ratio)}</span><span>${escapeHTML(t.duration_seconds)}s</span>${t.media?.frame_rate ? `<span>${escapeHTML(t.media.frame_rate)} FPS</span>` : ""}</div><span class="card-footer-action">查看详情 →</span></div></div></article>`,
+        `<article class="model-card" tabindex="0" role="button" data-task="${escapeHTML(t.video_task_id)}" aria-label="查看 ${escapeHTML(t.idempotency_key)}"><div class="card-thumb-wrap"><span>${t.status === "succeeded" ? "▶" : t.status === "running" ? "◌" : "◇"}</span>${taskIdentity(t)}<div class="card-badges">${badge(t)}</div><div class="card-times"><span title="开始时间">${date(t.created_at)}</span><span title="排队 / 运行">${elapsed(t)}</span></div></div><div class="card-body"><div><div class="card-title-row"><span title="${escapeHTML(t.video_task_id)} · ${escapeHTML(t.project_id)} / ${escapeHTML(t.idempotency_key)}">${escapeHTML(t.project_id)} / ${escapeHTML(t.idempotency_key)}</span></div><p class="card-prompt">${escapeHTML(t.prompt || "未提供提示词")}</p></div><div class="card-footer"><div class="model-tags"><span>REF2VA</span>${t.aspect_ratio ? `<span>${escapeHTML(t.aspect_ratio)}</span>` : ""}${t.duration_seconds != null ? `<span>${escapeHTML(t.duration_seconds)}s</span>` : ""}${t.media?.frame_rate ? `<span>${escapeHTML(t.media.frame_rate)} FPS</span>` : ""}</div><span class="card-footer-action">查看详情 →</span></div></div></article>`,
     )
     .join("");
-  $("taskRows").innerHTML = data.tasks
+  reconcileGallery(galleryHTML, data.tasks);
+  const tableHTML = data.tasks
     .map(
       (t) =>
         `<tr><td>${escapeHTML(t.project_id)}<br>${escapeHTML(t.idempotency_key)}</td><td>${escapeHTML(t.video_task_id)}</td><td>${escapeHTML(taskModel(t))}<br>${escapeHTML(taskRoute(t))}</td><td>${escapeHTML(t.execution_instance_id || (t.status === "queued" ? "尚未分配" : "未知"))}</td><td>${escapeHTML(t.prompt.slice(0, 100))}</td><td>${escapeHTML(t.duration_seconds)}s · ${escapeHTML(t.aspect_ratio)}</td><td>${elapsed(t)}</td><td>${badge(t)}</td><td><button class="button" data-task="${escapeHTML(t.video_task_id)}">${t.status === "succeeded" ? "回放" : "详情"}</button></td></tr>`,
     )
     .join("");
+  if ($("taskRows").innerHTML !== tableHTML) $("taskRows").innerHTML=tableHTML;
   previews(data.tasks);
   $("pageLabel").textContent =
     `第 ${page} / ${Math.max(1, Math.ceil(total / 24))} 页 · ${total} 个任务`;
