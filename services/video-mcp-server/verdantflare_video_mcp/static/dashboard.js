@@ -112,7 +112,7 @@ function invalidate() {
 async function api(path, options = {}) {
   const headers = { Authorization: `Bearer ${token}`, ...options.headers };
   if (options.body) headers["Content-Type"] = "application/json";
-  const response = await fetch(`${base}${path}`, {
+  const response = window.studioEmbedded ? await window.studioRequest(path, options) : await fetch(`${base}${path}`, {
     ...options,
     headers,
     cache: "no-store",
@@ -126,7 +126,7 @@ async function api(path, options = {}) {
       $("tokenButton").textContent = "Token：请重新设置";
     }
     const messages = {
-      401: "Token 无效或已过期，请重新设置。",
+      401: window.studioEmbedded ? "Studio 会话已过期，请重新登录。" : "Token 无效或已过期，请重新设置。",
       400: "请检查参数、参考素材类型及项目归属。",
       404: "任务或素材不存在。",
       409: "幂等键冲突或所选服务尚未接入。",
@@ -275,7 +275,8 @@ async function mediaURL(id, taskId) {
   return url;
 }
 function inspect(id) {
-  location.href = `${base}/dashboard/tasks/${encodeURIComponent(id)}`;
+  if(window.studioEmbedded) window.studioNavigate(`/dashboard/tasks/${encodeURIComponent(id)}`);
+  else location.href = `${base}/dashboard/tasks/${encodeURIComponent(id)}`;
 }
 function dispatch() {
   if (!authorized) {
@@ -467,6 +468,7 @@ $("dispatchForm").elements.route.addEventListener("change",()=>{
 });
 
 window.addEventListener("DOMContentLoaded", () => {
+  if(window.studioEmbedded){notice("正在读取 Video 工作区…");return;}
   try { token = localStorage.getItem(tokenStorageKey) || ""; } catch {}
   if (token) {
     authorized = true;
@@ -474,3 +476,21 @@ window.addEventListener("DOMContentLoaded", () => {
     refresh();
   }
 });
+
+if(window.studioEmbedded){
+ window.studioViewState=()=>detailTaskId?null:{project:$("filterProject").value,engine:$("filterEngine").value,q:$("searchInput").value,status,page,table:$("btnViewTable").classList.contains('active')};
+ window.addEventListener('studio-restore',event=>{
+  if(detailTaskId){authorized=true;refresh();return;}
+  const state=event.detail;
+  if(state){
+   if(typeof state.project==='string' && state.project.length<=64){const option=new Option(state.project,state.project);$("filterProject").add(option);$("filterProject").value=state.project}
+   if(typeof state.q==='string')$("searchInput").value=state.q.slice(0,512);
+   if(['all','h3','h3-sol','h3-vdn'].includes(state.engine))$("filterEngine").value=state.engine;
+   if(['all','queued','running','succeeded','failed','cancelled'].includes(state.status))status=state.status;
+   if(Number.isInteger(state.page)&&state.page>0&&state.page<100000)page=state.page;
+   document.querySelectorAll('button[data-status]').forEach(b=>b.classList.toggle('active',b.dataset.status===status));
+   if(state.table)$("btnViewTable").click();
+  }
+  authorized=true;refresh();
+ });
+}

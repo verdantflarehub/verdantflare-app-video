@@ -1,0 +1,51 @@
+/* Studio Market component colors. Only the explicit embedded entry uses them. */
+html[data-embedded=true]{color-scheme:dark;--ink:#111310;--ink-2:#1a1c19;--paper:#f1f3ee;--paper-2:#f1f3ee;--muted:#9a9f98;--muted-2:#9a9f98;--green:#75c7ab;--amber:#9bb7df;--rose:#ff8068;--line:rgba(236,241,234,.095);--line-strong:rgba(236,241,234,.2);--studio-panel:rgba(239,243,237,.032);--studio-button:rgba(239,243,237,.05);--studio-primary:#eef2ef;--studio-button-ink:#15231e;background:transparent}
+html[data-embedded=true][data-theme=light]{color-scheme:light;--ink:#eef2ef;--ink-2:#f7faf7;--paper:#18241f;--paper-2:#18241f;--muted:#69756e;--muted-2:#69756e;--green:#087e60;--amber:#5379ac;--rose:#c95743;--line:rgba(21,35,30,.13);--line-strong:rgba(21,35,30,.2);--studio-panel:rgba(255,255,255,.58);--studio-button:rgba(21,35,30,.055);--studio-primary:#15231e;--studio-button-ink:#f1f4ef}
+html[data-embedded=true] body{background:transparent;color:var(--paper);font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;min-height:100vh}
+html[data-embedded=true] .site-header{position:static;background:none;border:0}
+html[data-embedded=true] .site-header .nav{min-height:0;justify-content:flex-end;padding:0 0 14px}
+html[data-embedded=true] .brand,html[data-embedded=true] .nav-actions>a,html[data-embedded=true] #tokenButton,html[data-embedded=true] #tokenModal,html[data-embedded=true] .workspace-nav>p{display:none!important}
+html[data-embedded=true] .workspace{display:block;min-height:0}
+html[data-embedded=true] .workspace-nav{display:flex;flex-direction:row;gap:26px;padding:0;margin-bottom:24px;border:0;border-bottom:1px solid var(--line);background:none;position:static;width:auto}
+html[data-embedded=true] .workspace-nav a{padding:10px 0;border:0;border-bottom:2px solid transparent;border-radius:0;color:var(--muted);background:none;font-size:14px;letter-spacing:0}
+html[data-embedded=true] .workspace-nav a.active{color:var(--green);border-bottom-color:var(--green)}
+html[data-embedded=true] .market-page{padding:0}
+html[data-embedded=true] .business-card,html[data-embedded=true] .model-card,html[data-embedded=true] .metric,html[data-embedded=true] .task-prompt,html[data-embedded=true] .reference-card{background:var(--studio-panel);color:var(--paper);border-color:var(--line);box-shadow:none;border-radius:12px}
+html[data-embedded=true] .button,html[data-embedded=true] .view-switch button,html[data-embedded=true] .filter-tab,html[data-embedded=true] input,html[data-embedded=true] select,html[data-embedded=true] textarea{background:var(--studio-button);color:var(--paper);border-color:var(--line);border-radius:8px}
+html[data-embedded=true] .button.primary{background:var(--studio-primary);border-color:var(--studio-primary);color:var(--studio-button-ink)}
+html[data-embedded=true] .button:hover{border-color:var(--muted)}
+html[data-embedded=true] .card-title,html[data-embedded=true] .card-desc,html[data-embedded=true] .card-body,html[data-embedded=true] .task-parameters,html[data-embedded=true] .result-meta{color:var(--paper)}
+html[data-embedded=true] .card-thumb-wrap{background:var(--ink-2)}
+html[data-embedded=true] .task-identity{background:var(--ink-2);color:var(--paper);border-color:var(--line)}
+html[data-embedded=true] .task-identity>div:last-child,html[data-embedded=true] .reference-link{color:var(--green)}
+html[data-embedded=true] .business-state.stale{color:var(--muted)}
+html[data-embedded=true] #resourceDrawer,html[data-embedded=true] .business-drawer-head,html[data-embedded=true] .dialog,html[data-embedded=true] #imagePreview{background:var(--ink-2);color:var(--paper);border-color:var(--line)}
+html[data-embedded=true] .model-results.grid{grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),360px))}
+html[data-embedded=true] .model-card{max-width:100%;width:100%}
+@media(max-width:600px){html[data-embedded=true] .business-models,html[data-embedded=true] .business-mcp{grid-template-columns:1fr}html[data-embedded=true] .business-counts{grid-template-columns:repeat(2,minmax(0,1fr))}html[data-embedded=true] .nav-actions{flex-wrap:wrap}}
+html[data-embedded=true] .market-toolbar{position:static;background:transparent;backdrop-filter:none;border-color:var(--line)}
+html[data-embedded=true] .market-search,html[data-embedded=true] .market-selects label,html[data-embedded=true] .metric-card-label,html[data-embedded=true] .card-title-row,html[data-embedded=true] #taskParameters dd,html[data-embedded=true] .detail-heading p,html[data-embedded=true] .reference-cards{color:var(--muted)}
+html[data-embedded=true] input::placeholder{color:var(--muted)}
+html[data-embedded=true] .view-switcher,html[data-embedded=true] .view-switcher button,html[data-embedded=true] .market-filter-row button,html[data-embedded=true] .pill-badge,html[data-embedded=true] .model-tags span{background:var(--studio-button);border-color:var(--line);color:var(--muted)}
+html[data-embedded=true] .market-filter-row button.active,html[data-embedded=true] .view-switcher button.active{background:var(--studio-button);border:1px solid var(--green);color:var(--green);box-shadow:none}
+html[data-embedded=true] .back-link,html[data-embedded=true] .card-footer-action,html[data-embedded=true] #detailContent summary{color:var(--green)}
+html[data-embedded=true] .prompt-sheet,html[data-embedded=true] .metric-card{background:var(--studio-panel);border-color:var(--line);color:var(--paper)}
+html[data-embedded=true] .reference-preview,html[data-embedded=true] .result-stage{background:var(--ink-2);border-color:var(--line)}
+html[data-embedded=true] .reference-caption strong{color:var(--paper)}
+html[data-embedded=true] .reference-link{background:var(--studio-button);border-color:var(--line)}
+html[data-embedded=true] .reference-focus{outline-color:var(--green)}
+html[data-embedded=true] .detail-heading,html[data-embedded=true] #detailContent details{border-color:var(--line)}
+html[data-embedded=true] .detail-status{color:var(--muted);border-color:var(--line)}
+html[data-embedded=true] .detail-status.succeeded{color:var(--green)}
+html[data-embedded=true] .detail-status.failed{color:var(--rose)}
+html[data-embedded=true] .button.primary:hover{background:var(--studio-primary);box-shadow:none;filter:brightness(.96)}
+.catalog-meta{display:grid;grid-template-columns:100px minmax(0,1fr);gap:10px;font-size:13px;margin:20px 0}.catalog-meta dt{color:var(--muted)}.catalog-meta dd{margin:0;overflow-wrap:anywhere}.catalog-head{display:flex;justify-content:space-between;gap:12px}.catalog-head>span{font-size:11px}.catalog-card details{border-top:1px solid var(--line);padding-top:14px;font-size:12px}.catalog-card summary{cursor:pointer;color:var(--green)}.catalog-card code{overflow-wrap:anywhere}.catalog-card h3{margin-top:4px}
+html[data-embedded=true] #modelServices,html[data-embedded=true] #mcpStatus .business-models{grid-template-columns:repeat(2,minmax(0,1fr))}
+@media(max-width:720px){html[data-embedded=true] #modelServices,html[data-embedded=true] #mcpStatus .business-models{grid-template-columns:1fr}.catalog-meta{grid-template-columns:80px minmax(0,1fr)}}
+html[data-embedded=true] .card-prompt,html[data-embedded=true] td,html[data-embedded=true] .table-prompt{color:var(--paper)}
+html[data-embedded=true] th{color:var(--muted);background:var(--studio-panel);border-color:var(--line)}
+html[data-embedded=true] td{border-color:var(--line)}
+html[data-embedded=true] tr:hover{background:var(--studio-button)}
+html[data-embedded=true] .card-thumb-wrap .task-identity div+div strong{color:var(--green)}
+html[data-embedded=true] .notice{padding:10px 14px;background:var(--studio-panel);color:var(--muted);border-color:var(--line)}
+html[data-embedded=true] .notice.error{color:var(--rose)}

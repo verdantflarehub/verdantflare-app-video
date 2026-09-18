@@ -1,4 +1,172 @@
 "use strict";
+
+// Descriptive model/capability metadata. Runtime availability comes only from observations.
+const videoModelCatalog=[
+  {
+    "id": "minimax-h3-ref2va",
+    "title": "MiniMax H3",
+    "mark": "H3",
+    "kind": "视频生成",
+    "description": "参考素材驱动的视频生成，按项目保存任务与结果。",
+    "input": "提示词 · 图像 / 视频 / 可选音频参考",
+    "output": "视频任务 · 视频产物",
+    "backend": "minimax-h3-ref2va",
+    "routes": [
+      "h3",
+      "h3-sol",
+      "h3-vdn"
+    ],
+    "family": "video",
+    "tools": [
+      "video.generate",
+      "video.status",
+      "video.result"
+    ]
+  },
+  {
+    "id": "video-depth-anything",
+    "title": "Video Depth Anything",
+    "mark": "DA",
+    "kind": "深度估计",
+    "description": "把项目中的 RGB 视频转换为时序深度视频。",
+    "input": "项目内已登记的视频 Artifact",
+    "output": "深度视频 · RGB / 深度对比预览",
+    "backend": "video-depth-anything",
+    "routes": [
+      "depth"
+    ],
+    "family": "video.depth",
+    "tools": [
+      "video.depth.generate",
+      "video.depth.status",
+      "video.depth.result",
+      "video.depth.preview"
+    ]
+  },
+  {
+    "id": "seedvr2",
+    "title": "SeedVR2",
+    "mark": "SR",
+    "kind": "视频超分",
+    "description": "对项目视频进行清晰度恢复，保留时序与画面比例。",
+    "input": "视频 Artifact · 目标宽高",
+    "output": "超分视频 · 对比预览",
+    "backend": "seedvr2",
+    "routes": [
+      "sr"
+    ],
+    "family": "video.sr",
+    "tools": [
+      "video.sr.generate",
+      "video.sr.status",
+      "video.sr.result",
+      "video.sr.preview"
+    ]
+  },
+  {
+    "id": "rife",
+    "title": "RIFE",
+    "mark": "×2",
+    "kind": "视频插帧",
+    "description": "提高视频帧率，保持画面尺寸与原始时长。",
+    "input": "视频 Artifact · 目标帧率",
+    "output": "插帧视频 · 对比预览",
+    "backend": "rife",
+    "routes": [
+      "interpolate"
+    ],
+    "family": "video.interpolate",
+    "tools": [
+      "video.interpolate.generate",
+      "video.interpolate.status",
+      "video.interpolate.result",
+      "video.interpolate.preview"
+    ]
+  }
+];
+const videoCapabilityCatalog=[
+  {
+    "id": "artifact",
+    "title": "素材导入",
+    "description": "登记项目输入，校验来源与内容哈希。",
+    "input": "项目 · HTTPS 素材地址 · 文件名 · SHA-256",
+    "output": "Artifact 元数据",
+    "tools": [
+      "artifact.import"
+    ]
+  },
+  {
+    "id": "video",
+    "title": "视频生成",
+    "description": "参考素材驱动的视频生成，按项目保存任务与结果。",
+    "input": "提示词 · 图像 / 视频 / 可选音频参考",
+    "output": "视频任务 · 视频产物",
+    "tools": [
+      "video.generate",
+      "video.status",
+      "video.result"
+    ]
+  },
+  {
+    "id": "video.depth",
+    "title": "深度估计",
+    "description": "把项目中的 RGB 视频转换为时序深度视频。",
+    "input": "项目内已登记的视频 Artifact",
+    "output": "深度视频 · RGB / 深度对比预览",
+    "tools": [
+      "video.depth.generate",
+      "video.depth.status",
+      "video.depth.result",
+      "video.depth.preview"
+    ]
+  },
+  {
+    "id": "video.sr",
+    "title": "视频超分",
+    "description": "对项目视频进行清晰度恢复，保留时序与画面比例。",
+    "input": "视频 Artifact · 目标宽高",
+    "output": "超分视频 · 对比预览",
+    "tools": [
+      "video.sr.generate",
+      "video.sr.status",
+      "video.sr.result",
+      "video.sr.preview"
+    ]
+  },
+  {
+    "id": "video.interpolate",
+    "title": "视频插帧",
+    "description": "提高视频帧率，保持画面尺寸与原始时长。",
+    "input": "视频 Artifact · 目标帧率",
+    "output": "插帧视频 · 对比预览",
+    "tools": [
+      "video.interpolate.generate",
+      "video.interpolate.status",
+      "video.interpolate.result",
+      "video.interpolate.preview"
+    ]
+  },
+  {
+    "id": "video.h3.latent.upscale",
+    "title": "H3 Latent 后处理",
+    "description": "基于已完成 H3 任务保留的同节点 latent 资源做后处理；不接受 MP4 输入。",
+    "input": "已完成 H3 任务 ID · 可选 profile / 目标尺寸",
+    "output": "后处理视频 · 对比预览",
+    "tools": [
+      "video.h3.latent.upscale.generate",
+      "video.h3.latent.upscale.status",
+      "video.h3.latent.upscale.result",
+      "video.h3.latent.upscale.preview"
+    ],
+    "pending": false
+  }
+];
+
+function catalogModels(data){
+ return videoModelCatalog.map(m=>`<article class="business-card catalog-card"><div class="catalog-head"><div><span class="business-muted">${escapeHTML(m.kind)}</span><h3>${escapeHTML(m.title)}</h3></div><span class="business-muted">${m.id==='minimax-h3-ref2va'&&data.state==='fresh'?'渠道状态见下方':'可用性未知'}</span></div><p>${escapeHTML(m.description)}</p><dl class="catalog-meta"><dt>模型 / 后端</dt><dd>${escapeHTML(m.backend)}</dd><dt>输入</dt><dd>${escapeHTML(m.input)}</dd><dt>输出</dt><dd>${escapeHTML(m.output)}</dd><dt>执行渠道</dt><dd>${escapeHTML(m.routes.join(' · '))}</dd></dl><details><summary>关联工具</summary>${m.tools.map(t=>`<p><code>${escapeHTML(t)}</code></p>`).join('')}</details></article>`).join('');
+}
+function catalogCapabilities(){return `<h2 class="service-subheading">能力目录</h2><p class="business-muted">当前发布定义 · 工具就绪情况取决于对应渠道</p><div class="business-models">${videoCapabilityCatalog.map(c=>`<article class="business-card catalog-card"><h3>${escapeHTML(c.title)}</h3><p>${escapeHTML(c.description)}</p><dl class="catalog-meta"><dt>输入</dt><dd>${escapeHTML(c.input)}</dd><dt>输出</dt><dd>${escapeHTML(c.output)}</dd></dl><details><summary>${c.tools.length} 个工具</summary>${c.tools.map(t=>`<p><code>${escapeHTML(t)}</code></p>`).join('')}</details></article>`).join('')}</div>`}
+
 let businessBusy = false, resourceSelection = null, resourceWindow = "15m", resourceOrigin = null, resourceRevision = 0;
 const deploymentLabels = {online:"已上线",partial:"部分就绪",not_ready:"未就绪",not_deployed:"未部署",scaled_zero:"已部署 · 0 实例",unknown:"状态未知"};
 const resourceButton = (kind, model, id, text, gpu="") => `<button class="button" data-resource="${escapeHTML(kind)}" data-model="${escapeHTML(model)}" data-instance="${escapeHTML(id)}" data-gpu="${escapeHTML(gpu)}">${escapeHTML(text)}</button>`;
@@ -15,14 +183,14 @@ function clearBusiness(){
 }
 function renderMCP(data){
   const protocol=data.protocol.state==='fresh'?(data.protocol.status==='ready'?'通过':'不可达'):'检查状态未知';
-  $("mcpStatus").innerHTML=`<button class="business-card business-mcp" data-resource="mcp"><div><h3>MCP</h3><span class="business-state">服务可达</span></div><div>协议检查：${protocol}<p>${date(data.protocol.sampled_at)}</p></div><div>已记录请求：${data.requests.count}<p>HTTP 错误：${data.requests.errors} · 查看详情 →</p></div></button>`;
+  $("mcpStatus").innerHTML=`<button class="business-card business-mcp" data-resource="mcp"><div><h3>MCP</h3><span class="business-state">服务可达</span></div><div>协议检查：${protocol}<p>${date(data.protocol.sampled_at)}</p></div><div>已记录请求：${data.requests.count}<p>HTTP 错误：${data.requests.errors} · 查看详情 →</p></div></button>`+catalogCapabilities();
 }
 function renderModels(data){
   const routes=new Map(data.models.map(m=>[m.id,m]));
   for(const id of ['h3','h3-sol','h3-vdn']){ const option=$("dispatchForm").elements.route.querySelector(`option[value="${id}"]`), row=routes.get(id); if(!option)continue; const available=data.state==='fresh'&&row?.route_status==='connected'&&row.ready>0; option.disabled=!available; option.textContent=available?id:`${id} · 暂不可用`; }
   $("inventoryTime").textContent=`部署采集：${date(data.sampled_at)}${data.state!=='fresh'?' · 当前部署状态未知':''}`;
   const modelCards=data.models.map(m=>`<button class="business-card" data-resource="model" data-model="${escapeHTML(m.id)}"><h3>${escapeHTML(m.name)}</h3><span class="business-state ${data.state==='fresh'&&m.deployment_status==='online'?'':'stale'}">${deploymentLabels[m.deployment_status]||'未知'}</span><div class="instance-counts"><div><strong>${m.ready??'—'}</strong><span>就绪实例</span></div><div><strong>${m.current??'—'}</strong><span>当前实例</span></div><div><strong>${m.desired??'—'}</strong><span>期望实例</span></div></div><p>模型：${escapeHTML(m.model_type||'minimax-h3-ref2va')} · 渠道：${escapeHTML(m.route)}</p><p>MCP 路由：${m.route_status==='connected'?'已接入':m.route_status==='not_connected'?'未接入':'未知'}</p><div class="business-foot">查看 ${escapeHTML(m.name)} 实例列表 →</div></button>`).join('');
-  $("modelServices").innerHTML=`<div class="business-card model-contract"><h3>minimax-h3-ref2va</h3><p>业务模型类型 / 接口契约</p></div>`;
+  $("modelServices").innerHTML=catalogModels(data);
   $("channelServices").innerHTML=modelCards;
 }
 async function refreshBusiness(){
