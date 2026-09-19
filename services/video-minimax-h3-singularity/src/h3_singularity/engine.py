@@ -185,7 +185,7 @@ class Engine:
             video_vae.encode_temporal = encode_temporal_cpu
         self.vae_tile_size = tile_size
         self.load_seconds = time.perf_counter() - started
-        self.version = os.environ.get("SINGULARITY_RUNTIME_VERSION", "video-minimax-h3-singularity-v0.1.12")
+        self.version = os.environ.get("SINGULARITY_RUNTIME_VERSION", "video-minimax-h3-singularity-v0.1.13")
         self.execution_instance_id = str(uuid.uuid4())
 
     def health(self) -> dict:
@@ -299,11 +299,21 @@ class Engine:
         vae_image_seconds = 0.0
         vae_video_seconds = 0.0
         audio_vae_seconds = 0.0
+        vae_stage_released = False
 
         def timed_video_vae_encode(pixels, *args, **kwargs):
-            nonlocal vae_image_seconds, vae_video_seconds
+            nonlocal vae_image_seconds, vae_video_seconds, vae_stage_released
             call_started = time.perf_counter()
             try:
+                # The H3 reference node encodes text and references in one
+                # graph call.  Its Qwen encoder can therefore remain in the
+                # Comfy cache when the first VAE tile starts.  Conditioning
+                # has already been copied to the intermediate device, so a
+                # hard stage boundary is safe and keeps GPU1 available for
+                # the INT8 ConvRot VAE.
+                if not vae_stage_released:
+                    timings["offload_before_vae_seconds"] = self._release_comfy_models()
+                    vae_stage_released = True
                 return original_video_encode(pixels, *args, **kwargs)
             finally:
                 elapsed = time.perf_counter() - call_started
