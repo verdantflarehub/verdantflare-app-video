@@ -38,8 +38,15 @@ class Engine:
         self.lora_name = os.environ.get(
             "SINGULARITY_LORA_NAME", "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors"
         )
-        self.clip_name = os.environ.get("H3_CLIP_NAME", "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors")
-        self.video_vae_name = os.environ.get("H3_VIDEO_VAE_NAME", "minimax_h3_video_vae_fp16.safetensors")
+        self.clip_name = os.environ.get("H3_CLIP_NAME", "qwen3vl_4b_fp8_scaled.safetensors")
+        self.clip_type = os.environ.get("H3_CLIP_TYPE", "auto")
+        self.clip_projection_name = os.environ.get(
+            "H3_CLIP_PROJECTION_NAME", "mmh3-4b-ClipProj-v3.1-mlp.safetensors"
+        )
+        self.clip_device = torch.device(os.environ.get("H3_CLIP_DEVICE", "cuda:1"))
+        self.clip_mode = os.environ.get("H3_CLIP_MODE", "resident")
+        self.vae_device = torch.device(os.environ.get("H3_VAE_DEVICE", "cuda:1"))
+        self.video_vae_name = os.environ.get("H3_VIDEO_VAE_NAME", "minimax_h3_video_vae_int8_convrot.safetensors")
         self.audio_vae_name = os.environ.get("H3_AUDIO_VAE_NAME", "minimax_h3_audio_vae_fp32.safetensors")
         self._load_components()
 
@@ -88,6 +95,7 @@ class Engine:
         folder_paths.add_model_folder_path("diffusion_models", os.environ.get("SINGULARITY_MODEL_ROOT", "/models/singularity"))
         singularity_root = os.environ.get("SINGULARITY_MODEL_ROOT", "/models/singularity")
         folder_paths.add_model_folder_path("loras", os.path.join(singularity_root, "loras"))
+        folder_paths.add_model_folder_path("clip_projections", os.path.join(singularity_root, "clip_projections"))
         component_root = os.environ.get(
             "H3_COMPONENT_MODEL_ROOT",
             os.environ.get("SINGULARITY_MODEL_ROOT", "/models/singularity"),
@@ -99,7 +107,8 @@ class Engine:
         import comfy_extras.nodes_minimax_h3  # noqa: F401
         import comfy_extras.nodes_custom_sampler  # noqa: F401
         import comfy_extras.nodes_audio  # noqa: F401
-        return folder_paths, nodes
+        from .clipproj import ClipProjLoader
+        return folder_paths, nodes, ClipProjLoader
 
     def _load_components(self):
         if not torch.cuda.is_available():
@@ -110,7 +119,7 @@ class Engine:
         component_evidence = self.component_root / "component-model-evidence.json"
         if not component_evidence.is_file():
             raise RuntimeErrorCode("h3_components_not_verified")
-        self.folder_paths, self.nodes = self._configure_comfy()
+        self.folder_paths, self.nodes, self.clipproj_loader = self._configure_comfy()
         started = time.perf_counter()
         diffusion_path = self.model_root / self.diffusion_name
         lora_path = self.model_root / "loras" / self.lora_name
@@ -123,9 +132,19 @@ class Engine:
         lora_started = time.perf_counter()
         self.model = self.nodes.LoraLoaderModelOnly().load_lora_model_only(self.model, self.lora_name, 1.0)[0]
         self.lora_patch_seconds = time.perf_counter() - lora_started
-        self.clip = self.nodes.CLIPLoader().load_clip(self.clip_name, "minimax")[0]
+        self.clip = self.clipproj_loader().load(
+            self.clip_name,
+            self.clip_type,
+            self.clip_projection_name,
+            str(self.clip_device),
+            self.clip_mode,
+            unique_id="h3-singularity-clipproj",
+        )[0]
         self.vae = self.nodes.VAELoader().load_vae(self.video_vae_name)[0]
         self.audio_vae = self.nodes.VAELoader().load_vae(self.audio_vae_name)[0]
+        for vae in (self.vae, self.audio_vae):
+            vae.device = self.vae_device
+            vae.patcher.load_device = self.vae_device
         # Keep encoded references and decoded frames on host memory.  Comfy's
         # default intermediate device is CUDA, which makes a 15 s reference
         # video retain its full latent tensor on the 24 GiB card while the
@@ -166,7 +185,7 @@ class Engine:
             video_vae.encode_temporal = encode_temporal_cpu
         self.vae_tile_size = tile_size
         self.load_seconds = time.perf_counter() - started
-        self.version = os.environ.get("SINGULARITY_RUNTIME_VERSION", "video-minimax-h3-singularity-v0.1.1")
+        self.version = os.environ.get("SINGULARITY_RUNTIME_VERSION", "video-minimax-h3-singularity-v0.1.12")
         self.execution_instance_id = str(uuid.uuid4())
 
     def health(self) -> dict:
@@ -179,8 +198,12 @@ class Engine:
                 "root": str(self.component_root),
                 "evidence": "component-model-evidence.json",
                 "clip": self.clip_name,
+                "clip_type": self.clip_type,
+                "clip_projection": self.clip_projection_name,
+                "clip_device": str(self.clip_device),
                 "video_vae": self.video_vae_name,
                 "audio_vae": self.audio_vae_name,
+                "vae_device": str(self.vae_device),
                 "vae_tile_size": self.vae_tile_size,
             },
             "nfe": 4,
