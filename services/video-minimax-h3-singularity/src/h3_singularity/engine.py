@@ -125,6 +125,14 @@ class Engine:
         self.clip = self.nodes.CLIPLoader().load_clip(self.clip_name, "minimax")[0]
         self.vae = self.nodes.VAELoader().load_vae(self.video_vae_name)[0]
         self.audio_vae = self.nodes.VAELoader().load_vae(self.audio_vae_name)[0]
+        # Keep encoded references and decoded frames on host memory.  Comfy's
+        # default intermediate device is CUDA, which makes a 15 s reference
+        # video retain its full latent tensor on the 24 GiB card while the
+        # next reference is encoded.  The H3 model moves reference latents to
+        # its execution device when sampling, and muxing accepts CPU frames.
+        cpu = torch.device("cpu")
+        self.vae.output_device = cpu
+        self.audio_vae.output_device = cpu
         self.load_seconds = time.perf_counter() - started
         self.version = os.environ.get("SINGULARITY_RUNTIME_VERSION", "video-minimax-h3-singularity-v0.1.1")
         self.execution_instance_id = str(uuid.uuid4())
