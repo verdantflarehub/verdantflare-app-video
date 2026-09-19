@@ -66,6 +66,19 @@ class Engine:
         model_management.soft_empty_cache()
         return time.perf_counter() - started
 
+    def _release_clip_to_cpu(self) -> float:
+        """Move the ClipProj parameter storage off GPU1 before VAE work."""
+        started = time.perf_counter()
+        patcher = getattr(self.clip, "patcher", None)
+        model = getattr(patcher, "model", None)
+        if model is not None and hasattr(model, "to"):
+            model.to(device=torch.device("cpu"))
+        if patcher is not None:
+            patcher.offload_device = torch.device("cpu")
+        import comfy.model_management as model_management
+        model_management.soft_empty_cache(force=True)
+        return time.perf_counter() - started
+
     @staticmethod
     def _gpu_snapshot() -> dict[str, dict[str, int]]:
         if not torch.cuda.is_available():
@@ -185,7 +198,7 @@ class Engine:
             video_vae.encode_temporal = encode_temporal_cpu
         self.vae_tile_size = tile_size
         self.load_seconds = time.perf_counter() - started
-        self.version = os.environ.get("SINGULARITY_RUNTIME_VERSION", "video-minimax-h3-singularity-v0.1.13")
+        self.version = os.environ.get("SINGULARITY_RUNTIME_VERSION", "video-minimax-h3-singularity-v0.1.14")
         self.execution_instance_id = str(uuid.uuid4())
 
     def health(self) -> dict:
@@ -313,6 +326,7 @@ class Engine:
                 # the INT8 ConvRot VAE.
                 if not vae_stage_released:
                     timings["offload_before_vae_seconds"] = self._release_comfy_models()
+                    timings["clip_to_cpu_seconds"] = self._release_clip_to_cpu()
                     vae_stage_released = True
                 return original_video_encode(pixels, *args, **kwargs)
             finally:
