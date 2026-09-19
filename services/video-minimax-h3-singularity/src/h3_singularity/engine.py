@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import math
 from pathlib import Path
 import time
 import uuid
@@ -144,6 +145,25 @@ class Engine:
         if getattr(video_vae, "comfy_has_chunked_io", False):
             video_vae.tile_size = tile_size
             video_vae.tile_overlap_min = min(int(getattr(video_vae, "tile_overlap_min", 64)), tile_size // 4)
+            # The native temporal encoder keeps every 17-frame output on the
+            # execution device until the final concat.  Stage each chunk on
+            # CPU immediately; the wrapper and the DiT already support CPU
+            # reference latents and move them back only when sampling.
+            def encode_temporal_cpu(x, device):
+                chunks = []
+                for index in range(math.ceil(x.shape[2] / video_vae.clip_length)):
+                    clip_x = x[:, :, index * video_vae.clip_length:(index + 1) * video_vae.clip_length].to(device)
+                    if clip_x.shape[2] < video_vae.clip_length:
+                        pad_frames = clip_x[:, :, -1:].repeat(1, 1, video_vae.clip_length - clip_x.shape[2], 1, 1)
+                        clip_x = torch.cat([clip_x, pad_frames], dim=2)
+                    chunks.append(video_vae._adaptive_encode(video_vae._normalize_pixels(clip_x)).to("cpu"))
+                    del clip_x
+                result = torch.cat(chunks, dim=2)
+                if video_vae.token_drop > 0:
+                    result = result[:, :, :-video_vae.token_drop]
+                return result
+
+            video_vae.encode_temporal = encode_temporal_cpu
         self.vae_tile_size = tile_size
         self.load_seconds = time.perf_counter() - started
         self.version = os.environ.get("SINGULARITY_RUNTIME_VERSION", "video-minimax-h3-singularity-v0.1.1")
