@@ -1,0 +1,79 @@
+name: Video MiniMax H3 Singularity
+
+on:
+  push:
+    branches: [release]
+    paths:
+      - services/video-minimax-h3-singularity/**
+      - .github/workflows/video-minimax-h3-singularity.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: video-minimax-h3-singularity-release
+  cancel-in-progress: false
+
+env:
+  SERVICE: video-minimax-h3-singularity
+  VERSION: 0.1.7
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --upgrade pip==25.3
+      - run: python -m pip install services/${SERVICE} httpx
+      - run: PYTHONPATH=services/${SERVICE}/src python -m unittest discover -s services/${SERVICE}/tests -v
+      - run: python -m compileall -q services/${SERVICE}/src
+
+  build:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - id: image
+        env:
+          REGISTRY_ENDPOINT: ${{ secrets.REGISTRY_ENDPOINT_ALIYUN }}
+        run: |
+          set -euo pipefail
+          endpoint="${REGISTRY_ENDPOINT%/}"
+          test -n "${endpoint}"
+          echo "registry_endpoint=${endpoint}" >> "$GITHUB_OUTPUT"
+          echo "name=${endpoint}/wod/verdantflare-app" >> "$GITHUB_OUTPUT"
+          echo "version=${SERVICE}-v${VERSION}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.image.outputs.registry_endpoint }}
+          username: ${{ secrets.REGISTRY_USER_ALIYUN }}
+          password: ${{ secrets.REGISTRY_PASSWORD_ALIYUN }}
+      - name: Refuse an existing image tag
+        run: |
+          set -euo pipefail
+          image="${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}"
+          if docker buildx imagetools inspect "${image}" >/tmp/image-inspect.log 2>&1; then
+            echo "Refusing to overwrite an existing release"
+            exit 1
+          fi
+          grep -Eqi 'manifest unknown|not found' /tmp/image-inspect.log
+      - uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: services/${{ env.SERVICE }}
+          file: services/${{ env.SERVICE }}/Dockerfile
+          push: true
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          tags: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}
+          cache-from: type=gha,scope=${{ env.SERVICE }}
+          cache-to: type=gha,mode=max,scope=${{ env.SERVICE }}
+      - name: Verify published manifest
+        run: docker buildx imagetools inspect "${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}"

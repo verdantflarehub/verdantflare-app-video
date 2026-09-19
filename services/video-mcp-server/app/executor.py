@@ -54,6 +54,7 @@ class VideoExecutor:
         self.sol_route = os.environ.get("H3_SOL_RUNTIME_ROUTE", "minimax-h3-sol-ref2va")
         self.sol_token = os.environ.get("H3_SOL_RUNTIME_TOKEN", "")
         self.vdn_token = os.environ.get("H3_VDN_RUNTIME_TOKEN", "")
+        self.singularity_token = os.environ.get("H3_SINGULARITY_RUNTIME_TOKEN", "")
         self.runtime_version = os.environ.get("H3_RUNTIME_VERSION", "video-minimax-h3-api-v0.3.0")
         self.allowed_origins = frozenset(x.strip() for x in os.environ.get("VIDEO_ASSET_IMPORT_ORIGINS", "").split(",") if x.strip())
         self.import_rewrites = json.loads(os.environ.get("VIDEO_ASSET_IMPORT_REWRITES", "{}"))
@@ -97,21 +98,26 @@ class VideoExecutor:
 
     @staticmethod
     def _service_for_route(route: str) -> str:
-        return "h3-vdn" if route == "h3-vdn" else "h3-sol" if route.startswith("h3-sol") else "h3"
+        return ("h3-vdn" if route == "h3-vdn" else
+                "h3-sol" if route.startswith("h3-sol") else
+                "h3-singularity" if route == "h3-singularity" else "h3")
 
     def runtime(self, route=None):
         selected = route or self.runtime_route
         service = self._service_for_route(selected)
         if selected in self.runtime_routes:
             config = self.runtime_routes[selected]
-            if config["requires_token"] or service == "h3-vdn":
-                token = self.vdn_token if service == "h3-vdn" else self.sol_token
+            if config["requires_token"] or service in {"h3-vdn", "h3-singularity"}:
+                token = (self.vdn_token if service == "h3-vdn" else
+                         self.singularity_token if service == "h3-singularity" else self.sol_token)
                 if not token:
                     raise ExecutionError("Selected runtime route is not connected")
                 return config["url"], {"Authorization": f"Bearer {token}"}, config["version"], selected
             return config["url"], {}, config["version"], selected
         if service == "h3" and selected in {"h3", self.runtime_route}:
             return self.runtime_url, {}, self.runtime_version, selected
+        if service == "h3-singularity" and selected == self.runtime_route and self.singularity_token:
+            return self.runtime_url, {"Authorization": f"Bearer {self.singularity_token}"}, self.runtime_version, selected
         if service == "h3-sol" and selected in {"h3-sol", self.sol_route} and self.sol_url and self.sol_token:
             return self.sol_url, {"Authorization": f"Bearer {self.sol_token}"}, self.sol_version, self.sol_route
         raise ExecutionError("Selected runtime is not connected")
@@ -239,14 +245,14 @@ class VideoExecutor:
         payload = {"model": "MiniMaxAI/MiniMax-H3", "task": "ref2va", "prompt": compiled_prompt,
                    "seconds": duration_seconds, "conditions": conditions,
                    "target": {"short_edge": 768, "aspect_ratio": aspect_ratio, "duration_seconds": float(duration_seconds)},
-                   "num_outputs_per_prompt": 1, "num_inference_steps": 4 if service in {"h3-vdn", "h3-sol"} else 21, "flow_shift": 12.0,
+                   "num_outputs_per_prompt": 1, "num_inference_steps": 4 if service in {"h3-vdn", "h3-sol", "h3-singularity"} else 21, "flow_shift": 12.0,
                    "audio_flow_shift": 3.0, "seed": 7}
         # Persist the attempt before calling the runtime. An ambiguous network
         # failure must not permit a duplicate GPU request under the same key.
         reserved = self.tasks.create(project_id=project_id, idempotency_key=idempotency_key,
                                      input_digest=digest, request=request, runtime_task_id="", status="queued")
         reserved = self.tasks.update(reserved, service=service, runtime_version=runtime_version, runtime_route=runtime_route)
-        if service == "h3-vdn":
+        if service in {"h3-vdn", "h3-singularity"}:
             try:
                 health = self.client.get(f"{runtime_url}/health", headers=runtime_headers, timeout=10)
                 if health.status_code == 503:
@@ -267,7 +273,7 @@ class VideoExecutor:
                     "code": "runtime_health_check_failed", "message": "H3 readiness check failed; generation was not submitted"})
         if service == "h3-vdn":
             payload["project_id"] = project_id
-        if service in {"h3-sol", "h3-vdn"}:
+        if service in {"h3-sol", "h3-vdn", "h3-singularity"}:
             payload["idempotency_key"] = reserved.video_task_id
         try:
             response = self.client.post(f"{runtime_url}/v1/videos", json=payload, headers=runtime_headers)

@@ -231,8 +231,9 @@ class Dashboard:
                     value = artifact.model_dump()
                 else:
                     inputs = Submission.model_validate_json(body)
-                    service = "h3-sol" if inputs.route.startswith("h3-sol") else "h3"
-                    if service not in {"h3", "h3-sol"}:
+                    service = ("h3-sol" if inputs.route.startswith("h3-sol") else
+                               "h3-singularity" if inputs.route == "h3-singularity" else "h3")
+                    if service not in {"h3", "h3-sol", "h3-singularity"}:
                         return JSONResponse({"error": "service_not_connected"}, status_code=409)
                     if service == "h3-sol":
                         selected_route = inputs.route
@@ -240,6 +241,8 @@ class Dashboard:
                         route_requires_token = route_config is not None and route_config["requires_token"]
                         if (route_config is None and not (self.executor.sol_url and self.executor.sol_token)) or (route_requires_token and not self.executor.sol_token):
                             return JSONResponse({"error": "service_not_connected"}, status_code=409)
+                    if service == "h3-singularity" and not self.executor.singularity_token:
+                        return JSONResponse({"error": "service_not_connected"}, status_code=409)
                     kwargs = inputs.model_dump(exclude={"model"})
                     record = await run_in_threadpool(self.executor.generate, model=inputs.model, **kwargs)
                     value = public_task(record)

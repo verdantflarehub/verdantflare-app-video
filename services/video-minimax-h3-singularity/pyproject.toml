@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "verdantflare-video-minimax-h3-singularity"
+version = "0.1.7"
+description = "Singularity MiniMax H3 Ref2VA runtime"
+requires-python = ">=3.12"
+dependencies = ["fastapi==0.135.1", "uvicorn==0.40.0", "httpx==0.28.1"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -19,7 +19,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-VERSION = "0.10.3"
+VERSION = "0.10.4"
 MODEL_TYPE = "minimax-h3-ref2va"
 MODELS = {"h3": ("h3", "video-minimax-h3-api"), "h3-sol": ("h3-sol", "video-minimax-h3-sol-api"),
           "h3-vdn": ("h3-vdn", "video-minimax-h3-vdn")}
@@ -139,14 +139,18 @@ class Resources:
 
     @staticmethod
     def route_connected(route):
-        if route == "h3":
-            return True
+        if route in {"h3", "h3-singularity"}:
+            return bool(os.environ.get("H3_RUNTIME_URL"))
         try:
             routes = json.loads(os.environ.get("H3_RUNTIME_ROUTES", "{}"))
         except json.JSONDecodeError:
             return False
         config = routes.get(route)
-        return bool(config and config.get("url") and ((not config.get("requires_token") and route != "h3-vdn") or os.environ.get("H3_VDN_RUNTIME_TOKEN" if route == "h3-vdn" else "H3_SOL_RUNTIME_TOKEN")))
+        token_name = ("H3_VDN_RUNTIME_TOKEN" if route == "h3-vdn" else
+                      "H3_SINGULARITY_RUNTIME_TOKEN" if route == "h3-singularity" else
+                      "H3_SOL_RUNTIME_TOKEN")
+        return bool(config and config.get("url") and
+                    ((not config.get("requires_token") and route != "h3-vdn") or os.environ.get(token_name)))
 
     def record_request(self, failed):
         with self.lock:
