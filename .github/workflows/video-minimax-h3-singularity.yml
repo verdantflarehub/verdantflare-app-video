@@ -16,7 +16,7 @@ concurrency:
 
 env:
   SERVICE: video-minimax-h3-singularity
-  VERSION: 0.1.10
+  VERSION: 0.1.11
 
 jobs:
   check:

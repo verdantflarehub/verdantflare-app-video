@@ -232,8 +232,17 @@ class Engine:
         images = [load_image(path) for path in files.get("images", [])]
         videos = []
         video_audios = {}
+        video_scale = float(os.environ.get("SINGULARITY_REFERENCE_VIDEO_SCALE", "0.5"))
+        if not 0.25 <= video_scale <= 1.0:
+            raise RuntimeErrorCode("invalid_reference_video_scale")
         for index, path in enumerate(files.get("videos", [])):
             frames, audio, _fps = load_video(path)
+            if video_scale < 1.0:
+                scaled_height = max(16, int(frames.shape[1] * video_scale) // 16 * 16)
+                scaled_width = max(16, int(frames.shape[2] * video_scale) // 16 * 16)
+                frames = torch.nn.functional.interpolate(
+                    frames.permute(0, 3, 1, 2), size=(scaled_height, scaled_width), mode="bilinear", align_corners=False
+                ).permute(0, 2, 3, 1).contiguous()
             videos.append(frames)
             if audio is not None:
                 video_audios[f"ref_video_audio_{index}"] = audio
@@ -242,6 +251,7 @@ class Engine:
             "reference_decode_seconds": time.perf_counter() - decode_started,
             "reference_image_count": len(images),
             "reference_video_count": len(videos),
+            "reference_video_scale": video_scale,
             "reference_audio_count": len(audios),
             "vae_chunked_io": True,
             "vae_tile_size": self.vae_tile_size,
