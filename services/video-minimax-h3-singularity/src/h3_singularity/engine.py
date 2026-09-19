@@ -133,6 +133,18 @@ class Engine:
         cpu = torch.device("cpu")
         self.vae.output_device = cpu
         self.audio_vae.output_device = cpu
+        # The native H3 VAE is spatially tiled, but its 256 px default tile
+        # still exceeds the activation budget of a 24 GiB 4090 when a long
+        # reference video is encoded.  Keep the bounded tile explicit and
+        # configurable for larger cards.
+        tile_size = int(os.environ.get("SINGULARITY_VAE_TILE_SIZE", "128"))
+        if tile_size < 64 or tile_size % 16:
+            raise RuntimeErrorCode("invalid_vae_tile_size")
+        video_vae = getattr(self.vae, "first_stage_model", None)
+        if getattr(video_vae, "comfy_has_chunked_io", False):
+            video_vae.tile_size = tile_size
+            video_vae.tile_overlap_min = min(int(getattr(video_vae, "tile_overlap_min", 64)), tile_size // 4)
+        self.vae_tile_size = tile_size
         self.load_seconds = time.perf_counter() - started
         self.version = os.environ.get("SINGULARITY_RUNTIME_VERSION", "video-minimax-h3-singularity-v0.1.1")
         self.execution_instance_id = str(uuid.uuid4())
@@ -149,6 +161,7 @@ class Engine:
                 "clip": self.clip_name,
                 "video_vae": self.video_vae_name,
                 "audio_vae": self.audio_vae_name,
+                "vae_tile_size": self.vae_tile_size,
             },
             "nfe": 4,
             "gpu_count": torch.cuda.device_count(),
@@ -211,6 +224,7 @@ class Engine:
             "reference_video_count": len(videos),
             "reference_audio_count": len(audios),
             "vae_chunked_io": True,
+            "vae_tile_size": self.vae_tile_size,
         }
         self._active_timings = timings
         if not images and not videos:
