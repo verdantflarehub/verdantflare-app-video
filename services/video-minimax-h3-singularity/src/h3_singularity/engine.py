@@ -67,16 +67,47 @@ class Engine:
         return time.perf_counter() - started
 
     def _release_clip_to_cpu(self) -> float:
-        """Move the ClipProj parameter storage off GPU1 before VAE work."""
+        """Move every ClipProj allocation off GPU1 before VAE work.
+
+        ``ProjectedCLIP`` is a wrapper.  Its ``patcher.model`` is only one
+        owner of the Qwen tensors; the loader also registers a pinned patcher
+        and keeps the projection MLP in a separate ``_gpu`` cache.  Calling
+        ``model.to('cpu')`` on the wrapper therefore leaves the real CUDA
+        storage resident.  Use the ClipProj release hooks first, then recurse
+        through the underlying model as a compatibility fallback.
+        """
         started = time.perf_counter()
-        patcher = getattr(self.clip, "patcher", None)
-        model = getattr(patcher, "model", None)
-        if model is not None and hasattr(model, "to"):
-            model.to(device=torch.device("cpu"))
+        cpu = torch.device("cpu")
+        try:
+            from .clipproj.clipproj_pinning import release_all
+            release_all()
+        except Exception:
+            # Older ClipProj builds do not expose the registry.  The direct
+            # fallback below still handles their patcher object.
+            pass
+        try:
+            from .clipproj.clipproj_nodes import purge_projections
+            purge_projections(self.clip_device)
+        except Exception:
+            pass
+
+        base = getattr(self.clip, "_base", self.clip)
+        patcher = getattr(base, "patcher", None)
         if patcher is not None:
-            patcher.offload_device = torch.device("cpu")
+            patcher.offload_device = cpu
+            model = getattr(patcher, "model", None)
+            if model is not None and hasattr(model, "to"):
+                model.to(device=cpu)
+        for owner in (base, getattr(base, "cond_stage_model", None)):
+            if owner is not None and hasattr(owner, "to"):
+                owner.to(device=cpu)
         import comfy.model_management as model_management
+        import gc
+        gc.collect()
         model_management.soft_empty_cache(force=True)
+        if torch.cuda.is_available():
+            with torch.cuda.device(self.clip_device):
+                torch.cuda.empty_cache()
         return time.perf_counter() - started
 
     @staticmethod
@@ -198,7 +229,7 @@ class Engine:
             video_vae.encode_temporal = encode_temporal_cpu
         self.vae_tile_size = tile_size
         self.load_seconds = time.perf_counter() - started
-        self.version = os.environ.get("SINGULARITY_RUNTIME_VERSION", "video-minimax-h3-singularity-v0.1.14")
+        self.version = os.environ.get("SINGULARITY_RUNTIME_VERSION", "video-minimax-h3-singularity-v0.1.15")
         self.execution_instance_id = str(uuid.uuid4())
 
     def health(self) -> dict:
