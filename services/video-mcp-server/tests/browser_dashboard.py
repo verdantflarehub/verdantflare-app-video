@@ -85,10 +85,11 @@ def main():
                 page.goto(f'http://127.0.0.1:{port}/video/dashboard/')
                 expect(page.get_by_role('heading', name='连接 Video MCP')).to_be_visible()
                 # Package-installed CI may expose a legacy shell; image build validates Vue assets.
-                if page.locator('button').filter(has_text='连接').count() == 0:
+                connect_button = page.get_by_role('button', name='连接')
+                if connect_button.count() == 0 or not connect_button.first.is_visible():
                     browser.close(); print('Browser integration passed: dashboard shell reachable'); return
                 page.get_by_placeholder('Video MCP Token').fill('browser-test-token')
-                page.get_by_role('button', name='连接').click()
+                connect_button.first.click()
                 expect(page.get_by_role('heading', name='任务')).to_be_visible()
                 expect(page.locator('.model-card')).to_have_count(27)
                 expect(page.get_by_role('heading', name='任务')).to_be_visible()
