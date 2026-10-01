@@ -59,7 +59,7 @@ class DashboardTest(unittest.TestCase):
     def test_shell_is_public_but_api_requires_token(self):
         page = self.client.get('/dashboard')
         self.assertEqual(page.status_code, 200)
-        self.assertIn('Video MCP', page.text)
+        self.assertIn('VerdantFlare Video Station', page.text)
         self.assertIn("script-src 'self'", page.headers['content-security-policy'])
         for path in ('/api/dashboard', '/api/tasks/video_task_'+'a'*32):
             self.assertEqual(self.client.get(path).status_code, 401)
