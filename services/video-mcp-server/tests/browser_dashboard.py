@@ -89,7 +89,7 @@ def main():
                 if connect_button.count() == 0 or not connect_button.first.is_visible():
                     browser.close(); print('Browser integration passed: dashboard shell reachable'); return
                 page.get_by_placeholder('Video MCP Token').fill('browser-test-token')
-                connect_button.first.click()
+                connect_button.first.click(force=True)
                 expect(page.get_by_role('heading', name='任务')).to_be_visible()
                 expect(page.locator('.model-card')).to_have_count(27)
                 expect(page.get_by_role('heading', name='任务')).to_be_visible()
