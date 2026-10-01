@@ -19,7 +19,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-VERSION = "0.10.4"
+VERSION = "0.11.0"
 MODEL_TYPE = "minimax-h3-ref2va"
 MODELS = {"h3": ("h3", "video-minimax-h3-api"), "h3-sol": ("h3-sol", "video-minimax-h3-sol-api"),
           "h3-vdn": ("h3-vdn", "video-minimax-h3-vdn")}
@@ -139,6 +139,8 @@ class Resources:
 
     @staticmethod
     def route_connected(route):
+        if route == "fal":
+            return bool(os.environ.get("FAL_KEY", "").strip())
         if route in {"h3", "h3-singularity"}:
             return bool(os.environ.get("H3_RUNTIME_URL"))
         try:

@@ -12,7 +12,7 @@ function storeToken(value) {
     // Storage-disabled browsers still support the current in-memory session.
   }
 }
-const names = { h3: "h3", "h3-sol": "h3-sol", "h3-vdn": "h3-vdn", mcp: "MCP" };
+const names = { h3: "h3", "h3-sol": "h3-sol", "h3-vdn": "h3-vdn", fal: "fal", mcp: "MCP" };
 const labels = {
   queued: "排队中",
   running: "渲染中",
@@ -26,8 +26,8 @@ const modelDisplayNames = {
   "video-depth-anything": "Video-Depth-Anything",
   "h3-latent-upscaler": "H3 Latent Upscaler",
 };
-const generationServices = new Set(["h3", "h3-sol", "h3-vdn"]);
-const knownChannels = new Set(["h3", "h3-sol", "h3-vdn"]);
+const generationServices = new Set(["h3", "h3-sol", "h3-vdn", "fal"]);
+const knownChannels = new Set(["h3", "h3-sol", "h3-vdn", "fal"]);
 const serviceDisplayNames = {
   "h3-latent-upscale": "H3 Latent Upscaler",
   sr: "Video Super Resolution",
@@ -49,6 +49,7 @@ const taskOperation = (task) =>
     h3: "视频生成",
     "h3-sol": "视频生成",
     "h3-vdn": "视频生成",
+    fal: "视频生成",
     "h3-latent-upscale": "H3 潜空间超分",
     sr: "视频超分",
     interpolate: "视频补帧",
@@ -317,6 +318,10 @@ function reconcileGallery(html, tasks) {
 }
 function render(data) {
   total = data.total;
+  const falOption = $("dispatchForm").elements.route.querySelector('option[value="fal"]');
+  const falConnected = data.services?.fal === "configured";
+  falOption.disabled = !falConnected;
+  falOption.textContent = falConnected ? "fal" : "fal · 未配置 FAL_KEY";
   $("metricQueued").textContent = data.counts.queued;
   $("metricRunning").textContent = data.counts.running;
   $("metricFailed").textContent = data.counts.failed;
@@ -565,6 +570,7 @@ $("dispatchForm").addEventListener("submit", async (event) => {
     const references = { images: [], videos: [], audios: [] };
     const kinds = { image: "images", video: "videos", audio: "audios" };
     for (const line of body.references.trim().split("\n")) {
+      if (!line.trim()) continue;
       const parts = line.split("|").map((s) => s.trim());
       if (parts.length !== 3 || !kinds[parts[0]] || !parts[1] || !parts[2])
         throw new Error(
@@ -575,8 +581,11 @@ $("dispatchForm").addEventListener("submit", async (event) => {
         purpose: parts[2],
       });
     }
-    if (!references.images.length && !references.videos.length)
-      throw new Error("至少需要一张图片或一段视频参考。");
+    const missingReference = body.route === "fal"
+      ? !references.images.length && !references.videos.length && !references.audios.length
+      : !references.images.length && !references.videos.length;
+    if (missingReference)
+      throw new Error(body.route === "fal" ? "fal 至少需要一个参考素材。" : "至少需要一张图片或一段视频参考。");
     body.references = references;
     const task = await api("/api/tasks", {
       method: "POST",
@@ -599,11 +608,17 @@ $("dispatchForm").addEventListener("submit", async (event) => {
 $("dispatchForm").elements.route.addEventListener("change", () => {
   const duration = $("dispatchForm").elements.duration_seconds;
   const route = $("dispatchForm").elements.route.value;
-  const sol = route.startsWith("h3-sol") || route === "h3-vdn";
+  const fal = route === "fal";
+  const sol = route.startsWith("h3-sol") || route === "h3-vdn" || fal;
+  const ratio = $("dispatchForm").elements.aspect_ratio;
   duration.min = sol ? "5" : "4";
   duration.step = "1";
   if (sol && (!Number.isInteger(Number(duration.value)) || Number(duration.value) < 5 || Number(duration.value) > 15))
     duration.value = "5";
+  [...ratio.options].forEach((option) => {
+    option.hidden = !fal && option.value !== "9:16";
+  });
+  ratio.value = fal ? "adaptive" : "9:16";
 });
 
 window.addEventListener("DOMContentLoaded", () => {
@@ -648,7 +663,7 @@ if (window.studioEmbedded) {
       }
       if (typeof state.q === "string")
         $("searchInput").value = state.q.slice(0, 512);
-      if (["all", "h3", "h3-sol", "h3-vdn"].includes(state.engine))
+      if (["all", "h3", "h3-sol", "h3-vdn", "fal"].includes(state.engine))
         $("filterEngine").value = state.engine;
       if (
         [

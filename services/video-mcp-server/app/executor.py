@@ -74,6 +74,8 @@ class VideoExecutor:
         self.processing = {name: ProcessingExecutor(self, name) for name in ("sr", "interpolate")}
         from .h3_latent import H3LatentExecutor
         self.processing["h3-latent-upscale"] = H3LatentExecutor(self)
+        from .fal import FalAdapter
+        self.fal = FalAdapter(self)
 
     def _load_routes(self) -> dict[str, dict[str, object]]:
         raw = os.environ.get("H3_RUNTIME_ROUTES", "")
@@ -98,7 +100,8 @@ class VideoExecutor:
 
     @staticmethod
     def _service_for_route(route: str) -> str:
-        return ("h3-vdn" if route == "h3-vdn" else
+        return ("fal" if route == "fal" else
+                "h3-vdn" if route == "h3-vdn" else
                 "h3-sol" if route.startswith("h3-sol") else
                 "h3-singularity" if route == "h3-singularity" else "h3")
 
@@ -223,6 +226,10 @@ class VideoExecutor:
         if not idempotency_key.strip() or len(idempotency_key) > 128:
             raise ValueError("idempotency_key is invalid")
         route = route or self.runtime_route
+        if route == "fal":
+            return self.fal.generate(project_id=project_id, idempotency_key=idempotency_key,
+                                     model=model, prompt=prompt, duration_seconds=duration_seconds,
+                                     aspect_ratio=aspect_ratio, references=references)
         request, digest = self._normalize(project_id, model, prompt, duration_seconds, aspect_ratio,
                                           references, route, quality_profile)
         service = self._service_for_route(route)
@@ -301,6 +308,12 @@ class VideoExecutor:
     @serialized
     def status(self, video_task_id: str) -> TaskRecord:
         record = self.tasks.get(video_task_id)
+        if record.service == "fal":
+            from .fal import FalError
+            try:
+                return self.fal.status(record)
+            except FalError as error:
+                raise ExecutionError(str(error)) from error
         if record.service in self.processing:
             return self.processing[record.service].status(video_task_id)
         if record.service == "depth":
@@ -339,6 +352,13 @@ class VideoExecutor:
 
     @serialized
     def result(self, video_task_id: str) -> TaskRecord:
+        record = self.tasks.get(video_task_id)
+        if record.service == "fal":
+            from .fal import FalError
+            try:
+                return self.fal.result(record)
+            except FalError as error:
+                raise ExecutionError(str(error)) from error
         record = self.status(video_task_id)
         if record.service in self.processing:
             return self.processing[record.service].result(video_task_id)

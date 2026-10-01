@@ -74,7 +74,8 @@ def public_task(record):
             "model": model,
             "prompt": record.request.get("prompt", ""),
             "duration_seconds": record.request.get("duration_seconds"),
-            "aspect_ratio": record.request.get("aspect_ratio"), "seed": record.request.get("seed", 7),
+            "aspect_ratio": record.request.get("aspect_ratio"),
+            "seed": record.request.get("seed", None if record.service == "fal" else 7),
             "status": record.status, "created_at": record.created_at, "updated_at": record.updated_at,
             "completed_at": record.completed_at or (record.updated_at if record.status in {"succeeded", "failed", "cancelled"} else None),
             "artifact_id": record.artifact_id, "media": record.media, "error": record.error,
@@ -88,7 +89,7 @@ class Dashboard:
         self.resources = Resources()
         self.resources.task_provider = self.records
         self.result_lock = threading.Lock()
-        self.services = {"h3": "unknown", "h3-sol": "not_connected", "mcp": "ready"}
+        self.services = {"h3": "unknown", "h3-sol": "not_connected", "fal": "not_connected", "mcp": "ready"}
         self.sync_errors = 0
         self.synced_at = None
 
@@ -103,6 +104,7 @@ class Dashboard:
         return sorted(records, key=lambda x: (x.created_at, x.video_task_id), reverse=True)
 
     def sync(self):
+        self.services["fal"] = "configured" if self.executor.fal.connected() else "not_connected"
         try:
             response = self.executor.client.get(f"{self.executor.runtime_url}/health", timeout=5)
             self.services["h3"] = "ready" if response.is_success else "unavailable"
@@ -231,9 +233,12 @@ class Dashboard:
                     value = artifact.model_dump()
                 else:
                     inputs = Submission.model_validate_json(body)
-                    service = ("h3-sol" if inputs.route.startswith("h3-sol") else
+                    service = ("fal" if inputs.route == "fal" else
+                               "h3-sol" if inputs.route.startswith("h3-sol") else
                                "h3-singularity" if inputs.route == "h3-singularity" else "h3")
-                    if service not in {"h3", "h3-sol", "h3-singularity"}:
+                    if service not in {"h3", "h3-sol", "h3-singularity", "fal"}:
+                        return JSONResponse({"error": "service_not_connected"}, status_code=409)
+                    if service == "fal" and not self.executor.fal.connected():
                         return JSONResponse({"error": "service_not_connected"}, status_code=409)
                     if service == "h3-sol":
                         selected_route = inputs.route

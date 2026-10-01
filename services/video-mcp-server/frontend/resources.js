@@ -10,11 +10,12 @@ const videoModelCatalog=[
     "description": "参考素材驱动的视频生成，按项目保存任务与结果。",
     "input": "提示词 · 图像 / 视频 / 可选音频参考",
     "output": "视频任务 · 视频产物",
-    "backend": "minimax-h3-ref2va",
+    "backend": "minimax-h3-ref2va / fal:minimax/h3/reference-to-video",
     "routes": [
       "h3",
       "h3-sol",
-      "h3-vdn"
+      "h3-vdn",
+      "fal"
     ],
     "family": "video",
     "tools": [
@@ -179,7 +180,7 @@ function clearBusiness(){
   $("inventoryTime").textContent="";
   $("mcpStatus").innerHTML='<button class="business-card" data-resource="mcp"><h3>MCP</h3><p>认证后查看服务状态 →</p></button>';
   $("modelServices").innerHTML=`<div class="business-card"><h3>minimax-h3-ref2va</h3><p>业务模型类型 / 接口契约</p></div>`;
-  $("channelServices").innerHTML=`<div class="business-card"><p>h3 · h3-sol · h3-vdn</p></div>`;
+  $("channelServices").innerHTML=`<div class="business-card"><p>h3 · h3-sol · h3-vdn · fal</p></div>`;
 }
 function renderMCP(data){
   const protocol=data.protocol.state==='fresh'?(data.protocol.status==='ready'?'通过':'不可达'):'检查状态未知';

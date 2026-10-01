@@ -39,7 +39,7 @@
 <div class="business-models" id="modelServices"><div class="business-card"><h3>minimax-h3-ref2va</h3><p>业务模型类型 / 接口契约</p></div></div>
 <h3 class="service-subheading">渠道服务</h3>
 <p class="business-muted">按接入渠道查看部署、实例和 MCP 路由状态。</p>
-<div class="business-models" id="channelServices"><div class="business-card"><p>h3 · h3-sol · h3-vdn</p></div></div>
+<div class="business-models" id="channelServices"><div class="business-card"><p>h3 · h3-sol · h3-vdn · fal</p></div></div>
 <p class="business-muted" id="inventoryTime"></p>
 </section>
 <section aria-labelledby="tasksHeading" class="market-wrap business-section" data-business-view="tasks" id="view-tasks">
@@ -54,6 +54,7 @@
 <option value="h3">h3</option>
 <option value="h3-sol">h3-sol</option>
 <option value="h3-vdn">h3-vdn</option>
+<option value="fal">fal</option>
 </select></label><label><span>所属项目</span><select id="filterProject">
 <option value="all">全部项目</option>
 </select></label>
@@ -120,16 +121,23 @@
 <option value="h3">h3</option>
 <option disabled="" value="h3-sol">h3-sol · 检查中</option>
 <option disabled="" selected="" value="h3-vdn">h3-vdn · 检查中</option>
+<option value="fal">fal</option>
 </select></label><label class="full">镜头 / Attempt 幂等键<input id="attemptInput" maxlength="128" name="idempotency_key" required=""/></label><label class="full">动态运镜 Prompt<textarea maxlength="16000" name="prompt" placeholder="描述已确认的镜头、人物动作和连续运镜…" required="" rows="4"></textarea></label><label>时长（秒）<input max="15" min="5" name="duration_seconds" required="" step="1" type="number" value="5"/></label><label>画幅<select name="aspect_ratio">
 <option value="9:16">9:16 · 竖屏</option>
+<option hidden="" value="adaptive">自适应</option>
+<option hidden="" value="21:9">21:9 · 超宽屏</option>
+<option hidden="" value="16:9">16:9 · 横屏</option>
+<option hidden="" value="4:3">4:3 · 横屏</option>
+<option hidden="" value="1:1">1:1 · 方形</option>
+<option hidden="" value="3:4">3:4 · 竖屏</option>
 </select></label><label class="full">参考素材（每行：类型 | Artifact ID | 用途）<textarea id="referenceInput" name="references" placeholder="image | art_… | identity
 video | art_… | motion
 audio | art_… | rhythm" required="" rows="4"></textarea>
 </label>
 </div>
 <p>
-            至少一张图片或一段视频。H3-Sol 支持 5–15 秒整数时长。当前使用固定 seed 7、24
-            FPS；参考素材需先登记到同一项目。
+            至少一个参考素材。H3-Sol 与 fal 支持 5–15 秒整数时长；fal 支持 9 张图片、
+            3 段视频和 3 段音频，合计不超过 12 个参考。素材需先登记到同一项目。
           </p>
 <div class="actions">
 <button class="button" id="openImport" type="button">
