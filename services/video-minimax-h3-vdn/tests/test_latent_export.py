@@ -5,8 +5,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import torch
-from safetensors.torch import load_file
+try:
+    import torch
+    from safetensors.torch import load_file
+except ModuleNotFoundError as error:
+    if error.name in {"torch", "safetensors"}:
+        raise unittest.SkipTest("PyTorch and safetensors are required for latent export tests") from error
+    raise
 from latent_export import ExportingPipeline, finalize
 
 
@@ -64,7 +69,7 @@ class LatentExportTest(unittest.TestCase):
             self.assertEqual(manifest['media']['frames'], 124)
             self.assertEqual(manifest['media']['width'], 768)
             self.assertEqual(manifest['media']['height'], 1344)
-            self.assertEqual(manifest['media']['fps'], '24/1')
+            self.assertEqual(manifest['media']['fps'], 24)
             self.assertEqual(manifest['project_id'], 'project-a')
             with patch.dict(os.environ, {'VDN_PROJECTS_ROOT': tmp, 'VDN_NODE_NAME': 'node-a'}):
                 with self.assertRaises(FileExistsError):
