@@ -22,8 +22,9 @@ class ResidentTest(unittest.TestCase):
  def tearDown(self):self.store.db.close();self.temp.cleanup()
  def test_strict_profile_and_source(self):
   validate(payload(),SOURCE)
-  for change in [{'seconds':True},{'seconds':6},{'seed':8},{'model':'h3-sol'},{'num_inference_steps':21}]:
+  for change in [{'seconds':True},{'seconds':4},{'seconds':16},{'seed':8},{'model':'h3-sol'},{'num_inference_steps':21}]:
    with self.assertRaises(ValueError):validate({**payload(),**change},SOURCE)
+  six=payload();six['seconds']=6;six['target']={'short_edge':768,'aspect_ratio':'9:16','duration_seconds':6.0};validate(six,SOURCE)
   for uri in ['file:///etc/passwd',SOURCE+'/runtime-artifacts/../secret',SOURCE+'.evil/runtime-artifacts/art_'+'a'*32+'/content',SOURCE+'/runtime-artifacts/art_'+'a'*32+'/content?token=x']:
    p=payload();p['conditions'][0]['uri']=uri
    with self.assertRaises(ValueError):validate(p,SOURCE)

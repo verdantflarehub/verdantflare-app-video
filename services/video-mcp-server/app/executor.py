@@ -176,8 +176,8 @@ class VideoExecutor:
         if not isinstance(route, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", route):
             raise ValueError("route must be a lowercase slug")
         service = self._service_for_route(route)
-        if service in {"h3-sol", "h3-vdn"} and duration_seconds not in {5, 10, 15}:
-            raise ValueError("Selected channel duration must be 5, 10, or 15 seconds")
+        if service in {"h3-sol", "h3-vdn"} and not 5 <= duration_seconds <= 15:
+            raise ValueError("Selected channel duration must be an integer from 5 to 15 seconds")
         if model != "minimax-h3-ref2va":
             raise ValueError("model must be minimax-h3-ref2va")
         if not 4 <= duration_seconds <= 15 or aspect_ratio != "9:16" or not prompt.strip():

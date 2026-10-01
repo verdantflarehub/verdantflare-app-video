@@ -40,9 +40,10 @@ class SolRouteTest(unittest.TestCase):
   self.assertEqual(row.input_digest,expected);self.assertEqual(row.service,'h3')
   self.assertNotIn('Authorization',self.calls[0].headers);self.assertNotEqual(self.calls[0].url.host,'sol.example')
   body=json.loads(self.calls[0].content);self.assertEqual(body['num_inference_steps'],21);self.assertNotIn('idempotency_key',body)
- def test_sol_duration_rejects_before_network(self):
-  with self.assertRaises(ValueError):self.executor.generate(**{**self.kw,'duration_seconds':6},route='h3-sol')
-  self.assertFalse(self.calls)
+ def test_sol_accepts_continuous_integer_duration_range(self):
+  row=self.executor.generate(**{**self.kw,'duration_seconds':6},route='h3-sol')
+  self.assertEqual(json.loads(self.calls[-1].content)['seconds'],6)
+  self.assertEqual(row.request['duration_seconds'],6)
  def test_explicit_4090_route_keeps_business_model_type(self):
   with patch.dict(os.environ, {'H3_RUNTIME_ROUTES': json.dumps({
    'h3-sol-4090': {'url':'http://sol4090.example:8000','version':'video-minimax-h3-sol-v0.2.10','requires_token':True}})}):

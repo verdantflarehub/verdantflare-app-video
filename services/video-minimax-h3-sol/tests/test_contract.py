@@ -204,7 +204,7 @@ class ContractTests(unittest.TestCase):
     def test_sglang_adapter_preserves_ref2va_conditions(self):
         params = sglang_backend.SGLangH3Inference.sampling_params(
             "frozen prompt", references=[("image", "./reference.png"), ("audio", "voice.wav")],
-            duration=10, seed=7, output=self.root / "output.mp4")
+            duration=6, seed=7, output=self.root / "output.mp4")
         self.assertEqual(params["task"], "ref2va")
         self.assertEqual([item["type"] for item in params["conditions"]], ["image", "audio"])
         self.assertEqual(params["target"]["aspect_ratio"], "9:16")

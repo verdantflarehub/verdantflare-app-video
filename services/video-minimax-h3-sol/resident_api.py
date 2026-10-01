@@ -25,8 +25,8 @@ def validate(payload, source):
         raise ValueError('invalid fields')
     if payload['model']!='MiniMaxAI/MiniMax-H3' or payload['task']!='ref2va':
         raise ValueError('invalid model')
-    if type(payload['seconds']) is not int or payload['seconds'] not in {5,10,15}:
-        raise ValueError('supported durations are 5,10,15')
+    if type(payload['seconds']) is not int or not 5 <= payload['seconds'] <= 15:
+        raise ValueError('supported durations are integer seconds from 5 to 15')
     if type(payload['seed']) is not int or payload['seed']!=7:
         raise ValueError('seed must be 7')
     if not isinstance(payload['prompt'],str) or not payload['prompt'].strip() or len(payload['prompt'])>24000:

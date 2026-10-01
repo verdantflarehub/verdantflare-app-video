@@ -60,6 +60,8 @@ class ResidentTests(unittest.TestCase):
         validate(base, SOURCE)
         cases = [dict(request(), task='t2va'), dict(request(), num_inference_steps=50), dict(request(), seconds=True),
                  dict(request(), task=[]), dict(request(), conditions=[[]]), dict(request(), conditions=[])]
+        cases.extend([dict(request(), seconds=4, target={'short_edge':768,'aspect_ratio':'9:16','duration_seconds':4.0}),
+                       dict(request(), seconds=16, target={'short_edge':768,'aspect_ratio':'9:16','duration_seconds':16.0})])
         for uri in [SOURCE+'.attacker/runtime-artifacts/art_'+'a'*32+'/content',
                     SOURCE+'/runtime-artifacts/../secret', base['conditions'][0]['uri']+'?redirect=http://attacker']:
             bad=copy.deepcopy(base);bad['conditions'][0]['uri']=uri;cases.append(bad)

@@ -601,8 +601,8 @@ $("dispatchForm").elements.route.addEventListener("change", () => {
   const route = $("dispatchForm").elements.route.value;
   const sol = route.startsWith("h3-sol") || route === "h3-vdn";
   duration.min = sol ? "5" : "4";
-  duration.step = sol ? "5" : "1";
-  if (sol && ![5, 10, 15].includes(Number(duration.value)))
+  duration.step = "1";
+  if (sol && (!Number.isInteger(Number(duration.value)) || Number(duration.value) < 5 || Number(duration.value) > 15))
     duration.value = "5";
 });
 

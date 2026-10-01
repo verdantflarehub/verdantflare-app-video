@@ -7,7 +7,7 @@ import threading
 import unittest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / 'src'))
-from ref2va_io import download
+from ref2va_io import download, frames_for_seconds
 
 
 class DownloadTests(unittest.TestCase):
@@ -48,3 +48,13 @@ class DownloadTests(unittest.TestCase):
     def test_redirect_is_not_followed(self):
         with self.assertRaises(ValueError):
             download({'conditions':[dict(self.ref, uri=self.ref['uri'].replace('/asset','/redirect'))]}, self.temp.name)
+
+    def test_duration_range_maps_to_valid_frame_buckets(self):
+        self.assertEqual(frames_for_seconds(5), 124)
+        self.assertEqual(frames_for_seconds(6), 158)
+        self.assertEqual(frames_for_seconds(10), 243)
+        self.assertEqual(frames_for_seconds(14), 345)
+        self.assertEqual(frames_for_seconds(15), 345)
+        for seconds in (4, 16, True):
+            with self.assertRaises(ValueError):
+                frames_for_seconds(seconds)

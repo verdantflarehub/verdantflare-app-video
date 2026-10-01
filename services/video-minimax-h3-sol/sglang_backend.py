@@ -45,8 +45,8 @@ class SGLangH3Inference:
         the most dangerous regression here: accidentally sending a Ref2VA
         request as text-to-video and silently dropping its references.
         """
-        if duration not in {5, 10, 15}:
-            raise ValueError("SGLang Ref2VA supports only 5, 10, or 15 seconds")
+        if type(duration) is not int or not 5 <= duration <= 15:
+            raise ValueError("SGLang Ref2VA supports integer durations from 5 to 15 seconds")
         if not references or not any(kind in {"image", "video"} for kind, _ in references):
             raise ValueError("Ref2VA requires an image or video reference")
         conditions = []

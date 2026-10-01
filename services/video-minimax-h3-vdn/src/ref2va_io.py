@@ -4,7 +4,20 @@ from pathlib import Path
 import re
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-FRAMES = {5:124, 10:243, 15:345}
+def frames_for_seconds(seconds):
+    """Map an integer 5–15 second request to the nearest valid 17n+5 frame bucket.
+
+    H3 requires 17n+5 frames at 24 FPS. The 15-second request uses the
+    established 345-frame bucket (14.375 seconds), within the MCP tolerance.
+    """
+    if type(seconds) is not int or not 5 <= seconds <= 15:
+        raise ValueError('duration must be an integer from 5 to 15 seconds')
+    if seconds == 15:
+        return 345
+    return min(345, ((seconds * 24 - 5 + 16) // 17) * 17 + 5)
+
+
+FRAMES = {seconds: frames_for_seconds(seconds) for seconds in range(5, 16)}
 
 
 def validate(payload, source):
@@ -16,8 +29,8 @@ def validate(payload, source):
         raise ValueError('invalid project id')
     if payload['model']!='MiniMaxAI/MiniMax-H3' or payload['task']!='ref2va':
         raise ValueError('only Ref2VA is served')
-    if type(payload['seconds']) is not int or payload['seconds'] not in FRAMES:
-        raise ValueError('duration must be 5, 10, or 15 seconds')
+    if type(payload['seconds']) is not int or not 5 <= payload['seconds'] <= 15:
+        raise ValueError('duration must be an integer from 5 to 15 seconds')
     if not isinstance(payload['prompt'],str) or not payload['prompt'].strip() or len(payload['prompt'])>24000:
         raise ValueError('invalid prompt')
     if payload['target']!={'short_edge':768,'aspect_ratio':'9:16','duration_seconds':float(payload['seconds'])}:

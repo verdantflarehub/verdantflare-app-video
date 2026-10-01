@@ -40,6 +40,6 @@ python3 services/video-minimax-h3-sol/prepare-patched-source.py \
 
 直接运行 `gpu_tests/` 时，Python 搜索路径需包含本工程目录；镜像默认已包含。实验引擎另需显式使用 `/opt/sol-h3-experimental`。这不是自动执行授权，不创建 Job；后续服务化按中央热启动设计与部署清单交付。
 
-冻结输入继续要求 `schema_version=1`、`task=ref2va`、`status=frozen`、可追溯批准 ID、原样 Prompt、5/10/15 秒档、seed 及带 SHA-256 的受控参考资产。至少一张图片或一段视频，不接受音频独占输入、越界路径或改变的哈希。模型完整性核验保持启用；历史实验允许的唯一辅助 FAQ 缺项必须显式记录，不能宣称模型包完整。
+冻结输入继续要求 `schema_version=1`、`task=ref2va`、`status=frozen`、可追溯批准 ID、原样 Prompt、5–15 秒整数时长、seed 及带 SHA-256 的受控参考资产。至少一张图片或一段视频，不接受音频独占输入、越界路径或改变的哈希。模型完整性核验保持启用；历史实验允许的唯一辅助 FAQ 缺项必须显式记录，不能宣称模型包完整。
 
 正式 runner 与历史实验入口仍为单次执行；受控保温、预热复用、取消及异常恢复的服务化改造尚未完成。媒体技术通过不代表创作质量通过，不能把本次镜像发布描述为 H3-Sol 已上线。

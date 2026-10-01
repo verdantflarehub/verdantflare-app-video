@@ -49,8 +49,13 @@ class VdnRouteTest(unittest.TestCase):
                 executor.generate(**self.kw, route='h3-vdn')
         self.assertFalse(self.calls)
 
+    def test_vdn_accepts_continuous_integer_duration_range(self):
+        row = self.executor.generate(**{**self.kw, 'duration_seconds': 6}, route='h3-vdn')
+        self.assertEqual(json.loads(self.calls[-1].content)['seconds'], 6)
+        self.assertEqual(row.request['duration_seconds'], 6)
+
     def test_vdn_rejects_unsupported_duration_model_and_total_count(self):
-        for update in ({'duration_seconds':6}, {'model':'minimax-h3-t2va'},
+        for update in ({'duration_seconds':4}, {'duration_seconds':16}, {'model':'minimax-h3-t2va'},
                        {'references':{'images':self.kw['references']['images']*9,
                                       'videos':self.kw['references']['images']*3,
                                       'audios':self.kw['references']['images']}}):
