@@ -37,7 +37,7 @@ jobs:
         working-directory: services/${{ env.SERVICE }}/frontend
         run: |
           corepack enable
-          pnpm install --no-frozen-lockfile
+          pnpm install --frozen-lockfile
           pnpm run build
       - name: Browser integration
         env:
@@ -48,7 +48,7 @@ jobs:
           python3 -m pip install "./services/${SERVICE}[browser]"
           corepack enable
           corepack prepare pnpm@9.15.9 --activate
-          pnpm --dir "services/${SERVICE}/frontend" install --no-frozen-lockfile
+          pnpm --dir "services/${SERVICE}/frontend" install --frozen-lockfile
           pnpm --dir "services/${SERVICE}/frontend" run build
           python3 -m playwright install --with-deps chromium
           python3 services/${SERVICE}/tests/browser_dashboard.py
