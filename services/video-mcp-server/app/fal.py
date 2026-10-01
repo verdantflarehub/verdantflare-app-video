@@ -17,8 +17,9 @@ from .tasks import TaskConflict, TaskRecord
 
 
 FAL_PUBLIC_MODEL = "minimax-h3-ref2va"
-DEFAULT_FAL_MODEL_ID = "minimax/h3/reference-to-video"
-FAL_MODEL_ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)+")
+FAL_MODEL_ID = "minimax/h3/reference-to-video"
+FAL_RUNTIME_VERSION = "video-fal-adapter-v0.2.1"
+FAL_RESOLUTION = "480P"
 FAL_REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,255}")
 MAX_FAL_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_FAL_VIDEO_BYTES = 256 * 1024 * 1024
@@ -39,21 +40,9 @@ class FalAdapter:
         self.base_url = self._origin(
             os.environ.get("FAL_QUEUE_BASE_URL", "https://queue.fal.run")
         )
-        self.model_id = os.environ.get("FAL_MODEL_ID", DEFAULT_FAL_MODEL_ID).strip()
-        if not FAL_MODEL_ID_PATTERN.fullmatch(self.model_id):
-            raise ValueError("FAL_MODEL_ID must be a slash-separated lowercase model identifier")
-        self.runtime_version = os.environ.get(
-            "FAL_RUNTIME_VERSION", "video-fal-adapter-v0.2.0"
-        ).strip()
-        self.resolution = os.environ.get("FAL_RESOLUTION", "2K").strip().upper()
-        if self.resolution not in {"480P", "768P", "2K", "4K"}:
-            raise ValueError("FAL_RESOLUTION must be 480P, 768P, 2K, or 4K")
-        configured = {
-            self._origin(value)
-            for value in os.environ.get("FAL_RESULT_ORIGINS", "").split(",")
-            if value.strip()
-        }
-        self.result_origins = frozenset(configured)
+        self.model_id = FAL_MODEL_ID
+        self.runtime_version = FAL_RUNTIME_VERSION
+        self.resolution = FAL_RESOLUTION
 
     @staticmethod
     def _origin(value: str) -> str:
@@ -413,7 +402,7 @@ class FalAdapter:
         host = parsed.hostname.lower()
         origin = f"https://{host}" if port in {None, 443} else f"https://{host}:{port}"
         official = host == "fal.media" or host.endswith(".fal.media")
-        if not official and origin not in self.result_origins:
+        if not official:
             raise FalError("result_download_failed")
         return value
 

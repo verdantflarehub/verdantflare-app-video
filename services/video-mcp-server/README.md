@@ -31,10 +31,6 @@ The MCP never returns Runtime task IDs, internal service URLs, node names, GPU d
 | `H3_RUNTIME_VERSION` | `video-minimax-h3-api-v0.3.0` |
 | `FAL_KEY` | unset; enables the server-side `fal` route |
 | `FAL_QUEUE_BASE_URL` | `https://queue.fal.run` |
-| `FAL_MODEL_ID` | `minimax/h3/reference-to-video` |
-| `FAL_RUNTIME_VERSION` | `video-fal-adapter-v0.2.0` |
-| `FAL_RESOLUTION` | `2K` |
-| `FAL_RESULT_ORIGINS` | unset; additional exact HTTPS result origins |
 
 Use `model=minimax-h3-ref2va` together with `route=fal`. The adapter maps up to
 9 image, 3 video, and 3 audio Artifacts (12 total) to fal's reference lists,
@@ -42,7 +38,11 @@ submits to the asynchronous Queue API, polls the provider request, downloads
 the result without forwarding the API key, validates it with `ffprobe`, and
 stores it as a project Artifact. It never falls back to a self-hosted route.
 `FAL_KEY` must be injected at runtime and must not be placed in client requests
-or committed configuration.
+or committed configuration. The provider model ID
+`minimax/h3/reference-to-video`, adapter runtime version
+`video-fal-adapter-v0.2.1`, `480P` resolution,
+and official `*.fal.media` result-origin policy are locked in code and cannot
+be overridden through environment variables.
 
 `video.generate` uses 21 sigma points, which corresponds to the approved Base
 20 NFE profile. This parameter is owned by the service and is not exposed as a

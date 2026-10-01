@@ -47,8 +47,10 @@ class FalRouteTest(unittest.TestCase):
             {
                 "FAL_KEY": "test-fal-key",
                 "FAL_QUEUE_BASE_URL": "https://queue.fal.run",
-                "FAL_MODEL_ID": "minimax/h3/reference-to-video",
-                "FAL_RESULT_ORIGINS": "",
+                "FAL_MODEL_ID": "attacker/override-must-be-ignored",
+                "FAL_RUNTIME_VERSION": "attacker-version",
+                "FAL_RESOLUTION": "4K",
+                "FAL_RESULT_ORIGINS": "https://attacker.example",
             },
         )
         self.environment.start()
@@ -85,7 +87,7 @@ class FalRouteTest(unittest.TestCase):
                 self.assertEqual(request.headers["Authorization"], "Key test-fal-key")
                 body = json.loads(request.content)
                 self.assertEqual(body["duration"], 5)
-                self.assertEqual(body["resolution"], "2K")
+                self.assertEqual(body["resolution"], "480P")
                 self.assertEqual(body["aspect_ratio"], "9:16")
                 self.assertTrue(body["enable_safety_checker"])
                 self.assertTrue(body["reference_image_urls"][0].startswith("data:image/png;base64,"))
