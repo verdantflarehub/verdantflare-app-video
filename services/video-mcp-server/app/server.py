@@ -210,7 +210,8 @@ def artifact_import(project_id: str, source_url: str, filename: str, expected_sh
 @mcp.tool(name="video.generate")
 def video_generate(project_id: str, idempotency_key: str, model: str, prompt: str,
                    duration_seconds: int, aspect_ratio: str,
-                   references: dict[str, list[dict[str, str]]], route: str) -> types.CallToolResult:
+                   references: dict[str, list[dict[str, str]]], route: str,
+                   quality_profile: str = "du-0") -> types.CallToolResult:
     """Generate with a business model and an explicitly selected runtime route.
 
     `model=minimax-h3-ref2va` remains the business contract. `route` selects a
@@ -219,7 +220,8 @@ def video_generate(project_id: str, idempotency_key: str, model: str, prompt: st
     """
     record = executor.generate(project_id=project_id, idempotency_key=idempotency_key, model=model,
                                prompt=prompt, duration_seconds=duration_seconds,
-                               aspect_ratio=aspect_ratio, references=references, route=route)
+                               aspect_ratio=aspect_ratio, references=references, route=route,
+                               quality_profile=quality_profile)
     return _result({"video_task_id": record.video_task_id, "status": record.status,
                     "created_at": record.created_at, "error": record.error})
 

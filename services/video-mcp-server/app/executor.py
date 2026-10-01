@@ -172,10 +172,14 @@ class VideoExecutor:
 
     def _normalize(self, project_id: str, model: str, prompt: str, duration_seconds: int,
                    aspect_ratio: str, references: dict[str, list[dict[str, str]]],
-                   route: str = "h3") -> tuple[dict[str, object], str]:
+                   route: str = "h3", quality_profile: str = "du-0") -> tuple[dict[str, object], str]:
         if not isinstance(route, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", route):
             raise ValueError("route must be a lowercase slug")
         service = self._service_for_route(route)
+        if quality_profile not in {"du-0", "du-1", "du-2", "du-3", "hr-refine-tile-v1", "hr-refine-global-v2"}:
+            raise ValueError("quality_profile must be du-0, du-1, du-2, du-3, hr-refine-tile-v1, or hr-refine-global-v2")
+        if service != "h3-singularity" and quality_profile != "du-0":
+            raise ValueError("quality_profile du-1, du-2, du-3, hr-refine-tile-v1, and hr-refine-global-v2 require h3-singularity")
         if service in {"h3-sol", "h3-vdn"} and not 5 <= duration_seconds <= 15:
             raise ValueError("Selected channel duration must be an integer from 5 to 15 seconds")
         if model != "minimax-h3-ref2va":
@@ -204,7 +208,8 @@ class VideoExecutor:
         if service == "h3-vdn" and reference_bytes > 2 * 1024**3:
             raise ValueError("VDN references exceed 2 GiB")
         request = {"project_id": project_id, "model": model, "prompt": prompt.strip(),
-                   "duration_seconds": duration_seconds, "aspect_ratio": aspect_ratio, "references": normalized}
+                   "duration_seconds": duration_seconds, "aspect_ratio": aspect_ratio,
+                   "references": normalized, "quality_profile": quality_profile}
         request["route"] = route
         canonical = json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return request, "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
@@ -212,12 +217,14 @@ class VideoExecutor:
     @serialized
     def generate(self, *, project_id: str, idempotency_key: str, model: str, prompt: str,
                  duration_seconds: int, aspect_ratio: str,
-                 references: dict[str, list[dict[str, str]]], route: str | None = None) -> TaskRecord:
+                 references: dict[str, list[dict[str, str]]], route: str | None = None,
+                 quality_profile: str = "du-0") -> TaskRecord:
         project_id = require_project_id(project_id)
         if not idempotency_key.strip() or len(idempotency_key) > 128:
             raise ValueError("idempotency_key is invalid")
         route = route or self.runtime_route
-        request, digest = self._normalize(project_id, model, prompt, duration_seconds, aspect_ratio, references, route)
+        request, digest = self._normalize(project_id, model, prompt, duration_seconds, aspect_ratio,
+                                          references, route, quality_profile)
         service = self._service_for_route(route)
         existing = self.tasks.find_idempotency(project_id, idempotency_key)
         if existing:
@@ -246,7 +253,8 @@ class VideoExecutor:
                    "seconds": duration_seconds, "conditions": conditions,
                    "target": {"short_edge": 768, "aspect_ratio": aspect_ratio, "duration_seconds": float(duration_seconds)},
                    "num_outputs_per_prompt": 1, "num_inference_steps": 4 if service in {"h3-vdn", "h3-sol", "h3-singularity"} else 21, "flow_shift": 12.0,
-                   "audio_flow_shift": 3.0, "seed": 7}
+                   "audio_flow_shift": 3.0, "seed": 7,
+                   "quality_profile": quality_profile}
         # Persist the attempt before calling the runtime. An ambiguous network
         # failure must not permit a duplicate GPU request under the same key.
         reserved = self.tasks.create(project_id=project_id, idempotency_key=idempotency_key,

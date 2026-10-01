@@ -86,7 +86,7 @@ def _write_wav(path: Path, waveform: torch.Tensor, sample_rate: int) -> None:
         stream.writeframes(pcm)
 
 
-def mux_mp4(frames: torch.Tensor, audio: torch.Tensor, output: Path, fps: int = 24, sample_rate: int = 32000) -> dict:
+def mux_mp4(frames: torch.Tensor, audio: torch.Tensor | dict, output: Path, fps: int = 24, sample_rate: int = 32000) -> dict:
     """Mux decoded H3 video/audio and return media facts after ffprobe."""
     if frames.ndim != 4:
         raise ValueError(f"invalid_video_shape:{tuple(frames.shape)}")
@@ -94,7 +94,11 @@ def mux_mp4(frames: torch.Tensor, audio: torch.Tensor, output: Path, fps: int = 
         raise ValueError(f"invalid_video_channels:{tuple(frames.shape)}")
     output.parent.mkdir(parents=True, exist_ok=True)
     wav = output.with_suffix(".wav")
-    _write_wav(wav, audio, sample_rate)
+    # Comfy VAEDecodeAudio returns an AUDIO object. Preserve its source rate
+    # in the WAV header; ffmpeg resamples to the requested output rate below.
+    waveform = audio["waveform"] if isinstance(audio, dict) else audio
+    source_rate = int(audio["sample_rate"]) if isinstance(audio, dict) else sample_rate
+    _write_wav(wav, waveform, source_rate)
     command = [
         "ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
         "-s", f"{frames.shape[2]}x{frames.shape[1]}", "-r", str(fps), "-i", "pipe:0",
@@ -110,11 +114,21 @@ def mux_mp4(frames: torch.Tensor, audio: torch.Tensor, output: Path, fps: int = 
         stderr = process.stderr.read()
         if process.wait() != 0:
             raise RuntimeError(stderr.decode(errors="replace"))
-    except BaseException:
+    except BaseException as exc:
+        # Preserve ffmpeg's actual diagnostic in the Python error. The
+        # runtime queue records the exception type, so without this context a
+        # media failure is indistinguishable from a sampler failure.
+        if isinstance(exc, BrokenPipeError):
+            detail = process.stderr.read().decode(errors="replace").strip()
+            process.kill()
+            process.wait()
+            raise RuntimeError(f"ffmpeg_pipe_failed:{detail}") from exc
         process.kill()
         process.wait()
         raise
     finally:
+        process.stdin.close()
+        process.stderr.close()
         wav.unlink(missing_ok=True)
     probe = subprocess.check_output([
         "ffprobe", "-v", "error", "-count_frames", "-show_entries",

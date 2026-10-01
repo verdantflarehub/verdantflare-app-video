@@ -59,14 +59,14 @@ class DashboardTest(unittest.TestCase):
     def test_shell_is_public_but_api_requires_token(self):
         page = self.client.get('/dashboard')
         self.assertEqual(page.status_code, 200)
-        self.assertIn('H3-Sol', page.text)
+        self.assertIn('Video MCP', page.text)
         self.assertIn("script-src 'self'", page.headers['content-security-policy'])
         for path in ('/api/dashboard', '/api/tasks/video_task_'+'a'*32):
             self.assertEqual(self.client.get(path).status_code, 401)
         self.assertEqual(self.client.post('/api/tasks', json=self.payload).status_code, 401)
-        self.assertEqual(self.client.get('/dashboard/frontend/dashboard.js').status_code, 200)
+        self.assertEqual(self.client.get('/dashboard/frontend/index.html').status_code, 200)
         self.assertEqual(self.client.get('/dashboard/tasks/video_task_example').status_code, 200)
-        self.assertEqual(self.client.get('/dashboard/frontend/task-detail.js').status_code, 200)
+        self.assertEqual(self.client.get('/dashboard/frontend/dashboard.js').status_code, 404)
         self.assertEqual(self.client.get('/dashboard/frontend/server.py').status_code, 404)
         self.assertEqual(self.client.get('/dashboard/').status_code, 200)
         with mock.patch.dict(os.environ, {'VIDEO_MCP_BEARER_TOKEN':''}):
