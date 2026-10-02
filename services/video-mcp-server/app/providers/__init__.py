@@ -1,0 +1,1 @@
+"""External video provider adapters."""

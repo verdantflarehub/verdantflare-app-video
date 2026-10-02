@@ -12,8 +12,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from .artifacts import MAX_ARTIFACT_BYTES, ArtifactError
-from .tasks import TaskConflict, TaskRecord
+from ..artifacts import MAX_ARTIFACT_BYTES, ArtifactError
+from ..tasks import TaskConflict, TaskRecord
 
 
 FAL_PUBLIC_MODEL = "minimax-h3-ref2va"

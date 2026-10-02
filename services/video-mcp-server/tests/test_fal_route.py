@@ -11,7 +11,7 @@ import httpx
 
 from app.artifacts import ArtifactStore
 from app.executor import VideoExecutor
-from app.fal import FalError
+from app.providers.fal import FalError
 from app.tasks import TaskStore
 
 
@@ -139,7 +139,7 @@ class FalRouteTest(unittest.TestCase):
                 }
             )
         )
-        with mock.patch("app.fal.subprocess.run", return_value=probe):
+        with mock.patch("app.providers.fal.subprocess.run", return_value=probe):
             result = executor.result(submitted.video_task_id)
         self.assertIsNotNone(result.artifact_id)
         self.assertEqual(result.media["frame_rate"], 24)
@@ -204,7 +204,7 @@ class FalRouteTest(unittest.TestCase):
             "videos": [{"artifact_id": self.video.artifact_id, "purpose": "camera motion"}],
             "audios": [{"artifact_id": self.audio.artifact_id, "purpose": "dialogue rhythm"}],
         }
-        with mock.patch("app.fal.subprocess.run", return_value=timed_probe):
+        with mock.patch("app.providers.fal.subprocess.run", return_value=timed_probe):
             record = executor.generate(
                 **self.inputs(
                     idempotency_key="multimodal",

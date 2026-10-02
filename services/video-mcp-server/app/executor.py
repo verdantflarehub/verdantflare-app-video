@@ -74,7 +74,7 @@ class VideoExecutor:
         self.processing = {name: ProcessingExecutor(self, name) for name in ("sr", "interpolate")}
         from .h3_latent import H3LatentExecutor
         self.processing["h3-latent-upscale"] = H3LatentExecutor(self)
-        from .fal import FalAdapter
+        from .providers.fal import FalAdapter
         self.fal = FalAdapter(self)
 
     def _load_routes(self) -> dict[str, dict[str, object]]:
@@ -309,7 +309,7 @@ class VideoExecutor:
     def status(self, video_task_id: str) -> TaskRecord:
         record = self.tasks.get(video_task_id)
         if record.service == "fal":
-            from .fal import FalError
+            from .providers.fal import FalError
             try:
                 return self.fal.status(record)
             except FalError as error:
@@ -354,7 +354,7 @@ class VideoExecutor:
     def result(self, video_task_id: str) -> TaskRecord:
         record = self.tasks.get(video_task_id)
         if record.service == "fal":
-            from .fal import FalError
+            from .providers.fal import FalError
             try:
                 return self.fal.result(record)
             except FalError as error:
