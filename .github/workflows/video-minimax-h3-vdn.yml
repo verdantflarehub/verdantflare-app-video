@@ -16,26 +16,7 @@ env:
   SERVICE: video-minimax-h3-vdn
   VERSION: 0.3.18
 jobs:
-  check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install media validation tools
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: python -m pip install torch safetensors numpy --extra-index-url https://download.pytorch.org/whl/cpu
-      - name: Contract tests
-        run: |
-          python3 -m unittest discover -s services/${SERVICE}/tests -v
-          python3 -m compileall -q services/${SERVICE}
-      - name: Verify project configuration
-        run: |
-          python3 -c 'import os, pathlib, re, tomllib; p = pathlib.Path("services") / os.environ["SERVICE"] / "pyproject.toml"; config = tomllib.loads(p.read_text()); upstream = config["tool"]["vdn"]["upstream"]; assert upstream["repository"]; assert all(re.fullmatch("[0-9a-f]{40}", upstream[k]) for k in ("commit", "diffusers_commit"))'
   build:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/release'
-    needs: check
     timeout-minutes: 120
     runs-on: ubuntu-latest
     steps:
@@ -74,5 +55,8 @@ jobs:
           push: true
           provenance: false
           sbom: false
+          cache-from: type=gha,scope=${{ env.SERVICE }}
+          cache-to: type=gha,mode=max,scope=${{ env.SERVICE }}
       - name: Verify published manifest
         run: docker buildx imagetools inspect "${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}"
+

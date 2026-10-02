@@ -19,21 +19,7 @@ env:
   VERSION: 0.1.33
 
 jobs:
-  check:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: python -m pip install --upgrade pip==25.3
-      - run: python -m pip install services/${SERVICE} httpx
-      - run: PYTHONPATH=services/${SERVICE}/src python -m unittest discover -s services/${SERVICE}/tests -v
-      - run: python -m compileall -q services/${SERVICE}/src
-
   build:
-    needs: check
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:

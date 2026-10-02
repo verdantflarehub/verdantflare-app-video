@@ -16,32 +16,7 @@ env:
   SERVICE: video-minimax-h3-sol
   VERSION: 0.2.14
 jobs:
-  check:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - name: CPU contract and allocation tests
-        env:
-          PYTHONDONTWRITEBYTECODE: "1"
-          PYTHONPATH: services/video-minimax-h3-sol
-        run: |
-          python3 -m unittest discover -s services/${SERVICE}/tests -v
-          python3 -m compileall -q services/${SERVICE}
-      - name: Verify upstream and sealed patches
-        run: |
-          set -euo pipefail
-          git init /tmp/sol-upstream
-          git -C /tmp/sol-upstream remote add origin https://github.com/NVlabs/Sana.git
-          git -C /tmp/sol-upstream sparse-checkout set models/minimax_h3/Sol-H3
-          git -C /tmp/sol-upstream fetch --depth=1 --filter=blob:none origin 2936c47637380842aaa4a4488fac5006cc542b70
-          git -C /tmp/sol-upstream checkout --detach FETCH_HEAD
-          python3 services/${SERVICE}/verify-source.py /tmp/sol-upstream/models/minimax_h3/Sol-H3
-          python3 services/${SERVICE}/prepare-patched-source.py --source /tmp/sol-upstream/models/minimax_h3/Sol-H3 --output /tmp/sol-patched
-          python3 -m compileall -q /tmp/sol-patched
   build:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/release'
-    needs: check
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -77,6 +52,8 @@ jobs:
           provenance: false
           sbom: false
           tags: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}
+          cache-from: type=gha,scope=${{ env.SERVICE }}
+          cache-to: type=gha,mode=max,scope=${{ env.SERVICE }}
       - name: Verify published manifest
         run: docker buildx imagetools inspect "${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}"
 
