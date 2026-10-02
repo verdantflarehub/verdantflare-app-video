@@ -268,6 +268,8 @@ class Dashboard:
         async def shell(request):
             if request.url.path.endswith("/"):
                 return RedirectResponse("../dashboard")
+            if request.query_params.get("embed") == "1":
+                return FileResponse(STATIC / "dashboard.html", headers={"Cache-Control": "no-store"})
             entry = DIST / "index.html" if (DIST / "index.html").is_file() else STATIC / "dashboard.html"
             return FileResponse(entry, headers={"Cache-Control": "no-store"})
 
@@ -276,14 +278,18 @@ class Dashboard:
 
         async def asset(request):
             name = request.path_params["name"]
-            candidate = (DIST / name).resolve() if DIST.is_dir() else (STATIC / name).resolve()
-            root = DIST.resolve() if DIST.is_dir() else STATIC.resolve()
-            if candidate != root and root not in candidate.parents or not candidate.is_file():
-                return JSONResponse({"error": "not_found"}, status_code=404)
-            return FileResponse(candidate, headers={"Cache-Control": "no-cache"})
+            for directory in (DIST, STATIC):
+                if not directory.is_dir():
+                    continue
+                root = directory.resolve()
+                candidate = (root / name).resolve()
+                if (candidate == root or root in candidate.parents) and candidate.is_file():
+                    return FileResponse(candidate, headers={"Cache-Control": "no-cache"})
+            return JSONResponse({"error": "not_found"}, status_code=404)
 
         return [*self.resources.routes(), Route("/dashboard", shell), Route("/dashboard/", shell),
                 Route("/dashboard/frontend/{name:path}", asset),
+                Route("/dashboard/static/{name:path}", asset),
                 Route("/dashboard/tasks/{task_id:str}", task_shell),
                 Route("/api/dashboard", self.endpoint), Route("/api/tasks", self.endpoint, methods=["POST"]),
                 Route("/api/tasks/{task_id:str}", self.endpoint),

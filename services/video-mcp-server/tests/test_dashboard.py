@@ -66,7 +66,12 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual(self.client.post('/api/tasks', json=self.payload).status_code, 401)
         self.assertEqual(self.client.get('/dashboard/frontend/index.html').status_code, 200)
         self.assertEqual(self.client.get('/dashboard/tasks/video_task_example').status_code, 200)
-        self.assertIn(self.client.get('/dashboard/frontend/dashboard.js').status_code, (200, 404))
+        self.assertEqual(self.client.get('/dashboard/frontend/dashboard.js').status_code, 200)
+        self.assertEqual(self.client.get('/dashboard/frontend/studio-embed.js').status_code, 200)
+        self.assertEqual(self.client.get('/dashboard/static/studio-embed.js').status_code, 200)
+        embed_page = self.client.get('/dashboard?embed=1')
+        self.assertEqual(embed_page.status_code, 200)
+        self.assertIn('studio-embed.js', embed_page.text)
         self.assertEqual(self.client.get('/dashboard/frontend/server.py').status_code, 404)
         self.assertEqual(self.client.get('/dashboard/').status_code, 200)
         with mock.patch.dict(os.environ, {'VIDEO_MCP_BEARER_TOKEN':''}):
