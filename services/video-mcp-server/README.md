@@ -40,7 +40,7 @@ stores it as a project Artifact. It never falls back to a self-hosted route.
 `FAL_KEY` must be injected at runtime and must not be placed in client requests
 or committed configuration. The provider model ID
 `minimax/h3/reference-to-video`, adapter runtime version
-`video-fal-adapter-v0.2.1`, `480P` resolution,
+`video-fal-adapter-v0.2.2`, `480P` resolution,
 and official `*.fal.media` result-origin policy are locked in code and cannot
 be overridden through environment variables.
 

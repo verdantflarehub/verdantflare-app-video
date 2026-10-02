@@ -95,11 +95,13 @@ class FalRouteTest(unittest.TestCase):
                 self.assertFalse({"image_url", "end_image_url", "target_audio_url"} & body.keys())
                 return httpx.Response(200, json={"request_id": "fal-request-001"})
             if request.url.host == "queue.fal.run" and request.url.path.endswith("/status"):
+                self.assertEqual(request.url.path, "/minimax/h3/requests/fal-request-001/status")
                 return httpx.Response(
                     200,
                     json={"status": "COMPLETED", "metrics": {"inference_time": 12.5}},
                 )
             if request.url.host == "queue.fal.run":
+                self.assertEqual(request.url.path, "/minimax/h3/requests/fal-request-001")
                 return httpx.Response(
                     200, json={"video": {"url": "https://v3.fal.media/files/result.mp4"}}
                 )

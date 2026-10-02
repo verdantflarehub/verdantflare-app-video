@@ -18,7 +18,8 @@ from ..tasks import TaskConflict, TaskRecord
 
 FAL_PUBLIC_MODEL = "minimax-h3-ref2va"
 FAL_MODEL_ID = "minimax/h3/reference-to-video"
-FAL_RUNTIME_VERSION = "video-fal-adapter-v0.2.1"
+FAL_QUEUE_MODEL_ID = "minimax/h3"
+FAL_RUNTIME_VERSION = "video-fal-adapter-v0.2.2"
 FAL_RESOLUTION = "480P"
 FAL_REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,255}")
 MAX_FAL_IMAGE_BYTES = 20 * 1024 * 1024
@@ -74,6 +75,9 @@ class FalAdapter:
 
     def _request_url(self, suffix: str = "") -> str:
         return f"{self.base_url}/{self.model_id}{suffix}"
+
+    def _queue_url(self, request_id: str, suffix: str = "") -> str:
+        return f"{self.base_url}/{FAL_QUEUE_MODEL_ID}/requests/{request_id}{suffix}"
 
     @staticmethod
     def _safe_error(code: str, message: str) -> dict[str, str]:
@@ -339,7 +343,7 @@ class FalAdapter:
             )
         try:
             response = self.executor.client.get(
-                self._request_url(f"/requests/{record.runtime_task_id}/status"),
+                self._queue_url(record.runtime_task_id, "/status"),
                 headers=self._headers(),
                 timeout=15,
             )
@@ -491,7 +495,7 @@ class FalAdapter:
             return record
         try:
             response = self.executor.client.get(
-                self._request_url(f"/requests/{record.runtime_task_id}"),
+                self._queue_url(record.runtime_task_id),
                 headers=self._headers(),
                 timeout=30,
             )
