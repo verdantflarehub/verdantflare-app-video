@@ -650,6 +650,18 @@ body {
   color: var(--muted);
 }
 
+.badge-status.failed {
+  background: rgba(255, 101, 112, 0.16);
+  border: 1px solid rgba(255, 101, 112, 0.44);
+  color: var(--rose);
+}
+
+.badge-status.cancelled {
+  background: rgba(244, 241, 232, 0.08);
+  border: 1px solid rgba(244, 241, 232, 0.2);
+  color: var(--muted);
+}
+
 .card-body {
   padding: 18px;
   display: flex;

@@ -37,7 +37,16 @@ html[data-embedded=true] .reference-focus{outline-color:var(--green)}
 html[data-embedded=true] .detail-heading,html[data-embedded=true] #detailContent details{border-color:var(--line)}
 html[data-embedded=true] .detail-status{color:var(--muted);border-color:var(--line)}
 html[data-embedded=true] .detail-status.succeeded{color:var(--green)}
-html[data-embedded=true] .detail-status.failed{color:var(--rose)}
+html[data-embedded=true] .detail-status.failed{border-color:rgba(201,87,67,.36);background:rgba(201,87,67,.08);color:var(--rose)}
+html[data-embedded=true]:not([data-theme=light]) .detail-status.failed{border-color:rgba(255,128,104,.4);background:rgba(255,128,104,.12);color:var(--rose)}
+html[data-embedded=true] .badge-status.completed{background:rgba(8,126,96,.1);border:1px solid rgba(8,126,96,.36);color:var(--green)}
+html[data-embedded=true]:not([data-theme=light]) .badge-status.completed{background:rgba(117,199,171,.16);border:1px solid rgba(117,199,171,.42);color:var(--green)}
+html[data-embedded=true] .badge-status.failed{background:rgba(201,87,67,.12);border:1px solid rgba(201,87,67,.38);color:var(--rose)}
+html[data-embedded=true]:not([data-theme=light]) .badge-status.failed{background:rgba(255,128,104,.16);border:1px solid rgba(255,128,104,.44);color:var(--rose)}
+html[data-embedded=true] .badge-status.running{background:rgba(83,121,172,.12);border:1px solid rgba(83,121,172,.38);color:var(--amber)}
+html[data-embedded=true]:not([data-theme=light]) .badge-status.running{background:rgba(155,183,223,.16);border:1px solid rgba(155,183,223,.44);color:var(--amber)}
+html[data-embedded=true] .badge-status.queued,html[data-embedded=true] .badge-status.cancelled{background:var(--studio-button);border:1px solid var(--line);color:var(--muted)}
+html[data-embedded=true] .market-filter-row button[data-status=failed].active{background:var(--studio-button);border:1px solid var(--rose);color:var(--rose)}
 html[data-embedded=true] .button.primary:hover{background:var(--studio-primary);box-shadow:none;filter:brightness(.96)}
 .catalog-meta{display:grid;grid-template-columns:100px minmax(0,1fr);gap:10px;font-size:13px;margin:20px 0}.catalog-meta dt{color:var(--muted)}.catalog-meta dd{margin:0;overflow-wrap:anywhere}.catalog-head{display:flex;justify-content:space-between;gap:12px}.catalog-head>span{font-size:11px}.catalog-card details{border-top:1px solid var(--line);padding-top:14px;font-size:12px}.catalog-card summary{cursor:pointer;color:var(--green)}.catalog-card code{overflow-wrap:anywhere}.catalog-card h3{margin-top:4px}
 html[data-embedded=true] #modelServices,html[data-embedded=true] #mcpStatus .business-models{grid-template-columns:repeat(2,minmax(0,1fr))}
