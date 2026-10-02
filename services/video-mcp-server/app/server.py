@@ -22,6 +22,7 @@ from starlette.routing import Mount, Route
 from .artifacts import ArtifactError, ArtifactNotFound, ArtifactStore
 from .executor import ExecutionError, VideoExecutor
 from .dashboard import Dashboard
+from .registry import EtcdRegistry
 from .tasks import TaskConflict, TaskNotFound, TaskStore
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -31,6 +32,97 @@ tasks = TaskStore.from_environment()
 executor = VideoExecutor(artifacts, tasks)
 dashboard = Dashboard(executor)
 mcp = MCPServer("VerdantFlare Video")
+
+VIDEO_TOOLS_SCHEMA = [
+    {
+        "name": "video.create",
+        "description": "Create an asynchronous video generation task using minimax-h3-ref2va or configured routes.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "Text prompt describing the desired video"},
+                "model": {"type": "string", "default": "minimax-h3-ref2va", "description": "Business model to use"},
+                "aspect_ratio": {"type": "string", "enum": ["16:9", "9:16", "1:1", "4:3", "3:4"], "default": "16:9"},
+                "duration_seconds": {"type": "integer", "enum": [5, 6, 10], "default": 5},
+                "route": {"type": "string", "default": "fal", "description": "Execution channel route"},
+                "quality_profile": {"type": "string", "default": "du-0"},
+                "references": {"type": "object", "description": "Reference assets mapping"},
+                "project_id": {"type": "string", "description": "Project ID"},
+                "idempotency_key": {"type": "string", "description": "Unique idempotency key"},
+            },
+            "required": ["prompt"],
+        },
+    },
+    {
+        "name": "video.status",
+        "description": "Query status, timing, and stage of a video task.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Video task ID"},
+                "video_task_id": {"type": "string", "description": "Alias for task_id"},
+            },
+        },
+    },
+    {
+        "name": "video.result",
+        "description": "Retrieve final media artifacts and download URLs for a completed video task.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Video task ID"},
+                "video_task_id": {"type": "string", "description": "Alias for task_id"},
+            },
+        },
+    },
+    {
+        "name": "video.depth",
+        "description": "Queue temporal RGB-to-depth conversion of a registered project video.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source_artifact_id": {"type": "string", "description": "Source video artifact ID"},
+                "model": {"type": "string", "default": "video-depth-anything"},
+                "output_format": {"type": "string", "default": "mp4"},
+                "project_id": {"type": "string"},
+                "idempotency_key": {"type": "string"},
+            },
+            "required": ["source_artifact_id"],
+        },
+    },
+    {
+        "name": "video.sr",
+        "description": "Restore a project video with SeedVR2.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source_artifact_id": {"type": "string", "description": "Source video artifact ID"},
+                "target_width": {"type": "integer"},
+                "target_height": {"type": "integer"},
+                "quality_mode": {"type": "string", "default": "standard"},
+                "backend": {"type": "string", "default": "seedvr2"},
+                "seed": {"type": "integer", "default": 666},
+            },
+            "required": ["source_artifact_id", "target_width", "target_height"],
+        },
+    },
+    {
+        "name": "video.interpolate",
+        "description": "Double a project video CFR frame rate with RIFE.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source_artifact_id": {"type": "string", "description": "Source video artifact ID"},
+                "target_fps_num": {"type": "integer", "default": 48},
+                "target_fps_den": {"type": "integer", "default": 1},
+                "backend": {"type": "string", "default": "rife"},
+            },
+            "required": ["source_artifact_id"],
+        },
+    },
+]
+
+registry = EtcdRegistry(domain="video", tools=VIDEO_TOOLS_SCHEMA)
 
 
 def _latent_errors(function):
@@ -207,6 +299,27 @@ def artifact_import(project_id: str, source_url: str, filename: str, expected_sh
                     "download_path": artifacts.download_path(record.artifact_id)})
 
 
+@mcp.tool(name="video.create")
+def video_create(prompt: str,
+                 project_id: str = "default",
+                 idempotency_key: str = "",
+                 model: str = "minimax-h3-ref2va",
+                 duration_seconds: int = 5,
+                 aspect_ratio: str = "16:9",
+                 references: dict[str, list[dict[str, str]]] | None = None,
+                 route: str = "fal",
+                 quality_profile: str = "du-0") -> types.CallToolResult:
+    """Create an asynchronous video generation task."""
+    import uuid
+    actual_idem = idempotency_key or f"idem_{uuid.uuid4().hex[:12]}"
+    record = executor.generate(project_id=project_id, idempotency_key=actual_idem, model=model,
+                               prompt=prompt, duration_seconds=duration_seconds,
+                               aspect_ratio=aspect_ratio, references=references or {}, route=route,
+                               quality_profile=quality_profile)
+    return _result({"task_id": record.video_task_id, "video_task_id": record.video_task_id,
+                    "status": record.status, "created_at": record.created_at, "error": record.error})
+
+
 @mcp.tool(name="video.generate")
 def video_generate(project_id: str, idempotency_key: str, model: str, prompt: str,
                    duration_seconds: int, aspect_ratio: str,
@@ -223,14 +336,17 @@ def video_generate(project_id: str, idempotency_key: str, model: str, prompt: st
                                prompt=prompt, duration_seconds=duration_seconds,
                                aspect_ratio=aspect_ratio, references=references, route=route,
                                quality_profile=quality_profile)
-    return _result({"video_task_id": record.video_task_id, "status": record.status,
-                    "created_at": record.created_at, "error": record.error})
+    return _result({"task_id": record.video_task_id, "video_task_id": record.video_task_id,
+                    "status": record.status, "created_at": record.created_at, "error": record.error})
 
 
 @mcp.tool(name="video.status")
-def video_status(video_task_id: str) -> types.CallToolResult:
-    record = executor.status(video_task_id)
-    return _result({"video_task_id": record.video_task_id, "status": record.status,
+def video_status(video_task_id: str = "", task_id: str = "") -> types.CallToolResult:
+    tid = video_task_id or task_id
+    if not tid:
+        return _result({"error": "task_id is required"})
+    record = executor.status(tid)
+    return _result({"task_id": record.video_task_id, "video_task_id": record.video_task_id, "status": record.status,
                     "created_at": record.created_at, "updated_at": record.updated_at, "error": record.error,
                     "timing": record.timing, "runtime_metrics": record.runtime_metrics,
                     "service": record.service, "runtime_route": record.runtime_route,
@@ -238,19 +354,68 @@ def video_status(video_task_id: str) -> types.CallToolResult:
 
 
 @mcp.tool(name="video.result")
-def video_result(video_task_id: str) -> types.CallToolResult:
-    record = executor.result(video_task_id)
+def video_result(video_task_id: str = "", task_id: str = "") -> types.CallToolResult:
+    tid = video_task_id or task_id
+    if not tid:
+        return _result({"error": "task_id is required"})
+    record = executor.result(tid)
     if record.service in executor.processing:
-        return _result(executor.processing[record.service].public_result(record))
+        res = executor.processing[record.service].public_result(record)
+        res["task_id"] = record.video_task_id
+        return _result(res)
     if record.service == "depth":
-        return _result(executor.depth.public_result(record))
+        res = executor.depth.public_result(record)
+        res["task_id"] = record.video_task_id
+        return _result(res)
     artifact = artifacts.get(record.artifact_id, record.project_id)
-    value = {"video_task_id": record.video_task_id, "artifact_id": artifact.artifact_id,
+    value = {"task_id": record.video_task_id, "video_task_id": record.video_task_id, "artifact_id": artifact.artifact_id,
              "model": record.request["model"], "runtime_version": record.runtime_version or executor.runtime_version,
              "runtime_route": record.runtime_route, "service": record.service,
              "input_digest": record.input_digest, "media": record.media,
              "download_path": artifacts.download_path(artifact.artifact_id)}
     return _result(value)
+
+
+@mcp.tool(name="video.depth")
+def video_depth(source_artifact_id: str, project_id: str = "default", idempotency_key: str = "",
+                model: str = "video-depth-anything", output_format: str = "mp4") -> types.CallToolResult:
+    import uuid
+    actual_idem = idempotency_key or f"idem_{uuid.uuid4().hex[:12]}"
+    record = executor.depth.generate(project_id=project_id, idempotency_key=actual_idem,
+                                     source_artifact_id=source_artifact_id, model=model, output_format=output_format)
+    res = executor.depth.public_status(record)
+    res["task_id"] = record.video_task_id
+    return _result(res)
+
+
+@mcp.tool(name="video.sr")
+def video_sr(source_artifact_id: str, target_width: int, target_height: int,
+             project_id: str = "default", idempotency_key: str = "",
+             quality_mode: str = "standard", backend: str = "seedvr2", seed: int = 666) -> types.CallToolResult:
+    import uuid
+    actual_idem = idempotency_key or f"idem_{uuid.uuid4().hex[:12]}"
+    adapter = executor.processing["sr"]
+    record = adapter.generate(project_id=project_id, idempotency_key=actual_idem,
+        source_artifact_id=source_artifact_id, target_width=target_width, target_height=target_height,
+        quality_mode=quality_mode, backend=backend, seed=seed)
+    res = adapter.public_status(record)
+    res["task_id"] = record.video_task_id
+    return _result(res)
+
+
+@mcp.tool(name="video.interpolate")
+def video_interpolate(source_artifact_id: str, project_id: str = "default", idempotency_key: str = "",
+                      target_fps_num: int = 48, target_fps_den: int = 1,
+                      backend: str = "rife") -> types.CallToolResult:
+    import uuid
+    actual_idem = idempotency_key or f"idem_{uuid.uuid4().hex[:12]}"
+    adapter = executor.processing["interpolate"]
+    record = adapter.generate(project_id=project_id, idempotency_key=actual_idem,
+        source_artifact_id=source_artifact_id, target_fps_num=target_fps_num,
+        target_fps_den=target_fps_den, backend=backend)
+    res = adapter.public_status(record)
+    res["task_id"] = record.video_task_id
+    return _result(res)
 
 
 def transport_security_from_environment() -> TransportSecuritySettings:
@@ -298,12 +463,14 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 @contextlib.asynccontextmanager
 async def lifespan(app: Starlette):
     artifacts.ensure_ready(); tasks.ensure_ready()
+    await registry.start()
     async with mcp.session_manager.run():
         dashboard.recover_incomplete_submissions()
         pollers = [asyncio.create_task(coro) for coro in (dashboard.poll(), dashboard.resources.poll(), dashboard.resources.poll_protocol())]
         try:
             yield
         finally:
+            await registry.stop()
             for poller in pollers:
                 poller.cancel()
             for poller in pollers:
