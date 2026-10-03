@@ -16,7 +16,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -r
 COPY pyproject.toml .
 COPY app ./app
 RUN pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" . && pip check
-COPY frontend ./frontend
 COPY --from=frontend-build /frontend/dist ./frontend/dist
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \

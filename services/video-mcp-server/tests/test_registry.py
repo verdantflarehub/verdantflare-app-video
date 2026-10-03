@@ -22,13 +22,13 @@ class TestEtcdRegistry(unittest.IsolatedAsyncioTestCase):
         registry = EtcdRegistry(
             domain="video",
             tools=tools,
-            endpoint="http://video-mcp-server:8000/",
+            endpoint="http://video-mcp-server:8000/mcp",
             health_endpoint="http://video-mcp-server:8000/health",
             version="v1.0.0",
         )
         meta = registry.build_metadata()
         self.assertEqual(meta["domain"], "video")
-        self.assertEqual(meta["endpoint"], "http://video-mcp-server:8000/")
+        self.assertEqual(meta["endpoint"], "http://video-mcp-server:8000/mcp")
         self.assertEqual(meta["health_endpoint"], "http://video-mcp-server:8000/health")
         self.assertEqual(meta["version"], "v1.0.0")
         self.assertIn("updated_at", meta)

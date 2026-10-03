@@ -48,7 +48,7 @@ class EtcdRegistry:
 
         self.service_endpoint = endpoint or os.environ.get(
             "MCP_SERVICE_ENDPOINT",
-            f"http://{domain}-mcp-server.verdantflare-{domain}.svc.cluster.local:8000/",
+            f"http://{domain}-mcp-server.verdantflare-{domain}.svc.cluster.local:8000/mcp",
         )
         self.health_endpoint = health_endpoint or os.environ.get(
             "MCP_HEALTH_ENDPOINT",
