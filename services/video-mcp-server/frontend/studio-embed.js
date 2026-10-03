@@ -16,6 +16,7 @@ if (window.studioEmbedded) {
   if(e.source!==parent||e.origin!==hostOrigin||e.data?.channel!=='vf-studio')return;
   const d=e.data;
   if(d.type==='theme'){document.documentElement.dataset.theme=d.theme==='light'?'light':'dark';return}
+  if(d.type==='route'&&typeof d.hash==='string'){if(location.hash!=='#'+d.hash)location.hash='#'+d.hash;return}
   if(d.type==='restore'){window.dispatchEvent(new CustomEvent('studio-restore',{detail:d.state}));return}
   if(d.type==='response'&&pending.has(d.id)){
    const item=pending.get(d.id);pending.delete(d.id);clearTimeout(item.timer);
@@ -26,7 +27,13 @@ if (window.studioEmbedded) {
  document.addEventListener('click',e=>{
   const a=e.target.closest('a');if(!a)return;
   const u=new URL(a.href,location.href);const path=u.pathname.replace(/^.*(?=\/dashboard)/,'');
-  if(/^\/dashboard(?:\/tasks\/[a-zA-Z0-9_-]+)?$/.test(path)){e.preventDefault();window.studioNavigate(path+u.hash)}
+  if(/^\/dashboard(?:\/tasks\/[a-zA-Z0-9_-]+)?$/.test(path)){
+   e.preventDefault();
+   if(u.pathname===location.pathname&&u.hash){
+    if(location.hash!==u.hash)location.hash=u.hash;
+   }
+   window.studioNavigate(path+u.hash);
+  }
  });
  window.addEventListener('DOMContentLoaded',()=>{
   document.querySelectorAll('[data-nav]').forEach(a=>{a.textContent={tasks:'任务',models:'模型',mcp:'MCP'}[a.dataset.nav]});

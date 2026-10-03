@@ -244,6 +244,25 @@ html[data-embedded="true"] .business-section h1 {
   display: none !important;
 }
 
+html[data-embedded="true"] [hidden] {
+  display: none !important;
+}
+
+html[data-embedded="true"] [data-business-view]:not([hidden]) {
+  animation: studioViewFade 0.16s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+@keyframes studioViewFade {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 html[data-embedded="true"] .business-muted {
   font-size: 12px !important;
   color: var(--muted) !important;
