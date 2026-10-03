@@ -1,61 +1,759 @@
-/* Studio Market component colors. Only the explicit embedded entry uses them. */
-html[data-embedded=true]{color-scheme:dark;--ink:#111310;--ink-2:#1a1c19;--paper:#f1f3ee;--paper-2:#f1f3ee;--muted:#9a9f98;--muted-2:#9a9f98;--green:#75c7ab;--amber:#9bb7df;--rose:#ff8068;--line:rgba(236,241,234,.095);--line-strong:rgba(236,241,234,.2);--studio-panel:rgba(239,243,237,.032);--studio-button:rgba(239,243,237,.05);--studio-primary:#eef2ef;--studio-button-ink:#15231e;background:transparent}
-html[data-embedded=true][data-theme=light]{color-scheme:light;--ink:#eef2ef;--ink-2:#f7faf7;--paper:#18241f;--paper-2:#18241f;--muted:#69756e;--muted-2:#69756e;--green:#087e60;--amber:#5379ac;--rose:#c95743;--line:rgba(21,35,30,.13);--line-strong:rgba(21,35,30,.2);--studio-panel:rgba(255,255,255,.58);--studio-button:rgba(21,35,30,.055);--studio-primary:#15231e;--studio-button-ink:#f1f4ef}
-html[data-embedded=true] body{background:transparent;color:var(--paper);font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;min-height:100vh}
-html[data-embedded=true] .site-header{position:static;background:none;border:0}
-html[data-embedded=true] .site-header .nav{min-height:0;justify-content:flex-end;padding:0 0 14px}
-html[data-embedded=true] .brand,html[data-embedded=true] .nav-actions>a,html[data-embedded=true] #tokenButton,html[data-embedded=true] #tokenModal,html[data-embedded=true] .workspace-nav>p{display:none!important}
-html[data-embedded=true] .workspace{display:block;min-height:0}
-html[data-embedded=true] .workspace-nav{display:flex;flex-direction:row;gap:26px;padding:0;margin-bottom:24px;border:0;border-bottom:1px solid var(--line);background:none;position:static;width:auto}
-html[data-embedded=true] .workspace-nav a{padding:10px 0;border:0;border-bottom:2px solid transparent;border-radius:0;color:var(--muted);background:none;font-size:14px;letter-spacing:0}
-html[data-embedded=true] .workspace-nav a.active{color:var(--green);border-bottom-color:var(--green)}
-html[data-embedded=true] .market-page{padding:0}
-html[data-embedded=true] .market-wrap{width:100%;max-width:100%}
-html[data-embedded=true] .business-card,html[data-embedded=true] .model-card,html[data-embedded=true] .metric,html[data-embedded=true] .task-prompt,html[data-embedded=true] .reference-card{background:var(--studio-panel);color:var(--paper);border-color:var(--line);box-shadow:none;border-radius:12px}
-html[data-embedded=true] .button,html[data-embedded=true] .view-switch button,html[data-embedded=true] .filter-tab,html[data-embedded=true] input,html[data-embedded=true] select,html[data-embedded=true] textarea{background:var(--studio-button);color:var(--paper);border-color:var(--line);border-radius:8px}
-html[data-embedded=true] .button.primary{background:var(--studio-primary);border-color:var(--studio-primary);color:var(--studio-button-ink)}
-html[data-embedded=true] .button:hover{border-color:var(--muted)}
-html[data-embedded=true] .card-title,html[data-embedded=true] .card-desc,html[data-embedded=true] .card-body,html[data-embedded=true] .task-parameters,html[data-embedded=true] .result-meta{color:var(--paper)}
-html[data-embedded=true] .card-thumb-wrap{background:var(--ink-2)}
-html[data-embedded=true] .task-identity{background:var(--ink-2);color:var(--paper);border-color:var(--line)}
-html[data-embedded=true] .task-identity>div:last-child,html[data-embedded=true] .reference-link{color:var(--green)}
-html[data-embedded=true] .business-state.stale{color:var(--muted)}
-html[data-embedded=true] #resourceDrawer,html[data-embedded=true] .business-drawer-head,html[data-embedded=true] .dialog,html[data-embedded=true] #imagePreview{background:var(--ink-2);color:var(--paper);border-color:var(--line)}
-html[data-embedded=true] .model-results.grid{grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),360px))}
-html[data-embedded=true] .model-card{max-width:100%;width:100%}
-@media(max-width:600px){html[data-embedded=true] .business-models,html[data-embedded=true] .business-mcp{grid-template-columns:1fr}html[data-embedded=true] .business-counts{grid-template-columns:repeat(2,minmax(0,1fr))}html[data-embedded=true] .nav-actions{flex-wrap:wrap}}
-html[data-embedded=true] .market-toolbar{position:static;background:transparent;backdrop-filter:none;border-color:var(--line)}
-html[data-embedded=true] .market-search,html[data-embedded=true] .market-selects label,html[data-embedded=true] .metric-card-label,html[data-embedded=true] .card-title-row,html[data-embedded=true] #taskParameters dd,html[data-embedded=true] .detail-heading p,html[data-embedded=true] .reference-cards{color:var(--muted)}
-html[data-embedded=true] input::placeholder{color:var(--muted)}
-html[data-embedded=true] .view-switcher,html[data-embedded=true] .view-switcher button,html[data-embedded=true] .market-filter-row button,html[data-embedded=true] .pill-badge,html[data-embedded=true] .model-tags span{background:var(--studio-button);border-color:var(--line);color:var(--muted)}
-html[data-embedded=true] .market-filter-row button.active,html[data-embedded=true] .view-switcher button.active{background:var(--studio-button);border:1px solid var(--green);color:var(--green);box-shadow:none}
-html[data-embedded=true] .back-link,html[data-embedded=true] .card-footer-action,html[data-embedded=true] #detailContent summary{color:var(--green)}
-html[data-embedded=true] .prompt-sheet,html[data-embedded=true] .metric-card{background:var(--studio-panel);border-color:var(--line);color:var(--paper)}
-html[data-embedded=true] .reference-preview,html[data-embedded=true] .result-stage{background:var(--ink-2);border-color:var(--line)}
-html[data-embedded=true] .reference-caption strong{color:var(--paper)}
-html[data-embedded=true] .reference-link{background:var(--studio-button);border-color:var(--line)}
-html[data-embedded=true] .reference-focus{outline-color:var(--green)}
-html[data-embedded=true] .detail-heading,html[data-embedded=true] #detailContent details{border-color:var(--line)}
-html[data-embedded=true] .detail-status{color:var(--muted);border-color:var(--line)}
-html[data-embedded=true] .detail-status.succeeded{color:var(--green)}
-html[data-embedded=true] .detail-status.failed{border-color:rgba(201,87,67,.36);background:rgba(201,87,67,.08);color:var(--rose)}
-html[data-embedded=true]:not([data-theme=light]) .detail-status.failed{border-color:rgba(255,128,104,.4);background:rgba(255,128,104,.12);color:var(--rose)}
-html[data-embedded=true] .badge-status.completed{background:rgba(8,126,96,.1);border:1px solid rgba(8,126,96,.36);color:var(--green)}
-html[data-embedded=true]:not([data-theme=light]) .badge-status.completed{background:rgba(117,199,171,.16);border:1px solid rgba(117,199,171,.42);color:var(--green)}
-html[data-embedded=true] .badge-status.failed{background:rgba(201,87,67,.12);border:1px solid rgba(201,87,67,.38);color:var(--rose)}
-html[data-embedded=true]:not([data-theme=light]) .badge-status.failed{background:rgba(255,128,104,.16);border:1px solid rgba(255,128,104,.44);color:var(--rose)}
-html[data-embedded=true] .badge-status.running{background:rgba(83,121,172,.12);border:1px solid rgba(83,121,172,.38);color:var(--amber)}
-html[data-embedded=true]:not([data-theme=light]) .badge-status.running{background:rgba(155,183,223,.16);border:1px solid rgba(155,183,223,.44);color:var(--amber)}
-html[data-embedded=true] .badge-status.queued,html[data-embedded=true] .badge-status.cancelled{background:var(--studio-button);border:1px solid var(--line);color:var(--muted)}
-html[data-embedded=true] .market-filter-row button[data-status=failed].active{background:var(--studio-button);border:1px solid var(--rose);color:var(--rose)}
-html[data-embedded=true] .button.primary:hover{background:var(--studio-primary);box-shadow:none;filter:brightness(.96)}
-.catalog-meta{display:grid;grid-template-columns:100px minmax(0,1fr);gap:10px;font-size:13px;margin:20px 0}.catalog-meta dt{color:var(--muted)}.catalog-meta dd{margin:0;overflow-wrap:anywhere}.catalog-head{display:flex;justify-content:space-between;gap:12px}.catalog-head>span{font-size:11px}.catalog-card details{border-top:1px solid var(--line);padding-top:14px;font-size:12px}.catalog-card summary{cursor:pointer;color:var(--green)}.catalog-card code{overflow-wrap:anywhere}.catalog-card h3{margin-top:4px}
-html[data-embedded=true] #modelServices,html[data-embedded=true] #mcpStatus .business-models{grid-template-columns:repeat(2,minmax(0,1fr))}
-@media(max-width:720px){html[data-embedded=true] #modelServices,html[data-embedded=true] #mcpStatus .business-models{grid-template-columns:1fr}.catalog-meta{grid-template-columns:80px minmax(0,1fr)}}
-html[data-embedded=true] .card-prompt,html[data-embedded=true] td,html[data-embedded=true] .table-prompt{color:var(--paper)}
-html[data-embedded=true] th{color:var(--muted);background:var(--studio-panel);border-color:var(--line)}
-html[data-embedded=true] td{border-color:var(--line)}
-html[data-embedded=true] tr:hover{background:var(--studio-button)}
-html[data-embedded=true] .card-thumb-wrap .task-identity div+div strong{color:var(--green)}
-html[data-embedded=true] .notice{padding:10px 14px;background:var(--studio-panel);color:var(--muted);border-color:var(--line)}
-html[data-embedded=true] .notice.error{color:var(--rose)}
+/* ==========================================================================
+   VerdantFlare Studio Embedded Theme for Video MCP
+   State-of-the-Art, Full-Width Fluid Responsive Layout
+   ========================================================================== */
+
+/* Dark Mode Tokens (Default in Studio dark mode) */
+html[data-embedded="true"] {
+  color-scheme: dark;
+  --ink: #111310;
+  --ink-2: #161b18;
+  --paper: #f1f3ee;
+  --paper-2: #e2e8e3;
+  --muted: #9aa69b;
+  --muted-2: #6d776e;
+  --green: #75c7ab;
+  --amber: #e6b268;
+  --blue: #9bb7df;
+  --rose: #ff8068;
+  --line: rgba(236, 241, 234, 0.095);
+  --line-strong: rgba(236, 241, 234, 0.18);
+  --studio-panel: rgba(239, 243, 237, 0.035);
+  --studio-button: rgba(239, 243, 237, 0.05);
+  --studio-primary: #eef2ef;
+  --studio-button-ink: #15231e;
+  --studio-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+  background: transparent !important;
+}
+
+/* Light Mode Tokens (Synchronized with Studio light mode) */
+html[data-embedded="true"][data-theme="light"] {
+  color-scheme: light;
+  --ink: #eef2ef;
+  --ink-2: #f2f5f2;
+  --paper: #18241f;
+  --paper-2: #24352d;
+  --muted: #69756e;
+  --muted-2: #8a968f;
+  --green: #087e60;
+  --amber: #b58032;
+  --blue: #5379ac;
+  --rose: #c95743;
+  --line: rgba(21, 35, 30, 0.13);
+  --line-strong: rgba(21, 35, 30, 0.22);
+  --studio-panel: rgba(255, 255, 255, 0.65);
+  --studio-button: rgba(21, 35, 30, 0.055);
+  --studio-primary: #15231e;
+  --studio-button-ink: #f1f4ef;
+  --studio-shadow: 0 12px 36px rgba(21, 35, 30, 0.08);
+  background: transparent !important;
+}
+
+/* Base Body: Fluid Full Width & Generous Padding */
+html[data-embedded="true"] body {
+  position: relative !important;
+  background: transparent !important;
+  color: var(--paper) !important;
+  font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif !important;
+  margin: 0 !important;
+  padding: 24px 28px 48px !important;
+  min-height: 100vh !important;
+  box-sizing: border-box !important;
+  overflow-x: hidden !important;
+}
+
+/* Full Width Fluid Workspace */
+html[data-embedded="true"] .workspace {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  min-height: 0 !important;
+}
+
+html[data-embedded="true"] .market-page,
+html[data-embedded="true"] .market-wrap,
+html[data-embedded="true"] .business-section {
+  width: 100% !important;
+  max-width: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* Top Action Buttons (Pinned to top right aligned with Tabs) */
+html[data-embedded="true"] .site-header {
+  position: absolute !important;
+  top: 20px !important;
+  right: 28px !important;
+  left: auto !important;
+  bottom: auto !important;
+  width: auto !important;
+  max-width: none !important;
+  z-index: 10 !important;
+  height: auto !important;
+  min-height: 0 !important;
+  background: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  border: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  pointer-events: auto !important;
+}
+
+html[data-embedded="true"] .site-header .nav {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  width: auto !important;
+  max-width: none !important;
+  height: auto !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  background: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* Hide Redundant Host Elements in Embedded Mode */
+html[data-embedded="true"] .brand,
+html[data-embedded="true"] .nav-actions > a,
+html[data-embedded="true"] #tokenButton,
+html[data-embedded="true"] #tokenModal,
+html[data-embedded="true"] .workspace-nav > p {
+  display: none !important;
+}
+
+html[data-embedded="true"] .nav-actions {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+}
+
+html[data-embedded="true"] .pill-badge {
+  height: 34px !important;
+  min-height: 0 !important;
+  padding: 0 12px !important;
+  font-size: 11px !important;
+  border-radius: 8px !important;
+  background: var(--studio-button) !important;
+  border: 1px solid var(--line) !important;
+  color: var(--muted) !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace !important;
+}
+
+html[data-embedded="true"] .button {
+  height: 34px !important;
+  min-height: 0 !important;
+  padding: 0 14px !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  border-radius: 8px !important;
+  background: var(--studio-button) !important;
+  border: 1px solid var(--line) !important;
+  color: var(--paper) !important;
+  cursor: pointer !important;
+  transition: all 0.15s ease !important;
+}
+
+html[data-embedded="true"] .button:hover {
+  border-color: var(--muted) !important;
+  transform: translateY(-1px) !important;
+}
+
+html[data-embedded="true"] .button.primary {
+  background: var(--studio-primary) !important;
+  color: var(--studio-button-ink) !important;
+  border: 1px solid var(--studio-primary) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08) !important;
+}
+
+html[data-embedded="true"] .button.primary:hover {
+  filter: brightness(0.95) !important;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12) !important;
+}
+
+/* Tabs: Tasks / Models / MCP */
+html[data-embedded="true"] .workspace-nav {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 28px !important;
+  padding: 0 280px 0 0 !important; /* space for top right action buttons */
+  margin: 0 0 16px 0 !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--line) !important;
+  background: none !important;
+  position: relative !important;
+  z-index: 5 !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+html[data-embedded="true"] .workspace-nav a {
+  display: inline-block !important;
+  padding: 6px 4px 12px !important;
+  border: 0 !important;
+  border-bottom: 2px solid transparent !important;
+  border-radius: 0 !important;
+  color: var(--muted) !important;
+  font-size: 14px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.2px !important;
+  background: none !important;
+  text-decoration: none !important;
+  transition: all 0.15s ease !important;
+  cursor: pointer !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
+html[data-embedded="true"] .workspace-nav a:hover {
+  color: var(--paper) !important;
+}
+
+html[data-embedded="true"] .workspace-nav a.active {
+  color: var(--green) !important;
+  border-bottom-color: var(--green) !important;
+  font-weight: 600 !important;
+}
+
+/* Status Meta Line (Clean, no bulky box) */
+html[data-embedded="true"] .business-intro {
+  padding: 0 !important;
+  margin: 0 0 10px 0 !important;
+}
+
+html[data-embedded="true"] .notice {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  background: none !important;
+  border: none !important;
+  font-size: 12px !important;
+  color: var(--muted) !important;
+  line-height: 1.5 !important;
+}
+
+/* Streamlined Section Heading (Hide redundant H1 inside tab) */
+html[data-embedded="true"] .business-section h1 {
+  display: none !important;
+}
+
+html[data-embedded="true"] .business-muted {
+  font-size: 12px !important;
+  color: var(--muted) !important;
+  margin: 0 0 14px 0 !important;
+  display: block !important;
+}
+
+/* Responsive Balanced Toolbar */
+html[data-embedded="true"] .market-toolbar {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  align-items: flex-end !important;
+  justify-content: space-between !important;
+  gap: 16px !important;
+  padding: 14px 0 18px !important;
+  margin: 0 0 18px 0 !important;
+  border-top: 1px solid var(--line) !important;
+  border-bottom: 1px solid var(--line) !important;
+  position: static !important;
+  background: transparent !important;
+  backdrop-filter: none !important;
+}
+
+html[data-embedded="true"] .market-search {
+  flex: 0 1 320px !important;
+  min-width: 220px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 5px !important;
+}
+
+html[data-embedded="true"] .market-search span {
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  letter-spacing: 1.2px !important;
+  color: var(--muted) !important;
+  text-transform: uppercase !important;
+}
+
+html[data-embedded="true"] .market-search input {
+  height: 38px !important;
+  padding: 0 14px !important;
+  border-radius: 8px !important;
+  font-size: 13px !important;
+  background: var(--studio-button) !important;
+  border: 1px solid var(--line) !important;
+  color: var(--paper) !important;
+  outline: none !important;
+  transition: all 0.15s ease !important;
+}
+
+html[data-embedded="true"] .market-search input:focus {
+  border-color: var(--green) !important;
+  outline: 2px solid var(--green) !important;
+  outline-offset: 1px !important;
+}
+
+html[data-embedded="true"] input::placeholder {
+  color: var(--muted) !important;
+  opacity: 0.8 !important;
+}
+
+html[data-embedded="true"] .market-selects {
+  display: flex !important;
+  gap: 12px !important;
+  align-items: flex-end !important;
+}
+
+html[data-embedded="true"] .market-selects label {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 5px !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  letter-spacing: 1.2px !important;
+  color: var(--muted) !important;
+  text-transform: uppercase !important;
+}
+
+html[data-embedded="true"] .market-toolbar select {
+  height: 38px !important;
+  padding: 0 34px 0 12px !important;
+  border-radius: 8px !important;
+  font-size: 13px !important;
+  min-width: 140px !important;
+  background-color: var(--studio-button) !important;
+  border: 1px solid var(--line) !important;
+  color: var(--paper) !important;
+  outline: none !important;
+  cursor: pointer !important;
+}
+
+html[data-embedded="true"] .view-switcher {
+  display: flex !important;
+  border-radius: 8px !important;
+  padding: 3px !important;
+  background: var(--studio-button) !important;
+  border: 1px solid var(--line) !important;
+  margin-left: auto !important;
+}
+
+html[data-embedded="true"] .view-switcher button {
+  height: 32px !important;
+  padding: 0 14px !important;
+  border-radius: 6px !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  border: none !important;
+  color: var(--muted) !important;
+  cursor: pointer !important;
+  background: transparent !important;
+  transition: all 0.15s ease !important;
+}
+
+html[data-embedded="true"] .view-switcher button.active {
+  background: var(--studio-panel) !important;
+  color: var(--paper) !important;
+  font-weight: 600 !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08) !important;
+  border: 1px solid var(--line-strong) !important;
+}
+
+/* Status Filter Row */
+html[data-embedded="true"] .market-filter-row {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  align-items: center !important;
+  gap: 8px !important;
+  margin: 0 0 22px 0 !important;
+}
+
+html[data-embedded="true"] .market-filter-row button {
+  min-height: 32px !important;
+  padding: 0 14px !important;
+  border-radius: 20px !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  background: var(--studio-button) !important;
+  border: 1px solid var(--line) !important;
+  color: var(--muted) !important;
+  cursor: pointer !important;
+  transition: all 0.15s ease !important;
+}
+
+html[data-embedded="true"] .market-filter-row button:hover {
+  color: var(--paper) !important;
+  border-color: var(--line-strong) !important;
+}
+
+html[data-embedded="true"] .market-filter-row button.active {
+  background: rgba(8, 126, 96, 0.1) !important;
+  border-color: var(--green) !important;
+  color: var(--green) !important;
+  font-weight: 600 !important;
+}
+
+html[data-embedded="true"]:not([data-theme="light"]) .market-filter-row button.active {
+  background: rgba(117, 199, 171, 0.15) !important;
+  border-color: var(--green) !important;
+  color: var(--green) !important;
+}
+
+html[data-embedded="true"] .market-filter-row button[data-status="failed"].active {
+  background: rgba(201, 87, 67, 0.1) !important;
+  border-color: var(--rose) !important;
+  color: var(--rose) !important;
+}
+
+/* ==========================================================================
+   Fluid Card Grid: Never Fixed Width, Expands Dynamically
+   ========================================================================== */
+html[data-embedded="true"] .model-results.grid {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)) !important;
+  gap: 20px !important;
+  width: 100% !important;
+  align-items: stretch !important;
+}
+
+html[data-embedded="true"] .model-card {
+  width: 100% !important;
+  max-width: none !important;
+  height: auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  background: var(--studio-panel) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: 14px !important;
+  overflow: hidden !important;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.02) !important;
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              border-color 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  cursor: pointer !important;
+}
+
+html[data-embedded="true"] .model-card:hover {
+  transform: translateY(-3px) !important;
+  border-color: var(--green) !important;
+  box-shadow: var(--studio-shadow) !important;
+}
+
+/* Card Thumbnail Box */
+html[data-embedded="true"] .card-thumb-wrap {
+  position: relative !important;
+  width: 100% !important;
+  aspect-ratio: 16 / 9 !important;
+  height: auto !important;
+  min-height: 190px !important;
+  max-height: 240px !important;
+  background: var(--ink-2) !important;
+  overflow: hidden !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border-bottom: 1px solid var(--line) !important;
+}
+
+html[data-embedded="true"] .card-thumb-wrap img {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain !important;
+  display: block !important;
+}
+
+/* Overlaid Task Identity: Sleek Single-Line Frosted Pill */
+html[data-embedded="true"] .card-thumb-wrap .task-identity {
+  position: absolute !important;
+  left: 10px !important;
+  top: 10px !important;
+  z-index: 2 !important;
+  background: rgba(14, 20, 17, 0.72) !important;
+  backdrop-filter: blur(12px) !important;
+  -webkit-backdrop-filter: blur(12px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.18) !important;
+  border-radius: 6px !important;
+  padding: 3px 8px !important;
+  margin: 0 !important;
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 5px !important;
+  max-width: calc(100% - 95px) !important;
+  line-height: 1.25 !important;
+}
+
+html[data-embedded="true"] .task-identity div {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 2px !important;
+}
+
+html[data-embedded="true"] .task-identity span {
+  display: none !important; /* Hide redundant "操作：" and "服务：" prefixes */
+}
+
+html[data-embedded="true"] .task-identity strong {
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  color: #ffffff !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+html[data-embedded="true"] .task-identity div + div::before {
+  content: "·" !important;
+  color: rgba(255, 255, 255, 0.5) !important;
+  margin: 0 2px !important;
+}
+
+html[data-embedded="true"] .task-identity .task-channel strong {
+  color: var(--amber) !important;
+}
+
+/* Status Badge */
+html[data-embedded="true"] .card-badges {
+  position: absolute !important;
+  top: 10px !important;
+  right: 10px !important;
+  z-index: 2 !important;
+}
+
+html[data-embedded="true"] .badge-status {
+  display: inline-flex !important;
+  align-items: center !important;
+  padding: 3px 9px !important;
+  border-radius: 12px !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  backdrop-filter: blur(8px) !important;
+  -webkit-backdrop-filter: blur(8px) !important;
+}
+
+html[data-embedded="true"] .badge-status.completed {
+  background: rgba(8, 126, 96, 0.18) !important;
+  border: 1px solid rgba(8, 126, 96, 0.4) !important;
+  color: var(--green) !important;
+}
+
+html[data-embedded="true"]:not([data-theme="light"]) .badge-status.completed {
+  background: rgba(117, 199, 171, 0.22) !important;
+  border: 1px solid rgba(117, 199, 171, 0.45) !important;
+  color: var(--green) !important;
+}
+
+html[data-embedded="true"] .badge-status.failed {
+  background: rgba(201, 87, 67, 0.18) !important;
+  border: 1px solid rgba(201, 87, 67, 0.4) !important;
+  color: var(--rose) !important;
+}
+
+html[data-embedded="true"]:not([data-theme="light"]) .badge-status.failed {
+  background: rgba(255, 128, 104, 0.22) !important;
+  border: 1px solid rgba(255, 128, 104, 0.45) !important;
+  color: var(--rose) !important;
+}
+
+html[data-embedded="true"] .badge-status.running {
+  background: rgba(83, 121, 172, 0.18) !important;
+  border: 1px solid rgba(83, 121, 172, 0.4) !important;
+  color: var(--blue) !important;
+}
+
+html[data-embedded="true"] .badge-status.queued,
+html[data-embedded="true"] .badge-status.cancelled {
+  background: rgba(21, 35, 30, 0.4) !important;
+  border: 1px solid var(--line) !important;
+  color: var(--muted) !important;
+}
+
+/* Timestamp Overlay */
+html[data-embedded="true"] .card-times {
+  position: absolute !important;
+  bottom: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  padding: 26px 12px 8px !important;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.8) 0%, rgba(0, 0, 0, 0) 100%) !important;
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: flex-end !important;
+  color: rgba(255, 255, 255, 0.9) !important;
+  font-size: 11px !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
+/* Card Body & Prompt */
+html[data-embedded="true"] .card-body {
+  padding: 14px 16px 16px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+  flex: 1 !important;
+}
+
+html[data-embedded="true"] .card-title-row {
+  display: block !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  color: var(--muted) !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+html[data-embedded="true"] .card-prompt {
+  font-size: 13px !important;
+  line-height: 1.55 !important;
+  color: var(--paper) !important;
+  margin: 0 !important;
+  display: -webkit-box !important;
+  -webkit-line-clamp: 2 !important;
+  -webkit-box-orient: vertical !important;
+  overflow: hidden !important;
+  min-height: 40px !important;
+}
+
+html[data-embedded="true"] .card-footer {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  margin-top: auto !important;
+  padding-top: 10px !important;
+  border-top: 1px solid var(--line) !important;
+}
+
+html[data-embedded="true"] .model-tags {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 6px !important;
+}
+
+html[data-embedded="true"] .model-tags span {
+  font-size: 11px !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace !important;
+  padding: 2px 7px !important;
+  border-radius: 4px !important;
+  background: var(--studio-button) !important;
+  border: 1px solid var(--line) !important;
+  color: var(--muted) !important;
+}
+
+html[data-embedded="true"] .card-footer-action {
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  color: var(--green) !important;
+}
+
+/* ==========================================================================
+   Table Container (工单表格)
+   ========================================================================== */
+html[data-embedded="true"] .table-container {
+  width: 100% !important;
+  overflow-x: auto !important;
+  border: 1px solid var(--line) !important;
+  border-radius: 12px !important;
+  background: var(--studio-panel) !important;
+  margin-top: 16px !important;
+}
+
+html[data-embedded="true"] table {
+  width: 100% !important;
+  border-collapse: collapse !important;
+  font-size: 13px !important;
+}
+
+html[data-embedded="true"] th {
+  padding: 12px 14px !important;
+  text-align: left !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.8px !important;
+  text-transform: uppercase !important;
+  color: var(--muted) !important;
+  border-bottom: 1px solid var(--line) !important;
+  background: var(--studio-button) !important;
+}
+
+html[data-embedded="true"] td {
+  padding: 12px 14px !important;
+  border-bottom: 1px solid var(--line) !important;
+  color: var(--paper) !important;
+  font-size: 13px !important;
+  vertical-align: middle !important;
+}
+
+html[data-embedded="true"] tr:last-child td {
+  border-bottom: none !important;
+}
+
+html[data-embedded="true"] tr:hover td {
+  background: var(--studio-button) !important;
+}
+
+/* Models & MCP Sections */
+html[data-embedded="true"] #modelServices,
+html[data-embedded="true"] #mcpStatus .business-models {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)) !important;
+  gap: 16px !important;
+}
+
+html[data-embedded="true"] .business-card {
+  background: var(--studio-panel) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: 12px !important;
+  padding: 20px !important;
+  color: var(--paper) !important;
+  transition: all 0.15s ease !important;
+}
+
+html[data-embedded="true"] .business-card:hover {
+  border-color: var(--green) !important;
+  transform: translateY(-2px) !important;
+}
+
+/* Detail Views & Dialogs */
+html[data-embedded="true"] .detail-heading {
+  border-color: var(--line) !important;
+}
+
+html[data-embedded="true"] .prompt-sheet,
+html[data-embedded="true"] .metric-card {
+  background: var(--studio-panel) !important;
+  border-color: var(--line) !important;
+  color: var(--paper) !important;
+}
+
+html[data-embedded="true"] .reference-preview,
+html[data-embedded="true"] .result-stage {
+  background: var(--ink-2) !important;
+  border-color: var(--line) !important;
+}
+
+html[data-embedded="true"] .reference-caption strong {
+  color: var(--paper) !important;
+}
+
+html[data-embedded="true"] .reference-link {
+  background: var(--studio-button) !important;
+  border-color: var(--line) !important;
+  color: var(--green) !important;
+}
+
+html[data-embedded="true"] #resourceDrawer,
+html[data-embedded="true"] .business-drawer-head,
+html[data-embedded="true"] .dialog,
+html[data-embedded="true"] #imagePreview {
+  background: var(--ink-2) !important;
+  color: var(--paper) !important;
+  border-color: var(--line) !important;
+}
