@@ -38,7 +38,8 @@ __pycache__/
 .coverage
 .venv/
 
-# Python packaging outputs
-*.egg-info/
-build/
+# Node / Frontend packaging
+node_modules/
 dist/
+services/video-mcp-server/frontend/node_modules/
+services/video-mcp-server/frontend/dist/

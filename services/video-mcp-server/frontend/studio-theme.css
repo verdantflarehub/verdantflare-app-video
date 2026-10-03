@@ -10,6 +10,7 @@ html[data-embedded=true] .workspace-nav{display:flex;flex-direction:row;gap:26px
 html[data-embedded=true] .workspace-nav a{padding:10px 0;border:0;border-bottom:2px solid transparent;border-radius:0;color:var(--muted);background:none;font-size:14px;letter-spacing:0}
 html[data-embedded=true] .workspace-nav a.active{color:var(--green);border-bottom-color:var(--green)}
 html[data-embedded=true] .market-page{padding:0}
+html[data-embedded=true] .market-wrap{width:100%;max-width:100%}
 html[data-embedded=true] .business-card,html[data-embedded=true] .model-card,html[data-embedded=true] .metric,html[data-embedded=true] .task-prompt,html[data-embedded=true] .reference-card{background:var(--studio-panel);color:var(--paper);border-color:var(--line);box-shadow:none;border-radius:12px}
 html[data-embedded=true] .button,html[data-embedded=true] .view-switch button,html[data-embedded=true] .filter-tab,html[data-embedded=true] input,html[data-embedded=true] select,html[data-embedded=true] textarea{background:var(--studio-button);color:var(--paper);border-color:var(--line);border-radius:8px}
 html[data-embedded=true] .button.primary{background:var(--studio-primary);border-color:var(--studio-primary);color:var(--studio-button-ink)}
