@@ -38,5 +38,14 @@ if (window.studioEmbedded) {
  window.addEventListener('DOMContentLoaded',()=>{
   document.querySelectorAll('[data-nav]').forEach(a=>{a.textContent={tasks:'任务',models:'模型',mcp:'MCP'}[a.dataset.nav]});
   parent.postMessage({channel:'vf-video',view,type:'ready'},hostOrigin);
+  const postHeight=()=>{
+   const h=Math.max(document.documentElement.scrollHeight,document.body.scrollHeight);
+   if(h>0)parent.postMessage({channel:'vf-video',view,type:'resize',height:h},hostOrigin);
+  };
+  postHeight();
+  window.addEventListener('load',postHeight);
+  window.addEventListener('resize',postHeight);
+  if(window.ResizeObserver){const ro=new ResizeObserver(postHeight);ro.observe(document.body);}
+  window.addEventListener('wheel',e=>{parent.postMessage({channel:'vf-video',view,type:'wheel',deltaY:e.deltaY},hostOrigin)},{passive:true});
  });
 }
