@@ -301,7 +301,7 @@ def artifact_import(project_id: str, source_url: str, filename: str, expected_sh
 
 @mcp.tool(name="video.create")
 def video_create(prompt: str,
-                 project_id: str = "default",
+                 project_id: str,
                  idempotency_key: str = "",
                  model: str = "minimax-h3-ref2va",
                  duration_seconds: int = 5,
@@ -377,7 +377,7 @@ def video_result(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
 
 
 @mcp.tool(name="video.depth")
-def video_depth(source_artifact_id: str, project_id: str = "default", idempotency_key: str = "",
+def video_depth(source_artifact_id: str, project_id: str, idempotency_key: str = "",
                 model: str = "video-depth-anything", output_format: str = "mp4") -> types.CallToolResult:
     import uuid
     actual_idem = idempotency_key or f"idem_{uuid.uuid4().hex[:12]}"
@@ -390,7 +390,7 @@ def video_depth(source_artifact_id: str, project_id: str = "default", idempotenc
 
 @mcp.tool(name="video.sr")
 def video_sr(source_artifact_id: str, target_width: int, target_height: int,
-             project_id: str = "default", idempotency_key: str = "",
+             project_id: str, idempotency_key: str = "",
              quality_mode: str = "standard", backend: str = "seedvr2", seed: int = 666) -> types.CallToolResult:
     import uuid
     actual_idem = idempotency_key or f"idem_{uuid.uuid4().hex[:12]}"
@@ -404,7 +404,7 @@ def video_sr(source_artifact_id: str, target_width: int, target_height: int,
 
 
 @mcp.tool(name="video.interpolate")
-def video_interpolate(source_artifact_id: str, project_id: str = "default", idempotency_key: str = "",
+def video_interpolate(source_artifact_id: str, project_id: str, idempotency_key: str = "",
                       target_fps_num: int = 48, target_fps_den: int = 1,
                       backend: str = "rife") -> types.CallToolResult:
     import uuid
