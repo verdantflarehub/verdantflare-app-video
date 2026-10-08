@@ -15,7 +15,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
-from .engine import Engine, RuntimeErrorCode
+from .errors import RuntimeErrorCode
 from .queue import Queue, QueueError
 
 
@@ -63,24 +63,33 @@ def create_app(queue: Queue, engine_factory, token: str):
         raise ValueError("SINGULARITY_RUNTIME_TOKEN is required")
     state: dict[str, object] = {"ready": False, "engine": None, "error": None}
     stop = threading.Event()
+    thread: threading.Thread | None = None
 
     def worker():
+        # Every exit, including queue/initialization failures, must become
+        # visible to liveness. Readiness alone cannot restart a dead worker.
         try:
-            state["engine"] = engine_factory()
-            state["ready"] = True
+            run_worker()
         except Exception as exc:
             state["error"] = getattr(exc, "code", type(exc).__name__)
-            return
+        finally:
+            state["ready"] = False
+            if not stop.is_set() and state["error"] is None:
+                state["error"] = "worker_stopped"
+
+    def run_worker():
+        state["engine"] = engine_factory()
+        state["ready"] = True
         while not stop.wait(0.2):
             task = queue.take()
             if task is None:
                 continue
             task_id = task["id"]
             directory = queue.root / task_id
-            directory.mkdir(exist_ok=False)
             download_started = time.perf_counter()
             download_seconds = None
             try:
+                directory.mkdir(exist_ok=False)
                 request = task["request"] if isinstance(task.get("request"), dict) else json.loads(task["request"])
                 queue.update(task_id, stage="downloading")
                 files = _download_references(directory, request.get("conditions", []))
@@ -99,17 +108,21 @@ def create_app(queue: Queue, engine_factory, token: str):
                 # A CUDA exception can leave the context unusable. The pod is
                 # restarted by Kubernetes rather than attempting a second GPU job.
                 fatal_capacity = isinstance(code, str) and code.endswith("_out_of_memory")
-                if fatal_capacity or not isinstance(exc, (RuntimeErrorCode, ValueError, QueueError)):
+                if fatal_capacity or not isinstance(exc, (RuntimeErrorCode, ValueError, QueueError, OSError)):
                     state["ready"] = False
                     state["error"] = code
                     return
 
     @asynccontextmanager
     async def lifespan(app):
+        nonlocal thread
         thread = threading.Thread(target=worker, name="singularity-worker", daemon=True)
         thread.start()
-        yield
-        stop.set()
+        try:
+            yield
+        finally:
+            stop.set()
+            thread.join(timeout=2)
 
     app = FastAPI(lifespan=lifespan)
 
@@ -123,7 +136,11 @@ def create_app(queue: Queue, engine_factory, token: str):
 
     @app.get("/live")
     def live():
-        return {"live": True, "ready": bool(state["ready"]), "error": state["error"]}
+        alive = thread is not None and thread.is_alive() and state["error"] is None
+        return JSONResponse(
+            {"live": alive, "ready": bool(state["ready"]), "error": state["error"]},
+            status_code=200 if alive else 503,
+        )
 
     @app.get("/health")
     def health():
@@ -140,7 +157,12 @@ def create_app(queue: Queue, engine_factory, token: str):
         if length > MAX_REQUEST_BYTES:
             raise HTTPException(413, "body_too_large")
         try:
-            payload = json.loads(await request.body())
+            body = bytearray()
+            async for chunk in request.stream():
+                body.extend(chunk)
+                if len(body) > MAX_REQUEST_BYTES:
+                    raise HTTPException(413, "body_too_large")
+            payload = json.loads(body)
             required = {"idempotency_key", "model", "task", "prompt", "seconds", "conditions", "target"}
             if not isinstance(payload, dict) or not required <= payload.keys():
                 raise ValueError("invalid_fields")
@@ -187,6 +209,7 @@ def create_app(queue: Queue, engine_factory, token: str):
 
 def main():
     import uvicorn
+    from .engine import Engine
     queue = Queue(os.environ.get("SINGULARITY_TASK_ROOT", "/data/projects/singularity/tasks"))
     app = create_app(queue, Engine, os.environ.get("SINGULARITY_RUNTIME_TOKEN", ""))
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8000")), workers=1)

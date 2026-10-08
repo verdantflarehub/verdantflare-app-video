@@ -11,19 +11,14 @@ import uuid
 import torch
 
 from .media import load_audio, load_image, load_video, mux_mp4, sha256
+from .errors import RuntimeErrorCode
+from . import __version__
 from .hr_refine import (
     audio_range,
     h3_resize_video,
     spatial_tiles,
     temporal_windows,
 )
-
-
-class RuntimeErrorCode(RuntimeError):
-    def __init__(self, code: str, *, metrics: dict | None = None):
-        super().__init__(code)
-        self.code = code
-        self.runtime_metrics = metrics
 
 
 HR_SAMPLERS = ("euler", "er_sde")
@@ -304,7 +299,7 @@ class Engine:
         self.vae_tile_size = encoder_tile_size
         self.vae_decoder_tile_size = decoder_tile_size
         self.load_seconds = time.perf_counter() - started
-        self.version = os.environ.get("SINGULARITY_RUNTIME_VERSION", "video-minimax-h3-singularity-v0.1.28")
+        self.version = os.environ.get("SINGULARITY_RUNTIME_VERSION", f"video-minimax-h3-singularity-v{__version__}")
         self.execution_instance_id = str(uuid.uuid4())
 
     def health(self) -> dict:
