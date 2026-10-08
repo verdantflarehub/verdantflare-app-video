@@ -70,6 +70,17 @@ class MediaTest(unittest.TestCase):
             self.assertLess(samples[..., :20000].abs().max().item(), 0.001)
             self.assertGreater(samples[..., 30000:60000].square().mean().item(), 0.001)
 
+    def test_video_display_rotation_is_applied_before_adaptive_geometry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, rotated = Path(directory) / "source.mp4", Path(directory) / "rotated.mp4"
+            subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=64x96:rate=24:duration=2",
+                            "-c:v", "libx264", str(source)], check=True)
+            subprocess.run(["ffmpeg", "-v", "error", "-display_rotation", "90", "-i", str(source), "-c", "copy", str(rotated)], check=True)
+            original, _, _ = load_video(source)
+            displayed, _, _ = load_video(rotated)
+            self.assertEqual(tuple(displayed.shape), (48, 64, 96, 3))
+            self.assertTrue(torch.equal(displayed, torch.rot90(original, 1, (1, 2))))
+
     def test_comfy_audio_object_preserves_duration_when_resampling(self):
         frames = torch.full((24, 16, 16, 3), 0.5)
         t = torch.arange(48000, dtype=torch.float32) / 48000

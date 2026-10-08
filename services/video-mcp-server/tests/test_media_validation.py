@@ -7,6 +7,7 @@ import unittest
 from app.artifacts import ArtifactStore
 from app.imports import ImportStore
 from app.media_validation import validate_reference_media
+from PIL import Image
 import base64
 import hashlib
 
@@ -64,6 +65,22 @@ class ReferenceMediaTests(unittest.TestCase):
         path = self.make("video.mp4", ["-f", "lavfi", "-i", "testsrc2=size=64x64:rate=24:duration=2", "-c:v", "libx264"])
         with self.assertRaisesRegex(ValueError, "image_format_mismatch"):
             validate_reference_media(path, "image/png")
+
+    def test_display_orientation_and_animated_images(self):
+        image = Image.new("RGB", (64, 96), "red")
+        exif = Image.Exif(); exif[274] = 6
+        path = self.root / "oriented.jpg"
+        image.save(path, exif=exif)
+        media = validate_reference_media(path, "image/jpeg")
+        self.assertEqual((media["width"], media["height"]), (96, 64))
+        animated = self.root / "animated.png"
+        image.save(animated, save_all=True, append_images=[Image.new("RGB", (64, 96), "blue")], duration=100)
+        with self.assertRaisesRegex(ValueError, "still|format_mismatch"):
+            validate_reference_media(animated, "image/png")
+        source = self.make("plain.mp4", ["-f", "lavfi", "-i", "testsrc2=size=64x96:rate=24:duration=2", "-c:v", "libx264"])
+        rotated = self.make("rotated.mp4", ["-display_rotation", "90", "-i", str(source), "-c", "copy"])
+        media = validate_reference_media(rotated, "video/mp4")
+        self.assertEqual((media["width"], media["height"]), (96, 64))
 
 
 if __name__ == "__main__":

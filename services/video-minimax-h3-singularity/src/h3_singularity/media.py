@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import math
 from pathlib import Path
 import subprocess
@@ -38,6 +39,13 @@ def load_video(path: Path) -> tuple[torch.Tensor, dict | None, float]:
     Decode sound in a fresh container: the video iterator has already reached
     EOF. Stream objects, rather than absolute stream indices, select audio.
     """
+    probe = json.loads(subprocess.check_output([
+        "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream_side_data=rotation",
+        "-of", "json", str(path)], timeout=30))
+    rotation = float(next((item["rotation"] for stream in probe.get("streams", [])
+                          for item in stream.get("side_data_list", []) if "rotation" in item), 0))
+    if not math.isfinite(rotation) or abs(rotation / 90 - round(rotation / 90)) > 1e-6:
+        raise ValueError("video_rotation_must_be_right_angle")
     with av.open(str(path)) as container:
         if not container.streams.video:
             raise ValueError("video_has_no_stream")
@@ -55,7 +63,8 @@ def load_video(path: Path) -> tuple[torch.Tensor, dict | None, float]:
             if timestamps and timestamp <= timestamps[-1]:
                 raise ValueError("video_nonmonotonic_timestamps")
             timestamps.append(timestamp)
-            frames.append(frame.to_ndarray(format="rgb24"))
+            pixels = frame.to_ndarray(format="rgb24")
+            frames.append(np.rot90(pixels, round(rotation / 90)).copy() if rotation else pixels)
             last_duration = float(frame.duration * frame.time_base) if frame.duration and frame.time_base else 1 / fps
         has_audio = bool(container.streams.audio)
     if not frames:

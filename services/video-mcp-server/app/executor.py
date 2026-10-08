@@ -453,7 +453,7 @@ class VideoExecutor:
     def status(self, video_task_id: str) -> TaskRecord:
         record = self.tasks.get(video_task_id)
         if (record.service == "h3-singularity" and not record.runtime_task_id
-            and (record.error or {}).get("code") == "submission_unconfirmed"):
+            and (record.status in {"queued", "running"} or (record.error or {}).get("code") == "submission_unconfirmed")):
             url, headers, _, _ = self.runtime(self._record_route(record))
             try:
                 response = self.client.get(f"{url}/v1/videos/by-idempotency/{record.video_task_id}", headers=headers, timeout=10)

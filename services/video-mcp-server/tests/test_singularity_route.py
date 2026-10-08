@@ -127,6 +127,30 @@ class SingularityRouteTest(unittest.TestCase):
             self.assertEqual(replay.video_task_id, row.video_task_id)
             self.assertEqual(len(posts), 1)
 
+    def test_restart_recovers_a_crash_between_dispatch_and_response_persistence(self):
+        from app.dashboard import Dashboard
+        identity = "singularity_" + "d" * 32
+        # A process crash can leave the durable reservation with no error or
+        # runtime identity even though the GPU service accepted the request.
+        request, digest = self.executor._normalize(self.kw["project_id"], self.kw["model"], self.kw["prompt"],
+            self.kw["duration_seconds"], self.kw["aspect_ratio"], self.kw["references"], "h3-singularity")
+        record = self.tasks.create(project_id=self.kw["project_id"], idempotency_key=self.kw["idempotency_key"],
+            input_digest=digest, request=request, runtime_task_id="", status="queued")
+        def handler(request):
+            self.assertEqual(request.method, "GET")
+            if request.url.path == "/health": return httpx.Response(200, json={"ready":True})
+            if "/by-idempotency/" in request.url.path: return httpx.Response(200, json={"id":identity})
+            return httpx.Response(200, json={"status":"in_progress","stage":"generating"})
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            self.executor.client = client
+            dashboard = Dashboard(self.executor)
+            dashboard.recover_incomplete_submissions()
+            self.assertEqual(self.tasks.get(record.video_task_id).status, "queued")
+            dashboard.sync()
+            recovered = self.tasks.get(record.video_task_id)
+            self.assertEqual(recovered.runtime_task_id, identity)
+            self.assertEqual(recovered.status, "running")
+
 
 if __name__ == "__main__":
     unittest.main()

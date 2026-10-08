@@ -20,6 +20,7 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 
 from .artifacts import ArtifactError, ArtifactNotFound, ArtifactStore, require_project_id
+from . import __version__
 from .executor import ExecutionError, VideoExecutor
 from .dashboard import Dashboard
 from .registry import EtcdRegistry
@@ -134,7 +135,7 @@ VIDEO_TOOLS_SCHEMA.extend([
      "oneOf": [{"required": ["source_url"], "not": {"required": ["content_base64"]}},
                {"required": ["content_base64"], "not": {"required": ["source_url"]}}]}},
 ])
-registry = EtcdRegistry(domain="video", tools=VIDEO_TOOLS_SCHEMA)
+registry = EtcdRegistry(domain="video", tools=VIDEO_TOOLS_SCHEMA, version=__version__)
 
 
 def _latent_errors(function):
@@ -510,7 +511,7 @@ def transport_security_from_environment() -> TransportSecuritySettings:
 
 async def health(request: Request) -> JSONResponse:
     artifacts.ensure_ready(); tasks.ensure_ready()
-    return JSONResponse({"status": "ok", "contract_version": "v1"})
+    return JSONResponse({"status": "ok", "contract_version": "v1", "version": __version__})
 
 
 async def artifact_content(request: Request) -> Response:

@@ -5,6 +5,7 @@ import json
 import math
 from pathlib import Path
 import subprocess
+from PIL import Image
 
 
 MAX_IMAGE_PIXELS = 16 * 1024 * 1024
@@ -36,6 +37,11 @@ def validate_reference_media(path: Path, media_type: str) -> dict:
             allowed = {"image/png": "png", "image/jpeg": "mjpeg", "image/webp": "webp"}
             if video["codec_name"] != allowed.get(media_type) or audios:
                 raise ValueError("reference_image_format_mismatch")
+            with Image.open(path) as image:
+                if getattr(image, "n_frames", 1) != 1:
+                    raise ValueError("reference_image_must_be_still")
+                if image.getexif().get(274, 1) in {5, 6, 7, 8}:
+                    media["width"], media["height"] = height, width
         else:
             duration = float(probe["format"]["duration"])
             if not 2 <= duration <= 15.001:
@@ -54,6 +60,12 @@ def validate_reference_media(path: Path, media_type: str) -> dict:
                     raise ValueError("reference_video_duration_must_be_2_to_15_seconds")
                 media["video_duration_seconds"] = video_duration
                 media["resampled_frames"] = math.ceil(video_duration * 24 - 1e-6)
+                rotation = float(next((item["rotation"] for item in video.get("side_data_list", []) if "rotation" in item), 0))
+                if not math.isfinite(rotation) or abs(rotation / 90 - round(rotation / 90)) > 1e-6:
+                    raise ValueError("reference_video_rotation_must_be_right_angle")
+                media["display_rotation_degrees"] = rotation
+                if round(rotation / 90) % 2:
+                    media["width"], media["height"] = height, width
             elif kind == "audio":
                 if videos or len(audios) != 1:
                     raise ValueError("reference_requires_one_audio_stream")
