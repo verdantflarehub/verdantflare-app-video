@@ -2,6 +2,7 @@ import asyncio
 import base64
 import hashlib
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,10 +17,18 @@ from app.tasks import TaskStore
 
 
 class SkillContractTest(unittest.TestCase):
+    def test_registration_obeys_studio_domain_operation_contract(self):
+        names = [tool["name"] for tool in server.registry.tools]
+        self.assertEqual(len(names), len(set(names)))
+        for tool in server.registry.tools:
+            self.assertRegex(tool["name"], r"^video\.[a-z][a-z0-9_]*$")
+            self.assertTrue(tool["description"])
+            self.assertEqual(tool["inputSchema"]["type"], "object")
+
     def test_chunk_tools_have_the_same_schema_in_studio_and_native_mcp(self):
         native = {tool.name: tool.input_schema for tool in asyncio.run(server.mcp.list_tools())}
         advertised = {tool["name"]: tool["inputSchema"] for tool in server.registry.tools}
-        for name in ("video.import.prepare", "video.import.chunk", "video.import.status", "video.import.commit", "video.preflight"):
+        for name in ("video.import_prepare", "video.import_chunk", "video.import_status", "video.import_commit", "video.preflight"):
             with self.subTest(name=name):
                 self.assertEqual(native[name], advertised[name])
 

@@ -323,7 +323,7 @@ def video_import(project_id: str, filename: str, expected_sha256: str,
                     "download_path": artifacts.download_path(record.artifact_id)})
 
 
-@mcp.tool(name="video.import.prepare")
+@mcp.tool(name="video.import_prepare")
 def video_import_prepare(project_id: str, idempotency_key: str, filename: str, size: int,
                          sha256: str, purpose: str, source_content_ref: dict[str, str] | None = None) -> types.CallToolResult:
     """Prepare resumable media import. A claimed ContentRef grants no central read permission."""
@@ -331,20 +331,20 @@ def video_import_prepare(project_id: str, idempotency_key: str, filename: str, s
         filename=filename, size=size, sha256=sha256, purpose=purpose, source_content_ref=source_content_ref))
 
 
-@mcp.tool(name="video.import.chunk")
+@mcp.tool(name="video.import_chunk")
 def video_import_chunk(project_id: str, import_id: str, offset: int, content_base64: str, sha256: str) -> types.CallToolResult:
     """Append up to 512 KiB at the confirmed offset; identical repeated bytes are safe."""
     return _result(executor.imports.chunk(project_id=project_id, import_id=import_id, offset=offset,
         content_base64=content_base64, sha256=sha256))
 
 
-@mcp.tool(name="video.import.status")
+@mcp.tool(name="video.import_status")
 def video_import_status(project_id: str, import_id: str) -> types.CallToolResult:
     """Read the durable offset and final immutable identity after an interrupted upload."""
     return _result(executor.imports.status(project_id=project_id, import_id=import_id))
 
 
-@mcp.tool(name="video.import.commit")
+@mcp.tool(name="video.import_commit")
 def video_import_commit(project_id: str, import_id: str) -> types.CallToolResult:
     """Verify all bytes and decode media before publishing a native Video artifact."""
     return _result(executor.imports.commit(project_id=project_id, import_id=import_id))
@@ -369,7 +369,7 @@ def video_preflight(project_id: str, prompt: str, references: dict[str, list[dic
 
 # Publish the registered parameter schemas instead of maintaining a second
 # copy for Studio discovery. MCP is pinned; parity is checked in local tests.
-for _name in ("video.import.prepare", "video.import.chunk", "video.import.status", "video.import.commit", "video.preflight"):
+for _name in ("video.import_prepare", "video.import_chunk", "video.import_status", "video.import_commit", "video.preflight"):
     _tool = mcp._tool_manager.get_tool(_name)
     VIDEO_TOOLS_SCHEMA.append({"name": _name, "description": _tool.description, "inputSchema": _tool.parameters})
 
