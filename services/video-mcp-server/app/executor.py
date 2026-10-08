@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import mimetypes
@@ -26,10 +28,18 @@ MEDIA_TYPES = {
     ".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm",
 }
 H3_DURATION_TOLERANCE_MS = 1000
+MAX_INLINE_IMAGE_BYTES = 3 * 1024 * 1024
 
 
 class ExecutionError(RuntimeError):
     pass
+
+
+def _check_media(command, **kwargs):
+    try:
+        return subprocess.run(command, check=True, capture_output=True, **kwargs)
+    except (subprocess.SubprocessError, OSError) as error:
+        raise ExecutionError("Generated video could not be probed or fully decoded") from error
 
 
 def serialized(method):
@@ -132,6 +142,93 @@ class VideoExecutor:
         # Read old records created before route became the public selector.
         return self.sol_route if record.service == "h3-sol" else self.runtime_route
 
+    def capabilities(self) -> dict[str, object]:
+        """Separate configured adapters, live readiness and unverified GPU combinations."""
+        from .providers.fal import FAL_ASPECT_RATIOS
+        from .singularity import ASPECT_RATIOS
+        routes = []
+        names = {self.runtime_route, "fal", *self.runtime_routes}
+        if self.sol_url:
+            names.add("h3-sol")
+        for route in sorted(names):
+            service = self._service_for_route(route)
+            try:
+                if route == "fal":
+                    configured = self.fal.connected()
+                else:
+                    self.runtime(route)
+                    configured = True
+            except ExecutionError:
+                configured = False
+            routes.append({
+                "route": route, "model": "minimax-h3-ref2va", "configured": configured,
+                "readiness": "not_checked",
+                "limit_scope": "adapter",  # These are implementation limits, not model limits.
+                "duration_seconds": {"minimum": 5 if service in {"fal", "h3-sol", "h3-vdn"} else 4, "maximum": 15},
+                "aspect_ratios": sorted(FAL_ASPECT_RATIOS) if route == "fal" else list(ASPECT_RATIOS) if service == "h3-singularity" else ["9:16"],
+            })
+            if service == "h3-singularity":
+                routes[-1].update(quality_profiles=["du-0"], gpu_verified_combinations=[],
+                                  verification_status="not_recorded", frame_grid="17k+5", fps=24)
+                if configured:
+                    url, headers, version, _ = self.runtime(route)
+                    routes[-1]["configured_runtime_version"] = version
+                    try:
+                        response = self.client.get(f"{url}/health", headers=headers, timeout=10)
+                        health = response.json()
+                        routes[-1]["readiness"] = "ready" if response.status_code == 200 and health.get("ready") is True else "not_ready"
+                        if response.status_code == 200:
+                            routes[-1]["runtime_version"] = health.get("runtime_version", "unknown")
+                            routes[-1]["runtime_capabilities"] = health.get("capabilities", {})
+                    except (httpx.HTTPError, ValueError, AttributeError):
+                        routes[-1]["readiness"] = "unreachable"
+        return {"default_model": "minimax-h3-ref2va", "default_route": self.runtime_route,
+                "model_specification": {"aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+                                        "omni_adaptive": True},
+                "routes": routes, "inline_image_max_bytes": MAX_INLINE_IMAGE_BYTES,
+                "chunk_import": {"max_chunk_bytes": 512 * 1024, "max_file_bytes": MAX_ARTIFACT_BYTES,
+                                 "formats": ["PNG", "JPEG", "WebP", "MP4/H.264", "MP4/H.265", "WAV/PCM", "MP3"],
+                                 "reference_duration_seconds": {"minimum": 2, "maximum": 15},
+                                 "max_image_pixels": 16 * 1024 * 1024, "max_video_pixels": 4096 * 2160,
+                                 "max_video_decoded_pixels": 1_000_000_000, "max_video_fps": 120,
+                                 "audio_channels": [1, 2]}}
+
+    @property
+    def imports(self):
+        # Lazy initialization keeps unrelated read-only operations independent
+        # of upload storage and avoids creating files during tool discovery.
+        with self._lock:
+            if not hasattr(self, "_imports"):
+                from .imports import ImportStore
+                from .media_validation import validate_reference_media
+                self._imports = ImportStore(self.artifacts, validate_reference_media)
+            return self._imports
+
+    def import_image(self, *, project_id: str, content_base64: str,
+                     filename: str, expected_sha256: str) -> ArtifactRecord:
+        """Import caller-owned bytes, without fetching URLs or accepting access claims."""
+        project_id = require_project_id(project_id)
+        filename = require_filename(filename)
+        media_type = MEDIA_TYPES.get(Path(filename).suffix.lower())
+        digest = expected_sha256.strip().lower()
+        if media_type not in {"image/png", "image/jpeg", "image/webp"}:
+            raise ValueError("inline import supports PNG, JPEG, and WebP images only")
+        if not SHA256_PATTERN.fullmatch(digest):
+            raise ValueError("expected_sha256 must contain exactly 64 hexadecimal characters")
+        if not content_base64 or len(content_base64) > 4 * ((MAX_INLINE_IMAGE_BYTES + 2) // 3):
+            raise ValueError("inline image must contain 1 byte to 3 MiB")
+        try:
+            content = base64.b64decode(content_base64, validate=True)
+        except (ValueError, binascii.Error) as error:
+            raise ValueError("content_base64 is invalid") from error
+        magic = (content.startswith(b"\x89PNG\r\n\x1a\n") if media_type == "image/png" else
+                 content.startswith(b"\xff\xd8\xff") if media_type == "image/jpeg" else
+                 content.startswith(b"RIFF") and content[8:12] == b"WEBP")
+        if not magic or len(content) > MAX_INLINE_IMAGE_BYTES:
+            raise ValueError("inline image content does not match filename or size limit")
+        return self.artifacts.create_from_chunks(project_id=project_id, operation="video.import",
+            filename=filename, media_type=media_type, chunks=(content,), expected_sha256=digest)
+
     def import_asset(self, *, project_id: str, source_url: str, filename: str, expected_sha256: str) -> ArtifactRecord:
         project_id = require_project_id(project_id)
         filename = require_filename(filename)
@@ -187,14 +284,26 @@ class VideoExecutor:
             raise ValueError("Selected channel duration must be an integer from 5 to 15 seconds")
         if model != "minimax-h3-ref2va":
             raise ValueError("model must be minimax-h3-ref2va")
-        if not 4 <= duration_seconds <= 15 or aspect_ratio != "9:16" or not prompt.strip():
-            raise ValueError("duration_seconds, aspect_ratio, or prompt is invalid")
+        if type(duration_seconds) is not int or not 4 <= duration_seconds <= 15 or not prompt.strip():
+            raise ValueError("duration_seconds must be an integer from 4 to 15 and prompt must not be empty")
+        from .singularity import ASPECT_RATIOS, output_spec
+        if service == "h3-singularity" and quality_profile != "du-0":
+            raise ValueError("Selected Singularity production route supports only du-0")
+        if service == "h3-singularity" and aspect_ratio not in ASPECT_RATIOS:
+            raise ValueError("Unsupported Singularity aspect_ratio")
+        if service != "h3-singularity" and aspect_ratio != "9:16":
+            raise ValueError("Selected local H3 channel supports only 9:16; query video.capabilities before submission")
         limits = {"images": 9, "videos": 3, "audios": 3}
-        if not references.get("images") and not references.get("videos"):
+        if not isinstance(references, dict) or set(references) - limits.keys() or any(not isinstance(v, list) for v in references.values()):
+            raise ValueError("references must contain only images, videos and audios arrays")
+        if service == "h3-singularity" and not any(references.values()):
+            raise ValueError("at least one reference is required")
+        if service != "h3-singularity" and not references.get("images") and not references.get("videos"):
             raise ValueError("at least one image or video reference is required")
-        if service == "h3-vdn" and sum(len(references.get(k, [])) for k in limits) > 12:
-            raise ValueError("VDN supports at most 12 references")
+        if service in {"h3-vdn", "h3-singularity"} and sum(len(references.get(k, [])) for k in limits) > 12:
+            raise ValueError("Selected route supports at most 12 references")
         reference_bytes = 0
+        media_by_kind = {kind: [] for kind in limits}
         normalized: dict[str, list[dict[str, str]]] = {}
         for kind, limit in limits.items():
             items = references.get(kind, [])
@@ -202,18 +311,47 @@ class VideoExecutor:
                 raise ValueError(f"too many {kind} references")
             normalized[kind] = []
             for item in items:
+                if not isinstance(item, dict) or set(item) != {"artifact_id", "purpose"} or not isinstance(item["purpose"], str):
+                    raise ValueError("reference requires only artifact_id and purpose")
                 artifact = self.artifacts.get(item["artifact_id"], project_id)
                 reference_bytes += artifact.size
                 expected_prefix = {"images": "image/", "videos": "video/", "audios": "audio/"}[kind]
                 if not artifact.media_type.startswith(expected_prefix) or not item.get("purpose", "").strip():
                     raise ValueError(f"invalid {kind} reference")
                 normalized[kind].append({"artifact_id": artifact.artifact_id, "purpose": item["purpose"].strip()})
+                if service == "h3-singularity":
+                    from .media_validation import validate_reference_media
+                    media_by_kind[kind].append(validate_reference_media(self.artifacts.content_path(artifact), artifact.media_type))
         if service == "h3-vdn" and reference_bytes > 2 * 1024**3:
             raise ValueError("VDN references exceed 2 GiB")
         request = {"project_id": project_id, "model": model, "prompt": prompt.strip(),
                    "duration_seconds": duration_seconds, "aspect_ratio": aspect_ratio,
                    "references": normalized, "quality_profile": quality_profile}
         request["route"] = route
+        if service == "h3-singularity":
+            for kind in ("videos", "audios"):
+                if sum(m["duration_seconds"] for m in media_by_kind[kind]) > 15.001:
+                    raise ValueError(f"{kind} references exceed 15 seconds in total")
+            visuals = media_by_kind["images"] or media_by_kind["videos"]
+            request["resolved_output"] = output_spec(aspect_ratio, duration_seconds, visuals[0] if visuals else None)
+            for media in media_by_kind["videos"]:
+                count = min(media["resampled_frames"], request["resolved_output"]["frames"])
+                count -= (count - 5) % 17
+                media.update(conditioning_frames=count, conditioning_duration_seconds=count / 24,
+                             soundtrack_alignment="same_interval_as_video")
+            request["reference_media"] = media_by_kind
+            mapping = []
+            audio_index = 0
+            for kind, label in (("images", "Picture"), ("videos", "Video"), ("audios", "Audio")):
+                for index, (item, media) in enumerate(zip(normalized[kind], media_by_kind[kind]), 1):
+                    if kind == "videos" and media["has_audio"]:
+                        audio_index += 1
+                        mapping.append({"tag": f"<Audio {audio_index}>", "artifact_id": item["artifact_id"], "role": "video_soundtrack"})
+                    if kind == "audios":
+                        audio_index += 1
+                    mapping.append({"tag": f"<{label} {audio_index if kind == 'audios' else index}>",
+                                    "artifact_id": item["artifact_id"], "purpose": item["purpose"], "role": kind})
+            request["reference_mapping"] = mapping
         canonical = json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return request, "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
 
@@ -251,11 +389,11 @@ class VideoExecutor:
                 conditions.append({"type": singular[kind],
                                    "uri": f"{self.runtime_artifact_url}/runtime-artifacts/{item['artifact_id']}/content",
                                    "role": "reference"})
-                if service in {"h3-sol", "h3-vdn"}:
+                if service in {"h3-sol", "h3-vdn", "h3-singularity"}:
                     asset = self.artifacts.get(item["artifact_id"], project_id)
                     conditions[-1].update(sha256=asset.sha256, size=asset.size)
                 material_tags.append(f"<{tag_name[kind]} {index}> is the approved {item['purpose']} reference")
-        compiled_prompt = "; ".join(material_tags) + ". " + request["prompt"]
+        compiled_prompt = request["prompt"] if service == "h3-singularity" else "; ".join(material_tags) + ". " + request["prompt"]
         payload = {"model": "MiniMaxAI/MiniMax-H3", "task": "ref2va", "prompt": compiled_prompt,
                    "seconds": duration_seconds, "conditions": conditions,
                    "target": {"short_edge": 768, "aspect_ratio": aspect_ratio, "duration_seconds": float(duration_seconds)},
@@ -299,8 +437,14 @@ class VideoExecutor:
         except (httpx.ConnectError, httpx.ConnectTimeout):
             return self.tasks.update(reserved, status="failed", error={
                 "code": "runtime_unavailable", "message": "H3 runtime is unreachable; generation was not submitted"})
+        except httpx.HTTPStatusError as error:
+            if 400 <= error.response.status_code < 500:
+                return self.tasks.update(reserved, status="failed", error={"code": "runtime_rejected",
+                    "message": f"Runtime rejected submission (HTTP {error.response.status_code})"})
+            return self.tasks.update(reserved, status="queued" if service == "h3-singularity" else "failed",
+                error={"code": "submission_unconfirmed", "message": "Runtime submission could not be confirmed; do not resubmit automatically"})
         except (httpx.HTTPError, KeyError, ValueError, TypeError):
-            return self.tasks.update(reserved, status="failed", error={"code": "submission_unconfirmed",
+            return self.tasks.update(reserved, status="queued" if service == "h3-singularity" else "failed", error={"code": "submission_unconfirmed",
                               "message": "Runtime submission could not be confirmed; do not resubmit automatically"})
         return self.tasks.update(reserved, runtime_task_id=runtime_task_id,
                                  dispatched_at=datetime.now(UTC).isoformat())
@@ -308,6 +452,23 @@ class VideoExecutor:
     @serialized
     def status(self, video_task_id: str) -> TaskRecord:
         record = self.tasks.get(video_task_id)
+        if (record.service == "h3-singularity" and not record.runtime_task_id
+            and (record.error or {}).get("code") == "submission_unconfirmed"):
+            url, headers, _, _ = self.runtime(self._record_route(record))
+            try:
+                response = self.client.get(f"{url}/v1/videos/by-idempotency/{record.video_task_id}", headers=headers, timeout=10)
+                if response.status_code == 404:
+                    # A delayed submission can still arrive; absence is not
+                    # permission to change keys or dispatch another GPU job.
+                    return self.tasks.update(record, status="queued")
+                response.raise_for_status()
+                recovered = response.json()
+                identity = recovered.get("id")
+                if not isinstance(identity, str) or not re.fullmatch(r"singularity_[0-9a-f]{32}", identity):
+                    raise ValueError("invalid recovered identity")
+            except (httpx.HTTPError, ValueError, AttributeError) as error:
+                raise ExecutionError("Singularity submission remains unconfirmed; retain the original task and key") from error
+            record = self.tasks.update(record, runtime_task_id=identity, status="queued", error=None)
         if record.service == "fal":
             from .providers.fal import FalError
             try:
@@ -347,8 +508,11 @@ class VideoExecutor:
         stage = runtime_data.get("stage")
         if stage not in {"queued", "downloading", "warming", "generating", "saving", "completed", "interrupted", "download_failed", "engine_failed"}:
             stage = None
+        metrics = runtime_data.get("runtime_metrics") or ({"runtime_total_seconds": runtime_data["result"]["generate_seconds"]} if isinstance(runtime_data.get("result"), dict) and isinstance(runtime_data["result"].get("generate_seconds"), (int, float)) else {})
+        if record.service == "h3-singularity" and isinstance(runtime_data.get("result"), dict):
+            metrics = {**metrics, "result_sha256": runtime_data["result"].get("content_sha256")}
         return self.tasks.update(record, status=mapped, error=error, execution_instance_id=identity,
-                                 runtime_stage=stage, runtime_metrics=runtime_data.get("runtime_metrics") or ({"runtime_total_seconds": runtime_data["result"]["generate_seconds"]} if isinstance(runtime_data.get("result"), dict) and isinstance(runtime_data["result"].get("generate_seconds"), (int, float)) else None))
+                                 runtime_stage=stage, runtime_metrics=metrics or None)
 
     @serialized
     def result(self, video_task_id: str) -> TaskRecord:
@@ -375,11 +539,19 @@ class VideoExecutor:
             payload = response.content
         except httpx.HTTPError as error:
             raise ExecutionError("H3 result download failed") from error
-        with tempfile.NamedTemporaryFile(suffix=".mp4") as temp:
-            temp.write(payload); temp.flush()
-            probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
-                                    "format=duration:stream=codec_type,codec_name,width,height,r_frame_rate,sample_rate,channels",
-                                    "-of", "json", temp.name], check=True, capture_output=True, text=True)
+        expected = record.request.get("resolved_output") if record.service == "h3-singularity" else None
+        digest = hashlib.sha256(payload).hexdigest()
+        if expected and digest != (record.runtime_metrics or {}).get("result_sha256"):
+            raise ExecutionError("Singularity result SHA-256 mismatch or missing runtime digest")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "result.mp4"
+            path.write_bytes(payload)
+            probe = _check_media(["ffprobe", "-v", "error", "-count_frames", "-show_entries",
+                                    "format=duration:stream=codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate,nb_read_frames,duration,sample_rate,channels",
+                                    "-of", "json", str(path)], text=True, timeout=120)
+            if expected:
+                _check_media(["ffmpeg", "-v", "error", "-xerror", "-i", str(path), "-map", "0:v:0",
+                              "-map", "0:a:0", "-f", "null", "-"], timeout=180)
         data = json.loads(probe.stdout)
         video = next((s for s in data["streams"] if s["codec_type"] == "video"), None)
         audio = next((s for s in data["streams"] if s["codec_type"] == "audio"), None)
@@ -389,7 +561,18 @@ class VideoExecutor:
         expected_ms = int(record.request["duration_seconds"]) * 1000
         # H3 rounds generation to its internal temporal frame bucket, which can
         # leave less than one second of edit handle beyond the requested length.
-        if abs(duration_ms - expected_ms) > H3_DURATION_TOLERANCE_MS:
+        if expected:
+            if (video.get("width"), video.get("height"), int(video.get("nb_read_frames", 0))) != (expected["width"], expected["height"], expected["frames"]):
+                raise ExecutionError("Singularity output geometry or decoded frame count differs from resolved request")
+            if video.get("avg_frame_rate") != "24/1":
+                raise ExecutionError("Singularity output must have constant 24 FPS")
+            if not audio or audio.get("codec_name") != "aac" or int(audio.get("channels", 0)) != 2:
+                raise ExecutionError("Singularity result requires stereo AAC audio")
+            if abs(float(video.get("duration", 0)) - expected["video_duration_seconds"]) > 1 / 24:
+                raise ExecutionError("Singularity video stream duration mismatch")
+            if abs(float(audio.get("duration", 0)) - expected["video_duration_seconds"]) > 0.1:
+                raise ExecutionError("Singularity audio stream duration mismatch")
+        elif abs(duration_ms - expected_ms) > H3_DURATION_TOLERANCE_MS:
             raise ExecutionError("H3 result duration is outside the approved tolerance")
         artifact = self.artifacts.create_from_chunks(project_id=record.project_id, operation="video.result",
                                                      filename=f"{record.video_task_id}.mp4", media_type="video/mp4",
@@ -398,4 +581,8 @@ class VideoExecutor:
                  "frame_rate": 24, "video_codec": "h264", "audio_codec": audio.get("codec_name") if audio else None,
                  "audio_sample_rate": int(audio["sample_rate"]) if audio and audio.get("sample_rate") else None,
                  "audio_channels": audio.get("channels") if audio else None}
+        if expected:
+            media.update(frames=int(video["nb_read_frames"]), video_duration_seconds=float(video["duration"]),
+                         audio_duration_seconds=float(audio["duration"]), sha256=digest, resolved_output=expected,
+                         complete_decode_verified=True)
         return self.tasks.update(record, artifact_id=artifact.artifact_id, media=media)

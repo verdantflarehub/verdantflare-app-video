@@ -19,7 +19,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 
-from .artifacts import ArtifactError, ArtifactNotFound, ArtifactStore
+from .artifacts import ArtifactError, ArtifactNotFound, ArtifactStore, require_project_id
 from .executor import ExecutionError, VideoExecutor
 from .dashboard import Dashboard
 from .registry import EtcdRegistry
@@ -42,15 +42,15 @@ VIDEO_TOOLS_SCHEMA = [
             "properties": {
                 "prompt": {"type": "string", "description": "Text prompt describing the desired video"},
                 "model": {"type": "string", "default": "minimax-h3-ref2va", "description": "Business model to use"},
-                "aspect_ratio": {"type": "string", "enum": ["16:9", "9:16", "1:1", "4:3", "3:4"], "default": "16:9"},
-                "duration_seconds": {"type": "integer", "enum": [5, 6, 10], "default": 5},
-                "route": {"type": "string", "default": "fal", "description": "Execution channel route"},
+                "aspect_ratio": {"type": "string", "enum": ["adaptive", "21:9", "16:9", "9:16", "1:1", "4:3", "3:4"], "default": "16:9", "description": "Check video.capabilities for route-specific adapter limits, not model limits"},
+                "duration_seconds": {"type": "integer", "minimum": 4, "maximum": 15, "default": 5},
+                "route": {"type": "string", "description": "Execution channel; omitted uses the host default from video.capabilities"},
                 "quality_profile": {"type": "string", "default": "du-0"},
                 "references": {"type": "object", "description": "Reference assets mapping"},
                 "project_id": {"type": "string", "description": "Project ID"},
                 "idempotency_key": {"type": "string", "description": "Unique idempotency key"},
             },
-            "required": ["prompt"],
+            "required": ["prompt", "project_id", "idempotency_key"],
         },
     },
     {
@@ -122,6 +122,18 @@ VIDEO_TOOLS_SCHEMA = [
     },
 ]
 
+VIDEO_TOOLS_SCHEMA.extend([
+    {"name": "video.capabilities", "description": "Read host defaults, adapter limits and live Singularity readiness; readiness does not prove GPU generation acceptance.",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "video.import", "description": "Import an allowed HTTPS asset or up to 3 MiB of PNG/JPEG/WebP bytes into Video; does not resolve central ContentRefs.",
+     "inputSchema": {"type": "object", "properties": {
+         "project_id": {"type": "string"}, "filename": {"type": "string"},
+         "expected_sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+         "source_url": {"type": "string"}, "content_base64": {"type": "string", "maxLength": 4194304},
+     }, "required": ["project_id", "filename", "expected_sha256"],
+     "oneOf": [{"required": ["source_url"], "not": {"required": ["content_base64"]}},
+               {"required": ["content_base64"], "not": {"required": ["source_url"]}}]}},
+])
 registry = EtcdRegistry(domain="video", tools=VIDEO_TOOLS_SCHEMA)
 
 
@@ -292,6 +304,76 @@ def _result(value: dict[str, object]) -> types.CallToolResult:
     return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(value, ensure_ascii=False))], structuredContent=value)
 
 
+@mcp.tool(name="video.capabilities")
+def video_capabilities() -> types.CallToolResult:
+    """Read adapter limits and live Singularity readiness; readiness is not GPU acceptance."""
+    return _result(executor.capabilities())
+
+
+@mcp.tool(name="video.import")
+def video_import(project_id: str, filename: str, expected_sha256: str,
+                 source_url: str | None = None, content_base64: str | None = None) -> types.CallToolResult:
+    """Import exactly one allowed HTTPS source or <=3 MiB image payload; never resolve central IDs."""
+    if (source_url is None) == (content_base64 is None):
+        raise ValueError("provide exactly one of source_url or content_base64")
+    common = dict(project_id=project_id, filename=filename, expected_sha256=expected_sha256)
+    record = (executor.import_image(**common, content_base64=content_base64) if content_base64 is not None
+              else executor.import_asset(**common, source_url=source_url))
+    return _result({"status": "completed", "project_id": record.project_id, "artifact": record.model_dump(),
+                    "download_path": artifacts.download_path(record.artifact_id)})
+
+
+@mcp.tool(name="video.import.prepare")
+def video_import_prepare(project_id: str, idempotency_key: str, filename: str, size: int,
+                         sha256: str, purpose: str, source_content_ref: dict[str, str] | None = None) -> types.CallToolResult:
+    """Prepare resumable media import. A claimed ContentRef grants no central read permission."""
+    return _result(executor.imports.prepare(project_id=project_id, idempotency_key=idempotency_key,
+        filename=filename, size=size, sha256=sha256, purpose=purpose, source_content_ref=source_content_ref))
+
+
+@mcp.tool(name="video.import.chunk")
+def video_import_chunk(project_id: str, import_id: str, offset: int, content_base64: str, sha256: str) -> types.CallToolResult:
+    """Append up to 512 KiB at the confirmed offset; identical repeated bytes are safe."""
+    return _result(executor.imports.chunk(project_id=project_id, import_id=import_id, offset=offset,
+        content_base64=content_base64, sha256=sha256))
+
+
+@mcp.tool(name="video.import.status")
+def video_import_status(project_id: str, import_id: str) -> types.CallToolResult:
+    """Read the durable offset and final immutable identity after an interrupted upload."""
+    return _result(executor.imports.status(project_id=project_id, import_id=import_id))
+
+
+@mcp.tool(name="video.import.commit")
+def video_import_commit(project_id: str, import_id: str) -> types.CallToolResult:
+    """Verify all bytes and decode media before publishing a native Video artifact."""
+    return _result(executor.imports.commit(project_id=project_id, import_id=import_id))
+
+
+@mcp.tool(name="video.preflight")
+def video_preflight(project_id: str, prompt: str, references: dict[str, list[dict[str, str]]],
+                    duration_seconds: int = 5, aspect_ratio: str = "16:9",
+                    model: str = "minimax-h3-ref2va", route: str | None = None,
+                    quality_profile: str = "du-0") -> types.CallToolResult:
+    """Validate Singularity media and reveal native output and reference labels without creating a task."""
+    selected = route or executor.runtime_route
+    if selected != "h3-singularity":
+        raise ValueError("video.preflight currently supports h3-singularity")
+    executor.runtime(selected)
+    request, digest = executor._normalize(require_project_id(project_id), model, prompt,
+        duration_seconds, aspect_ratio, references, selected, quality_profile)
+    return _result({"status": "validated", "gpu_verified": False, "input_digest": digest,
+                    "resolved_output": request["resolved_output"], "reference_mapping": request["reference_mapping"],
+                    "reference_media": request["reference_media"], "prompt": request["prompt"]})
+
+
+# Publish the registered parameter schemas instead of maintaining a second
+# copy for Studio discovery. MCP is pinned; parity is checked in local tests.
+for _name in ("video.import.prepare", "video.import.chunk", "video.import.status", "video.import.commit", "video.preflight"):
+    _tool = mcp._tool_manager.get_tool(_name)
+    VIDEO_TOOLS_SCHEMA.append({"name": _name, "description": _tool.description, "inputSchema": _tool.parameters})
+
+
 @mcp.tool(name="artifact.import")
 def artifact_import(project_id: str, source_url: str, filename: str, expected_sha256: str) -> types.CallToolResult:
     record = executor.import_asset(project_id=project_id, source_url=source_url, filename=filename, expected_sha256=expected_sha256)
@@ -302,22 +384,22 @@ def artifact_import(project_id: str, source_url: str, filename: str, expected_sh
 @mcp.tool(name="video.create")
 def video_create(prompt: str,
                  project_id: str,
-                 idempotency_key: str = "",
+                 idempotency_key: str,
                  model: str = "minimax-h3-ref2va",
                  duration_seconds: int = 5,
                  aspect_ratio: str = "16:9",
                  references: dict[str, list[dict[str, str]]] | None = None,
-                 route: str = "fal",
+                 route: str | None = None,
                  quality_profile: str = "du-0") -> types.CallToolResult:
     """Create an asynchronous video generation task."""
-    import uuid
-    actual_idem = idempotency_key or f"idem_{uuid.uuid4().hex[:12]}"
-    record = executor.generate(project_id=project_id, idempotency_key=actual_idem, model=model,
+    record = executor.generate(project_id=project_id, idempotency_key=idempotency_key, model=model,
                                prompt=prompt, duration_seconds=duration_seconds,
                                aspect_ratio=aspect_ratio, references=references or {}, route=route,
                                quality_profile=quality_profile)
     return _result({"task_id": record.video_task_id, "video_task_id": record.video_task_id,
-                    "status": record.status, "created_at": record.created_at, "error": record.error})
+                    "status": record.status, "created_at": record.created_at, "error": record.error,
+                    "resolved_output": record.request.get("resolved_output"),
+                    "reference_mapping": record.request.get("reference_mapping")})
 
 
 @mcp.tool(name="video.generate")

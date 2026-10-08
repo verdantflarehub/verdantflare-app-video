@@ -18,7 +18,8 @@ def request(key="a"):
         "idempotency_key": "video_task_" + key * 32,
         "model": "MiniMaxAI/MiniMax-H3", "task": "ref2va",
         "prompt": "A landscape", "seconds": 5,
-        "conditions": [{"type": "image", "role": "reference"}],
+        "conditions": [{"type": "image", "role": "reference", "uri": "http://video-mcp-server:8000/runtime-artifacts/art_" + "b" * 32 + "/content",
+                        "size": 3, "sha256": "a" * 64}],
         "target": {"aspect_ratio": "16:9"},
     }
 
@@ -112,6 +113,23 @@ class RecoveryTests(unittest.TestCase):
                 headers={"Authorization": "Bearer test-token"},
             )
             self.assertEqual(response.status_code, 413)
+
+    def test_idempotency_recovery_works_when_runtime_is_not_ready(self):
+        task = self.queue.submit(request())
+
+        def unavailable():
+            raise RuntimeErrorCode("model_unavailable")
+
+        with TestClient(create_app(self.queue, unavailable, "test-token")) as client:
+            headers = {"Authorization": "Bearer test-token"}
+            self.wait_for(lambda: client.get("/live").status_code == 503)
+            found = client.get("/v1/videos/by-idempotency/" + request()["idempotency_key"], headers=headers)
+            self.assertEqual(found.json()["id"], task["id"])
+            replay = client.post("/v1/videos", json=request(), headers=headers)
+            self.assertEqual(replay.status_code, 200)
+            self.assertEqual(replay.json()["id"], task["id"])
+            conflict = client.post("/v1/videos", json={**request(), "prompt": "changed"}, headers=headers)
+            self.assertEqual(conflict.status_code, 409)
 
 
 if __name__ == "__main__":

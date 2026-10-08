@@ -105,6 +105,13 @@ class Queue:
             )
         return self.get(task_id)
 
+    def find_idempotency(self, key: str) -> dict | None:
+        if not isinstance(key, str) or not re.fullmatch(r"video_task_[0-9a-f]{32}", key):
+            raise QueueError("invalid_idempotency_key")
+        with self.lock:
+            row = self.db.execute("SELECT id FROM tasks WHERE idempotency_key=?", (key,)).fetchone()
+            return self.get(row["id"]) if row else None
+
     def take(self) -> dict | None:
         with self.lock, self.db:
             row = self.db.execute(

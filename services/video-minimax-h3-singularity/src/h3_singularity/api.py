@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from .errors import RuntimeErrorCode
+from .contract import validate_reference, validate_request
 from .queue import Queue, QueueError
 
 
@@ -28,11 +29,12 @@ def _download_references(task_root: Path, conditions: list[dict]) -> dict[str, l
     client = httpx.Client(timeout=httpx.Timeout(connect=10, read=600, write=30, pool=10), follow_redirects=False)
     try:
         for index, item in enumerate(conditions):
+            validate_reference(item, os.environ.get("SINGULARITY_REFERENCE_BASE_URL", "http://video-mcp-server:8000"))
             if not isinstance(item, dict) or item.get("role") != "reference":
                 raise RuntimeErrorCode("invalid_reference")
             kind = {"image": "images", "video": "videos", "audio": "audios"}.get(item.get("type"))
             uri = item.get("uri")
-            if kind is None or not isinstance(uri, str) or not uri.startswith("http://"):
+            if kind is None:
                 raise RuntimeErrorCode("invalid_reference")
             target = task_root / f"reference_{index:02d}_{kind[:-1]}.bin"
             digest = hashlib.sha256()
@@ -42,13 +44,13 @@ def _download_references(task_root: Path, conditions: list[dict]) -> dict[str, l
                 with target.open("wb") as stream:
                     for block in response.iter_bytes(1024 * 1024):
                         size += len(block)
-                        if size > MAX_ARTIFACT_BYTES:
+                        if size > min(MAX_ARTIFACT_BYTES, item["size"]):
                             raise RuntimeErrorCode("reference_too_large")
                         digest.update(block)
                         stream.write(block)
-            if item.get("size") is not None and int(item["size"]) != size:
+            if item["size"] != size:
                 raise RuntimeErrorCode("reference_size_mismatch")
-            if item.get("sha256") is not None and str(item["sha256"]).lower() != digest.hexdigest():
+            if item["sha256"] != digest.hexdigest():
                 raise RuntimeErrorCode("reference_hash_mismatch")
             result[kind].append(target)
     except httpx.HTTPError as exc:
@@ -163,16 +165,9 @@ def create_app(queue: Queue, engine_factory, token: str):
                 if len(body) > MAX_REQUEST_BYTES:
                     raise HTTPException(413, "body_too_large")
             payload = json.loads(body)
-            required = {"idempotency_key", "model", "task", "prompt", "seconds", "conditions", "target"}
-            if not isinstance(payload, dict) or not required <= payload.keys():
-                raise ValueError("invalid_fields")
-            if payload["model"] != "MiniMaxAI/MiniMax-H3" or payload["task"] != "ref2va":
-                raise ValueError("unsupported_model_or_task")
-            if not isinstance(payload["conditions"], list) or not payload["conditions"]:
-                raise ValueError("references_required")
-            if int(payload.get("num_inference_steps", 4)) != 4:
-                raise ValueError("singularity_requires_4_nfe")
-            if not state["ready"]:
+            validate_request(payload, os.environ.get("SINGULARITY_REFERENCE_BASE_URL", "http://video-mcp-server:8000"))
+            previous = queue.find_idempotency(payload["idempotency_key"])
+            if not state["ready"] and previous is None:
                 raise HTTPException(503, "not_ready")
             accepted = queue.submit(payload)
             return {"id": accepted["id"], "object": "video", "status": accepted["status"]}
@@ -190,6 +185,16 @@ def create_app(queue: Queue, engine_factory, token: str):
             return queue.get(task_id)
         except (KeyError, QueueError):
             raise HTTPException(404, "not_found") from None
+
+    @app.get("/v1/videos/by-idempotency/{key}")
+    def find_by_idempotency(key: str):
+        try:
+            result = queue.find_idempotency(key)
+        except QueueError:
+            raise HTTPException(422, "invalid_idempotency_key") from None
+        if result is None:
+            raise HTTPException(404, "not_found")
+        return result
 
     @app.get("/v1/videos/{task_id}/content")
     def content(task_id: str):

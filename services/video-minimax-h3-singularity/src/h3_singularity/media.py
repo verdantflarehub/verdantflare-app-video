@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import math
 from pathlib import Path
 import subprocess
 import wave
@@ -24,54 +25,113 @@ def sha256(path: Path) -> str:
 
 def load_image(path: Path) -> torch.Tensor:
     with Image.open(path) as image:
+        if min(image.size) < 32 or image.width * image.height > 16 * 1024 * 1024 or getattr(image, "n_frames", 1) != 1:
+            raise ValueError("image_decode_budget_exceeded")
         image = ImageOps.exif_transpose(image).convert("RGB")
         array = np.asarray(image, dtype=np.float32) / 255.0
     return torch.from_numpy(array)[None]
 
 
 def load_video(path: Path) -> tuple[torch.Tensor, dict | None, float]:
+    """Sample the source presentation timeline at H3's 24 FPS.
+
+    Decode sound in a fresh container: the video iterator has already reached
+    EOF. Stream objects, rather than absolute stream indices, select audio.
+    """
     with av.open(str(path)) as container:
+        if not container.streams.video:
+            raise ValueError("video_has_no_stream")
         stream = container.streams.video[0]
         fps = float(stream.average_rate or stream.base_rate or 24)
-        frames = [torch.from_numpy(frame.to_ndarray(format="rgb24").astype(np.float32) / 255.0) for frame in container.decode(stream)]
-        audio_stream = container.streams.audio[0] if container.streams.audio else None
-        audio = None
-        if audio_stream is not None:
-            chunks = []
-            rate = audio_stream.codec_context.sample_rate or 32000
-            for frame in container.decode(audio=audio_stream.index):
-                data = frame.to_ndarray()
-                if data.ndim == 1:
-                    data = data[None, :]
-                elif data.shape[0] != audio_stream.channels:
-                    data = data.reshape(-1, audio_stream.channels).T
-                scale = 32768.0 if data.dtype.kind in "iu" else 1.0
-                chunks.append(torch.from_numpy(data.astype(np.float32) / scale))
-            if chunks:
-                audio = {"waveform": torch.cat(chunks, dim=1)[None], "sample_rate": int(rate)}
+        if not 0 < fps <= 120 or stream.width * stream.height > 4096 * 2160:
+            raise ValueError("video_decode_budget_exceeded")
+        frames, timestamps = [], []
+        last_duration = 1 / fps
+        for frame in container.decode(stream):
+            timestamp = float(frame.time) if frame.time is not None else len(frames) / fps
+            if ((len(frames) + 1) * frame.width * frame.height > 1_000_000_000
+                or timestamps and timestamp - timestamps[0] > 15.001):
+                raise ValueError("video_decode_budget_exceeded")
+            if timestamps and timestamp <= timestamps[-1]:
+                raise ValueError("video_nonmonotonic_timestamps")
+            timestamps.append(timestamp)
+            frames.append(frame.to_ndarray(format="rgb24"))
+            last_duration = float(frame.duration * frame.time_base) if frame.duration and frame.time_base else 1 / fps
+        has_audio = bool(container.streams.audio)
     if not frames:
         raise ValueError("video_has_no_frame")
-    return torch.stack(frames), audio, fps
+    start = timestamps[0]
+    duration = timestamps[-1] - start + last_duration
+    count = max(1, math.ceil(duration * 24 - 1e-6))
+    indices = np.searchsorted(np.asarray(timestamps) - start, np.arange(count) / 24 + 1e-8, side="right") - 1
+    sampled = np.stack([frames[max(0, int(index))] for index in indices])
+    audio = load_audio(path, start_seconds=start, duration_seconds=count / 24) if has_audio else None
+    return torch.from_numpy(sampled.astype(np.float32) / 255.0), audio, 24.0
 
 
-def load_audio(path: Path) -> dict:
+def align_video_reference(frames: torch.Tensor, audio: dict | None, output_frames: int):
+    """Match the pinned node's downward reference bucket, including its sound."""
+    count = min(len(frames), output_frames)
+    count -= (count - 5) % 17
+    if count < 5:
+        raise ValueError("reference_video_too_short")
+    if audio is not None:
+        audio = {**audio, "waveform": audio["waveform"][..., :round(count / 24 * audio["sample_rate"])]}
+    return frames[:count], audio
+
+
+def load_audio(path: Path, *, start_seconds: float | None = None, duration_seconds: float | None = None) -> dict:
+    """Normalize PCM through FFmpeg to planar float, retaining channel order.
+
+    A paired video supplies its timeline origin and duration. Preserve audio
+    offsets with silence and trim only samples outside that video interval.
+    """
     with av.open(str(path)) as container:
         if not container.streams.audio:
             raise ValueError("audio_has_no_stream")
         stream = container.streams.audio[0]
         rate = stream.codec_context.sample_rate or 32000
+        if not 1 <= len(stream.layout.channels) <= 2 or not 0 < rate <= 192000:
+            raise ValueError("audio_decode_budget_exceeded")
+        resampler = av.AudioResampler(format="fltp", layout=stream.layout.name, rate=rate)
         chunks = []
-        for frame in container.decode(audio=stream.index):
+        cursor = 0
+        origin = start_seconds
+
+        def append(frame):
+            nonlocal origin, cursor
             data = frame.to_ndarray()
-            if data.ndim == 1:
-                data = data[None, :]
-            elif data.shape[0] != stream.channels:
-                data = data.reshape(-1, stream.channels).T
-            scale = 32768.0 if data.dtype.kind in "iu" else 1.0
-            chunks.append(torch.from_numpy(data.astype(np.float32) / scale))
+            timestamp = float(frame.time) if frame.time is not None else (origin or 0) + cursor / rate
+            if origin is None:
+                origin = timestamp
+            offset = round((timestamp - origin) * rate)
+            if offset + data.shape[1] > math.ceil(15.1 * rate):
+                raise ValueError("audio_decode_budget_exceeded")
+            # Discard encoder priming or overlapping samples before the origin.
+            skip = max(0, cursor - offset)
+            data = data[:, skip:]
+            offset += skip
+            if data.shape[1] == 0:
+                return
+            if offset > cursor:
+                chunks.append(torch.zeros((data.shape[0], offset - cursor)))
+            chunks.append(torch.from_numpy(data.copy()))
+            cursor = offset + data.shape[1]
+
+        for frame in container.decode(stream):
+            for converted in resampler.resample(frame):
+                append(converted)
+        for converted in resampler.resample(None):
+            append(converted)
     if not chunks:
         raise ValueError("audio_has_no_frame")
-    return {"waveform": torch.cat(chunks, dim=1)[None], "sample_rate": int(rate)}
+    waveform = torch.cat(chunks, dim=1)
+    if duration_seconds is not None:
+        length = round(duration_seconds * rate)
+        waveform = waveform[:, :length]
+        if waveform.shape[1] < length:
+            waveform = torch.nn.functional.pad(waveform, (0, length - waveform.shape[1]))
+    return {"waveform": waveform[None], "sample_rate": int(rate)}
 
 
 def _write_wav(path: Path, waveform: torch.Tensor, sample_rate: int) -> None:

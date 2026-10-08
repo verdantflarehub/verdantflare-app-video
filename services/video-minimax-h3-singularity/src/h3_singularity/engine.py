@@ -10,9 +10,10 @@ import uuid
 
 import torch
 
-from .media import load_audio, load_image, load_video, mux_mp4, sha256
+from .media import load_audio, load_image, load_video, align_video_reference, mux_mp4, sha256
 from .errors import RuntimeErrorCode
 from . import __version__
+from .contract import ASPECT_RATIOS, resolve_geometry, resolve_timing
 from .hr_refine import (
     audio_range,
     h3_resize_video,
@@ -333,6 +334,10 @@ class Engine:
             "upscaler": self.upscaler_name if self.dual_sample_mode != "off" else None,
             "gpu_count": torch.cuda.device_count(),
             "cpu_offload": True,
+            "capabilities": {"aspect_ratios": list(ASPECT_RATIOS), "quality_profiles": ["du-0"],
+                             "duration_seconds": {"minimum": 4, "maximum": 15},
+                             "frame_grid": "17k+5", "fps": 24,
+                             "canvases": {ratio: resolve_geometry(ratio) for ratio in ASPECT_RATIOS if ratio != "adaptive"}},
         }
 
     @staticmethod
@@ -614,10 +619,6 @@ class Engine:
         if request.get("task") != "ref2va":
             raise RuntimeErrorCode("unsupported_task")
         target = request.get("target") or {}
-        width = int(target.get("width") or 768)
-        height = int(target.get("height") or 1344)
-        if width != 768 or height != 1344:
-            raise RuntimeErrorCode("unsupported_geometry")
         steps = int(request.get("num_inference_steps", 4))
         if steps != 4:
             raise RuntimeErrorCode("singularity_requires_4_nfe")
@@ -632,8 +633,6 @@ class Engine:
             raise RuntimeErrorCode("dual_sample_profile_unavailable")
         # DU-3 uses the 640x1120 latent grid for the first 2 NFE, then
         # upscales [70,40] to [84,48] before the final 2 NFE at 768x1344.
-        generation_width = 640 if quality_profile in {"du-3", "hr-refine-tile-v1", "hr-refine-global-v2", "hybrid-4+3", "hybrid-4+2"} else width
-        generation_height = 1120 if quality_profile in {"du-3", "hr-refine-tile-v1", "hr-refine-global-v2", "hybrid-4+3", "hybrid-4+2"} else height
         seed = int(request.get("seed", 7))
         if not 0 <= seed <= 0xFFFFFFFF:
             raise RuntimeErrorCode("invalid_seed")
@@ -641,12 +640,17 @@ class Engine:
         decode_started = time.perf_counter()
         images = [load_image(path) for path in files.get("images", [])]
         videos = []
+        timing = resolve_timing(request["seconds"])
+        first_video_size = None
         video_audios = {}
         video_scale = float(os.environ.get("SINGULARITY_REFERENCE_VIDEO_SCALE", "0.5"))
         if not 0.25 <= video_scale <= 1.0:
             raise RuntimeErrorCode("invalid_reference_video_scale")
         for index, path in enumerate(files.get("videos", [])):
             frames, audio, _fps = load_video(path)
+            frames, audio = align_video_reference(frames, audio, timing["frames"])
+            if first_video_size is None:
+                first_video_size = (int(frames.shape[2]), int(frames.shape[1]))
             if video_scale < 1.0:
                 scaled_height = max(16, int(frames.shape[1] * video_scale) // 16 * 16)
                 scaled_width = max(16, int(frames.shape[2] * video_scale) // 16 * 16)
@@ -657,7 +661,16 @@ class Engine:
             if audio is not None:
                 video_audios[f"ref_video_audio_{index}"] = audio
         audios = [load_audio(path) for path in files.get("audios", [])]
+        source_size = (int(images[0].shape[2]), int(images[0].shape[1])) if images else first_video_size
+        geometry = resolve_geometry(target.get("aspect_ratio", "9:16"),
+                                    source_size)
+        width, height = geometry["width"], geometry["height"]
+        if quality_profile != "du-0":
+            raise RuntimeErrorCode("quality_profile_not_available")
+        generation_width, generation_height = width, height
+        timing = resolve_timing(request["seconds"])
         timings = {
+            "resolved_output": {**geometry, **timing},
             "reference_decode_seconds": time.perf_counter() - decode_started,
             "reference_image_count": len(images),
             "reference_video_count": len(videos),
@@ -668,7 +681,7 @@ class Engine:
             "vae_decoder_tile_size": self.vae_decoder_tile_size,
         }
         self._active_timings = timings
-        if not images and not videos:
+        if not images and not videos and not audios:
             raise RuntimeErrorCode("reference_required")
         set_stage("warming")
         for index in range(torch.cuda.device_count()):
@@ -751,7 +764,7 @@ class Engine:
         seconds = float(request.get("seconds", 15))
         # The frozen 15-second fixture is 345 frames (14.375 s), already on
         # H3's 17k+5 temporal grid. Preserve that exact comparison geometry.
-        length = 345 if seconds == 15 else int(round(seconds * 24))
+        length = timing["frames"]
         try:
             # ProjectedCLIP forwards ordinary attribute writes to _base;
             # shadow the wrapper method itself so Qwen timing/stage is real.

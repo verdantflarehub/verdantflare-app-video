@@ -77,12 +77,15 @@ class ArtifactStore:
 
     def create_from_chunks(self, *, project_id: str, operation: str, filename: str,
                            media_type: str, chunks: Iterable[bytes],
-                           expected_sha256: str | None = None) -> ArtifactRecord:
+                           expected_sha256: str | None = None,
+                           artifact_id: str | None = None) -> ArtifactRecord:
         project = require_project_id(project_id)
         filename = require_filename(filename)
         self.ensure_ready()
-        artifact_id = f"art_{uuid.uuid4().hex}"
+        artifact_id = require_artifact_id(artifact_id) if artifact_id is not None else f"art_{uuid.uuid4().hex}"
         final = self.artifacts_root / artifact_id
+        if final.exists():
+            raise ArtifactError("artifact identity already exists")
         pending = Path(tempfile.mkdtemp(prefix=".pending-", dir=self.artifacts_root))
         try:
             size = 0
@@ -107,7 +110,9 @@ class ArtifactStore:
                 created_at=datetime.now(UTC).isoformat(),
             )
             (pending / "metadata.json").write_text(record.model_dump_json(indent=2) + "\n", encoding="utf-8")
-            os.replace(pending, final)
+            # A preassigned import identity is immutable, including after a
+            # lost commit response. Never replace an existing artifact.
+            os.rename(pending, final)
             return record
         except Exception:
             shutil.rmtree(pending, ignore_errors=True)
@@ -138,4 +143,3 @@ class ArtifactStore:
 
     def download_url(self, artifact_id: str) -> str | None:
         return f"{self.public_base_url}{self.download_path(artifact_id)}" if self.public_base_url else None
-
