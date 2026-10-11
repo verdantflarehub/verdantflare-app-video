@@ -178,7 +178,7 @@ class GrokVideoAdapter:
             if r.status_code in {401, 403, 400, 422}:
                 return self.error(rec, "provider_auth_failed" if r.status_code in {401,403} else "provider_rejected", terminal=True)
             if not r.is_success:
-                raise ValueError
+                return self.error(rec, f"provider_http_{r.status_code}", stage="submission_unknown")
             identity = r.json()["request_id"]
             if not isinstance(identity, str) or not identity or len(identity) > 256:
                 raise ValueError
@@ -205,7 +205,7 @@ class GrokVideoAdapter:
                 except (OSError, ValueError):
                     return self.error(rec, "source_integrity_failed", terminal=True)
             if not rec.runtime_task_id:
-                return self.error(rec, "submission_unknown", stage="submission_unknown", delay=300)
+                return self.error(rec, (rec.error or {}).get("code", "submission_unknown"), stage="submission_unknown", delay=300)
             output = self.output_path(rec)
             if output.exists() and state.get("result_sha256"):
                 return self.collect(rec)

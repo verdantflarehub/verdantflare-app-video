@@ -193,6 +193,12 @@ function renderModels(data){
   const modelCards=data.models.map(m=>`<button class="business-card" data-resource="model" data-model="${escapeHTML(m.id)}"><h3>${escapeHTML(m.name)}</h3><span class="business-state ${data.state==='fresh'&&m.deployment_status==='online'?'':'stale'}">${deploymentLabels[m.deployment_status]||'未知'}</span><div class="instance-counts"><div><strong>${m.ready??'—'}</strong><span>就绪实例</span></div><div><strong>${m.current??'—'}</strong><span>当前实例</span></div><div><strong>${m.desired??'—'}</strong><span>期望实例</span></div></div><p>模型：${escapeHTML(m.model_type||'minimax-h3-ref2va')} · 渠道：${escapeHTML(m.route)}</p><p>MCP 路由：${m.route_status==='connected'?'已接入':m.route_status==='not_connected'?'未接入':'未知'}</p><div class="business-foot">查看 ${escapeHTML(m.name)} 实例列表 →</div></button>`).join('');
   $("modelServices").innerHTML=catalogModels(data);
   $("channelServices").innerHTML=modelCards;
+  if(grokCapability){
+    const card=document.createElement('article');card.className='business-card';
+    const title=document.createElement('h3');title.textContent=grokCapability.model;
+    const description=document.createElement('p');description.textContent=`渠道：Grok · ${grokCapability.enabled&&grokCapability.configured?'已配置；生成状态请见任务':'未启用或未配置'} · 文生视频 / 单张首帧图生视频 · 480p / 720p`;
+    card.append(title,description);$("channelServices").append(card);
+  }
 }
 async function refreshBusiness(){
   if(businessBusy||!authorized)return;

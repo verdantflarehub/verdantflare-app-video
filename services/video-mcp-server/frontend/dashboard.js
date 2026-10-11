@@ -346,7 +346,7 @@ function render(data) {
     ? "此页没有任务，请返回上一页。"
     : "暂无符合条件的任务。可调整筛选，或新建运镜任务。";
   const badge = (t) =>
-    `<span class="badge-status ${t.status === "succeeded" ? "completed" : escapeHTML(t.status)}">${labels[t.status] || escapeHTML(t.status)}</span>`;
+    `<span class="badge-status ${t.status === "succeeded" ? "completed" : escapeHTML(t.status)}">${t.runtime_stage === "submission_unknown" ? "提交待确认" : t.runtime_stage === "collect_retry" ? "回收重试中" : labels[t.status] || escapeHTML(t.status)}</span>`;
   const galleryHTML = data.tasks
     .map(
       (t) =>
