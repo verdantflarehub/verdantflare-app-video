@@ -747,6 +747,22 @@ html[data-embedded="true"] .business-card:hover {
 }
 
 /* Detail Views & Dialogs */
+html[data-embedded="true"] .modal-backdrop {
+  position: absolute;
+  align-items: flex-start;
+  padding: 24px 0;
+  box-sizing: border-box;
+}
+
+html[data-embedded="true"] .modal-window {
+  max-height: none;
+  overflow: visible;
+  background: var(--studio-panel);
+  color: var(--paper);
+  border-color: var(--line);
+  scroll-margin-top: 24px;
+}
+
 html[data-embedded="true"] .detail-heading {
   border-color: var(--line) !important;
 }

@@ -147,7 +147,9 @@ function clearMedia() {
 function openModal(id) {
   restoreFocus = document.activeElement;
   $(id).hidden = false;
-  $(id).querySelector("input,button,textarea")?.focus();
+  const panel = $(id).querySelector(".modal-window");
+  if (window.studioEmbedded) panel?.scrollIntoView({ block: "start" });
+  $(id).querySelector("input,button,textarea")?.focus({ preventScroll: true });
 }
 function closeModal(id) {
   $(id).hidden = true;
