@@ -243,7 +243,7 @@ class GrokVideoAdapter:
                 if data["video"].get("respect_moderation") is False:
                     return self.error(rec, "provider_rejected", terminal=True)
                 url = data["video"].get("url")
-                self.allowed_url(url)
+                url, _ = self.result_request(url, rec.runtime_task_id)
                 state.update(result_url=url, next_poll_at=0, resolved_model=data.get("model"),
                              usage=data.get("usage"), progress=100)
                 return self.collect(self.save(rec, runtime_stage="collecting", provider_state=state))
@@ -264,15 +264,26 @@ class GrokVideoAdapter:
                 raise ValueError("result_url_denied")
         return url
 
+    def result_request(self, url, request_id):
+        # A compatible gateway may return its protected content route. Build the
+        # target from trusted configuration and the persisted task identity;
+        # never attach credentials to an arbitrary provider-supplied URL.
+        expected = self.base + "/videos/" + quote(request_id, safe="") + "/content"
+        headers = {"Accept": "video/*"}
+        if request_id and url in {expected, urlsplit(expected).path}:
+            headers["Authorization"] = "Bearer " + self.key
+            return self.allowed_url(expected), headers
+        return self.allowed_url(url), headers
+
     def collect(self, rec):
         state = dict(rec.provider_state or {})
         output = self.output_path(rec)
         try:
             if not output.exists() or not state.get("result_sha256"):
-                url = self.allowed_url(state["result_url"])
+                url, headers = self.result_request(state["result_url"], rec.runtime_task_id)
                 pending = output.with_suffix(".part")
                 digest, count = hashlib.sha256(), 0
-                with self.download_client.stream("GET", url, headers={"Accept": "video/*"}) as response:
+                with self.download_client.stream("GET", url, headers=headers) as response:
                     response.raise_for_status()
                     if response.headers.get("content-type", "").split(";")[0] not in {"video/mp4", "application/octet-stream"}:
                         raise ValueError("result_integrity_failed")

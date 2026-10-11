@@ -153,3 +153,29 @@ class GrokRouteTest(unittest.TestCase):
             ex.grok.allowed_url('https://untrusted.example/video')
         with patch('socket.getaddrinfo',return_value=[(2,1,6,'',('127.0.0.1',443))]), self.assertRaises(ValueError):
             ex.grok.allowed_url('https://vidgen.x.ai/video')
+
+    def test_gateway_content_auth_is_bound_to_original_task(self):
+        ex = self.executor(lambda r: httpx.Response(200, json={'request_id': 'remote-1'} if r.method == 'POST' else
+            {'status': 'done', 'video': {'url': '/v1/videos/remote-1/content'}}))
+        downloads = []
+        def download(r):
+            downloads.append(r)
+            self.assertEqual(str(r.url), 'https://grok.example/v1/videos/remote-1/content')
+            self.assertEqual(r.headers.get('Authorization'), 'Bearer private-fixture')
+            return httpx.Response(200, content=b'video-fixture', headers={'content-type': 'video/mp4'})
+        ex.grok.download_client = httpx.Client(transport=httpx.MockTransport(download))
+        ex.grok.probe = lambda p: {'duration_ms': 5000, 'frame_rate': 30, 'width': 1280, 'height': 720}
+        task = ex.generate(**self.inputs())
+        ex.status(task.video_task_id)
+        with patch('socket.getaddrinfo', return_value=[(2,1,6,'',('8.8.8.8',443))]):
+            task = self.poll(ex, task)
+            self.assertEqual(task.status, 'succeeded')
+            for url in ['https://vidgen.x.ai/video.mp4', 'https://grok.example/v1/videos/other/content',
+                        'https://grok.example/v1/videos/remote-1/content?next=other']:
+                _, headers = ex.grok.result_request(url, 'remote-1')
+                self.assertNotIn('Authorization', headers)
+            for url in ['/v1/videos/other/content', '//evil.example/v1/videos/remote-1/content']:
+                with self.assertRaises(ValueError):
+                    ex.grok.result_request(url, 'remote-1')
+        self.assertEqual(len(downloads), 1)
+        self.assertEqual(sum(r.method == 'POST' for r in self.calls), 1)
