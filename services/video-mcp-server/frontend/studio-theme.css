@@ -757,10 +757,23 @@ html[data-embedded="true"] .modal-backdrop {
 html[data-embedded="true"] .modal-window {
   max-height: none;
   overflow: visible;
-  background: var(--studio-panel);
+  background: var(--ink-2);
   color: var(--paper);
   border-color: var(--line);
   scroll-margin-top: 24px;
+}
+
+html[data-embedded="true"] .modal-window input,
+html[data-embedded="true"] .modal-window textarea,
+html[data-embedded="true"] .modal-window select {
+  background: var(--studio-button);
+  color: var(--paper);
+  border-color: var(--line-strong);
+}
+
+html[data-embedded="true"] .modal-head {
+  background: var(--studio-panel);
+  border-color: var(--line);
 }
 
 html[data-embedded="true"] .detail-heading {
