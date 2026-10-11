@@ -12,7 +12,8 @@ function storeToken(value) {
     // Storage-disabled browsers still support the current in-memory session.
   }
 }
-const names = { h3: "h3", "h3-sol": "h3-sol", "h3-vdn": "h3-vdn", fal: "fal", mcp: "MCP" };
+let grokCapability = null;
+const names = { grok: "Grok", h3: "h3", "h3-sol": "h3-sol", "h3-vdn": "h3-vdn", fal: "fal", mcp: "MCP" };
 const labels = {
   queued: "排队中",
   running: "渲染中",
@@ -26,8 +27,8 @@ const modelDisplayNames = {
   "video-depth-anything": "Video-Depth-Anything",
   "h3-latent-upscaler": "H3 Latent Upscaler",
 };
-const generationServices = new Set(["h3", "h3-sol", "h3-vdn", "fal"]);
-const knownChannels = new Set(["h3", "h3-sol", "h3-vdn", "fal"]);
+const generationServices = new Set(["h3", "h3-sol", "h3-vdn", "h3-singularity", "fal", "grok"]);
+const knownChannels = new Set(["h3", "h3-sol", "h3-vdn", "h3-singularity", "fal", "grok"]);
 const serviceDisplayNames = {
   "h3-latent-upscale": "H3 Latent Upscaler",
   sr: "Video Super Resolution",
@@ -68,7 +69,7 @@ const taskPrompt = (task) =>
     : taskOperation(task);
 const taskTags = (task) => {
   if (generationServices.has(task.service)) {
-    return `<span>REF2VA</span>${task.aspect_ratio ? `<span>${escapeHTML(task.aspect_ratio)}</span>` : ""}${task.duration_seconds != null ? `<span>${escapeHTML(task.duration_seconds)}s</span>` : ""}`;
+    return `<span>${task.route === "grok" ? (task.mode === "image_to_video" ? "图生视频" : "文生视频") : "REF2VA"}</span>${task.aspect_ratio ? `<span>${escapeHTML(task.aspect_ratio)}</span>` : ""}${task.duration_seconds != null ? `<span>${escapeHTML(task.duration_seconds)}s</span>` : ""}`;
   }
   const media = task.media || {};
   const size =
@@ -318,6 +319,12 @@ function reconcileGallery(html, tasks) {
 }
 function render(data) {
   total = data.total;
+  try {
+    grokCapability = data.grok_capability;
+    const option = $("dispatchForm").elements.route.querySelector('option[value="grok"]');
+    option.disabled = !(grokCapability?.enabled && grokCapability?.configured);
+    option.textContent = option.disabled ? "Grok · 未配置" : `Grok · ${grokCapability.model}`;
+  } catch { /* Existing channels remain available when discovery fails. */ }
   const falOption = $("dispatchForm").elements.route.querySelector('option[value="fal"]');
   const falConnected = data.services?.fal === "configured";
   falOption.disabled = !falConnected;
@@ -566,7 +573,7 @@ $("dispatchForm").addEventListener("submit", async (event) => {
   try {
     const body = Object.fromEntries(new FormData(event.target));
     body.duration_seconds = Number(body.duration_seconds);
-    body.model = "minimax-h3-ref2va";
+    body.model = body.route === "grok" ? grokCapability?.model : "minimax-h3-ref2va";
     const references = { images: [], videos: [], audios: [] };
     const kinds = { image: "images", video: "videos", audio: "audios" };
     for (const line of body.references.trim().split("\n")) {
@@ -584,8 +591,13 @@ $("dispatchForm").addEventListener("submit", async (event) => {
     const missingReference = body.route === "fal"
       ? !references.images.length && !references.videos.length && !references.audios.length
       : !references.images.length && !references.videos.length;
-    if (missingReference)
+    if (missingReference && body.route !== "grok")
       throw new Error(body.route === "fal" ? "fal 至少需要一个参考素材。" : "至少需要一张图片或一段视频参考。");
+    if (body.route === "grok") {
+      if (references.videos.length || references.audios.length || references.images.length > 1 || references.images.some(r => r.purpose !== "first_frame")) throw new Error("Grok 仅接受一张 first_frame 图片，或不使用参考。");
+      body.mode = references.images.length ? "image_to_video" : "text_to_video";
+      if (references.images.length) delete body.aspect_ratio;
+    }
     body.references = references;
     const task = await api("/api/tasks", {
       method: "POST",
@@ -608,17 +620,21 @@ $("dispatchForm").addEventListener("submit", async (event) => {
 $("dispatchForm").elements.route.addEventListener("change", () => {
   const duration = $("dispatchForm").elements.duration_seconds;
   const route = $("dispatchForm").elements.route.value;
+  const grok = route === "grok";
+  $("referenceInput").required = !grok;
+  $("grokResolution").hidden = !grok;
+  $("dispatchForm").elements.resolution.disabled = !grok;
   const fal = route === "fal";
   const sol = route.startsWith("h3-sol") || route === "h3-vdn" || fal;
   const ratio = $("dispatchForm").elements.aspect_ratio;
-  duration.min = sol ? "5" : "4";
+  duration.min = grok ? "1" : sol ? "5" : "4";
   duration.step = "1";
   if (sol && (!Number.isInteger(Number(duration.value)) || Number(duration.value) < 5 || Number(duration.value) > 15))
     duration.value = "5";
   [...ratio.options].forEach((option) => {
-    option.hidden = !fal && option.value !== "9:16";
+    option.hidden = grok ? !["16:9","9:16","1:1","4:3","3:4"].includes(option.value) : !fal && option.value !== "9:16";
   });
-  ratio.value = fal ? "adaptive" : "9:16";
+  ratio.value = grok ? "16:9" : fal ? "adaptive" : "9:16";
 });
 
 window.addEventListener("DOMContentLoaded", () => {

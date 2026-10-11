@@ -30,7 +30,7 @@ const status = ref('all')
 const service = ref('all')
 
 const labels: Record<string, string> = { queued: '排队中', running: '渲染中', succeeded: '已完成', failed: '失败', cancelled: '已取消' }
-const generation = new Set(['h3', 'h3-sol', 'h3-vdn', 'fal'])
+const generation = new Set(['h3', 'h3-sol', 'h3-vdn', 'h3-singularity', 'fal', 'grok'])
 const operations: Record<string, string> = { h3: '视频生成', 'h3-sol': '视频生成', 'h3-vdn': '视频生成', fal: '视频生成', 'h3-latent-upscale': 'H3 潜空间处理', sr: '视频超分', interpolate: '视频补帧', depth: '深度视频' }
 const services: Record<string, string> = { 'h3-latent-upscale': 'H3 Latent Upscaler', sr: 'Video Super Resolution', interpolate: 'Frame Interpolation', depth: 'Depth Anything' }
 const filtered = computed(() => tasks.value.filter((task) => {
@@ -39,7 +39,7 @@ const filtered = computed(() => tasks.value.filter((task) => {
 }))
 const counts = computed(() => Object.fromEntries(['queued', 'running', 'succeeded', 'failed', 'cancelled'].map((key) => [key, tasks.value.filter((task) => task.status === key).length])))
 const modelName = (task: Task) => task.model || (generation.has(task.service) ? 'minimax-h3-ref2va' : '')
-const routeName = (task: Task) => generation.has(task.service) && ['h3', 'h3-sol', 'h3-vdn', 'fal'].includes(task.route || task.service) ? (task.route || task.service) : ''
+const routeName = (task: Task) => generation.has(task.service) && ['h3', 'h3-sol', 'h3-vdn', 'h3-singularity', 'fal', 'grok'].includes(task.route || task.service) ? (task.route || task.service) : ''
 const identity = (task: Task) => generation.has(task.service) ? [`模型：${modelName(task)}`, routeName(task) ? `渠道：${routeName(task)}` : ''] : [`操作：${operations[task.service] || '视频处理'}`, `服务：${services[task.service] || task.service || '未指定'}`]
 const date = (value: string) => new Date(value).toLocaleString()
 const duration = (task: Task) => task.timing?.total_seconds != null ? `${Math.floor(task.timing.total_seconds)}s` : '—'

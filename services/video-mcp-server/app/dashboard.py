@@ -43,11 +43,13 @@ class Submission(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     project_id: str = Field(min_length=1, max_length=64)
     idempotency_key: str = Field(min_length=1, max_length=128)
-    model: str = "minimax-h3-ref2va"
+    model: str | None = None
     route: str = Field(min_length=1, max_length=64)
     prompt: str = Field(min_length=1, max_length=16000)
-    duration_seconds: int = Field(ge=4, le=15)
-    aspect_ratio: str = "9:16"
+    duration_seconds: int = Field(ge=1, le=15)
+    aspect_ratio: str | None = None
+    mode: str | None = None
+    resolution: str | None = None
     references: References
 
 
@@ -72,10 +74,13 @@ def public_task(record):
     return {"video_task_id": record.video_task_id, "project_id": record.project_id,
             "idempotency_key": record.idempotency_key, "service": record.service, "route": record.runtime_route or record.request.get("route"),
             "model": model,
+            "mode": record.request.get("mode"), "resolution": record.request.get("resolution"),
+            "needs_attention": record.runtime_stage == "submission_unknown" or bool(record.error),
+            "progress": (record.provider_state or {}).get("progress"),
             "prompt": record.request.get("prompt", ""),
             "duration_seconds": record.request.get("duration_seconds"),
             "aspect_ratio": record.request.get("aspect_ratio"),
-            "seed": record.request.get("seed", None if record.service == "fal" else 7),
+            "seed": record.request.get("seed", None if record.service in {"fal", "grok"} else 7),
             "status": record.status, "created_at": record.created_at, "updated_at": record.updated_at,
             "completed_at": record.completed_at or (record.updated_at if record.status in {"succeeded", "failed", "cancelled"} else None),
             "artifact_id": record.artifact_id, "media": record.media, "error": record.error,
@@ -104,6 +109,7 @@ class Dashboard:
         return sorted(records, key=lambda x: (x.created_at, x.video_task_id), reverse=True)
 
     def sync(self):
+        self.services["grok"] = "configured" if self.executor.grok.configured() and self.executor.grok.enabled else "not_connected"
         self.services["fal"] = "configured" if self.executor.fal.connected() else "not_connected"
         try:
             response = self.executor.client.get(f"{self.executor.runtime_url}/health", timeout=5)
@@ -118,7 +124,7 @@ class Dashboard:
                 self.services["h3-sol"] = "unavailable"
         errors = 0
         for record in self.records():
-            if record.status in {"queued", "running"} and (record.runtime_task_id or record.service in {"depth", "sr", "interpolate", "h3-singularity"}):
+            if record.status in {"queued", "running"} and (record.runtime_task_id or record.service in {"depth", "sr", "interpolate", "h3-singularity", "grok"}):
                 try:
                     self.executor.status(record.video_task_id)
                 except (ExecutionError, OSError, ValueError):
@@ -128,7 +134,7 @@ class Dashboard:
 
     def recover_incomplete_submissions(self):
         for record in self.records():
-            if record.status == "queued" and not record.runtime_task_id and record.service not in {"depth", "sr", "interpolate"}:
+            if record.status == "queued" and not record.runtime_task_id and record.service not in {"depth", "sr", "interpolate", "grok"}:
                 self.executor.tasks.update(record, status="queued" if record.service == "h3-singularity" else "failed", error={
                     "code": "submission_unconfirmed",
                     "message": "Submission interrupted; do not resubmit automatically"})
@@ -168,7 +174,8 @@ class Dashboard:
                 "page_size": size, "projects": projects, "counts": counts,
                 "completion_times": [r["completed_at"] for r in rows if r["status"] == "succeeded"],
                 "average_elapsed_seconds": round(sum(elapsed)/len(elapsed), 1) if elapsed else None,
-                "services": dict(self.services), "synced_at": self.synced_at, "sync_errors": self.sync_errors}
+                "services": dict(self.services), "grok_capability": self.executor.grok.capability(),
+                "synced_at": self.synced_at, "sync_errors": self.sync_errors}
 
     def detail(self, task_id):
         record = self.executor.tasks.get(task_id)
@@ -209,7 +216,9 @@ class Dashboard:
     async def endpoint(self, request: Request):
         try:
             action = request.url.path
-            if action == "/api/dashboard":
+            if action == "/api/capabilities":
+                value = self.executor.capabilities()
+            elif action == "/api/dashboard":
                 value = await run_in_threadpool(self.snapshot, request)
             elif action.endswith("/thumbnail"):
                 return await run_in_threadpool(self.thumbnail, request.path_params["task_id"])
@@ -233,10 +242,10 @@ class Dashboard:
                     value = artifact.model_dump()
                 else:
                     inputs = Submission.model_validate_json(body)
-                    service = ("fal" if inputs.route == "fal" else
+                    service = ("grok" if inputs.route == "grok" else "fal" if inputs.route == "fal" else
                                "h3-sol" if inputs.route.startswith("h3-sol") else
                                "h3-singularity" if inputs.route == "h3-singularity" else "h3")
-                    if service not in {"h3", "h3-sol", "h3-singularity", "fal"}:
+                    if service not in {"h3", "h3-sol", "h3-singularity", "fal", "grok"}:
                         return JSONResponse({"error": "service_not_connected"}, status_code=409)
                     if service == "fal" and not self.executor.fal.connected():
                         return JSONResponse({"error": "service_not_connected"}, status_code=409)
@@ -291,7 +300,7 @@ class Dashboard:
                 Route("/dashboard/frontend/{name:path}", asset),
                 Route("/dashboard/static/{name:path}", asset),
                 Route("/dashboard/tasks/{task_id:str}", task_shell),
-                Route("/api/dashboard", self.endpoint), Route("/api/tasks", self.endpoint, methods=["POST"]),
+                Route("/api/dashboard", self.endpoint), Route("/api/capabilities", self.endpoint), Route("/api/tasks", self.endpoint, methods=["POST"]),
                 Route("/api/tasks/{task_id:str}", self.endpoint),
                 Route("/api/tasks/{task_id:str}/thumbnail", self.endpoint),
                 Route("/api/tasks/{task_id:str}/result", self.endpoint, methods=["POST"]),

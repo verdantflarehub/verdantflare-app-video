@@ -86,6 +86,8 @@ class VideoExecutor:
         self.processing["h3-latent-upscale"] = H3LatentExecutor(self)
         from .providers.fal import FalAdapter
         self.fal = FalAdapter(self)
+        from .providers.grok import GrokVideoAdapter
+        self.grok = GrokVideoAdapter(self)
 
     def _load_routes(self) -> dict[str, dict[str, object]]:
         raw = os.environ.get("H3_RUNTIME_ROUTES", "")
@@ -110,7 +112,7 @@ class VideoExecutor:
 
     @staticmethod
     def _service_for_route(route: str) -> str:
-        return ("fal" if route == "fal" else
+        return ("grok" if route == "grok" else "fal" if route == "fal" else
                 "h3-vdn" if route == "h3-vdn" else
                 "h3-sol" if route.startswith("h3-sol") else
                 "h3-singularity" if route == "h3-singularity" else "h3")
@@ -182,7 +184,9 @@ class VideoExecutor:
                             routes[-1]["runtime_capabilities"] = health.get("capabilities", {})
                     except (httpx.HTTPError, ValueError, AttributeError):
                         routes[-1]["readiness"] = "unreachable"
+        routes.append(self.grok.capability())
         return {"default_model": "minimax-h3-ref2va", "default_route": self.runtime_route,
+                "models": [{"model": "minimax-h3-ref2va"}, {"model": self.grok.model, "routes": ["grok"]}],
                 "model_specification": {"aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
                                         "omni_adaptive": True},
                 "routes": routes, "inline_image_max_bytes": MAX_INLINE_IMAGE_BYTES,
@@ -359,11 +363,21 @@ class VideoExecutor:
     def generate(self, *, project_id: str, idempotency_key: str, model: str, prompt: str,
                  duration_seconds: int, aspect_ratio: str,
                  references: dict[str, list[dict[str, str]]], route: str | None = None,
-                 quality_profile: str = "du-0") -> TaskRecord:
+                 quality_profile: str | None = None, mode: str | None = None,
+                 resolution: str | None = None) -> TaskRecord:
         project_id = require_project_id(project_id)
         if not idempotency_key.strip() or len(idempotency_key) > 128:
             raise ValueError("idempotency_key is invalid")
         route = route or self.runtime_route
+        if route == "grok":
+            return self.grok.generate(project_id=project_id, idempotency_key=idempotency_key,
+                model=model, prompt=prompt, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
+                references=references, quality_profile=quality_profile, mode=mode, resolution=resolution)
+        if mode is not None or resolution is not None:
+            raise ValueError("unsupported_parameter")
+        model = model or "minimax-h3-ref2va"
+        aspect_ratio = aspect_ratio or "16:9"
+        quality_profile = quality_profile or "du-0"
         if route == "fal":
             return self.fal.generate(project_id=project_id, idempotency_key=idempotency_key,
                                      model=model, prompt=prompt, duration_seconds=duration_seconds,
@@ -452,6 +466,8 @@ class VideoExecutor:
     @serialized
     def status(self, video_task_id: str) -> TaskRecord:
         record = self.tasks.get(video_task_id)
+        if record.service == "grok":
+            return self.grok.status(record)
         if (record.service == "h3-singularity" and not record.runtime_task_id
             and (record.status in {"queued", "running"} or (record.error or {}).get("code") == "submission_unconfirmed")):
             url, headers, _, _ = self.runtime(self._record_route(record))
@@ -517,6 +533,8 @@ class VideoExecutor:
     @serialized
     def result(self, video_task_id: str) -> TaskRecord:
         record = self.tasks.get(video_task_id)
+        if record.service == "grok":
+            return self.grok.result(record)
         if record.service == "fal":
             from .providers.fal import FalError
             try:

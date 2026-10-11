@@ -42,11 +42,13 @@ VIDEO_TOOLS_SCHEMA = [
             "type": "object",
             "properties": {
                 "prompt": {"type": "string", "description": "Text prompt describing the desired video"},
-                "model": {"type": "string", "default": "minimax-h3-ref2va", "description": "Business model to use"},
-                "aspect_ratio": {"type": "string", "enum": ["adaptive", "21:9", "16:9", "9:16", "1:1", "4:3", "3:4"], "default": "16:9", "description": "Check video.capabilities for route-specific adapter limits, not model limits"},
-                "duration_seconds": {"type": "integer", "minimum": 4, "maximum": 15, "default": 5},
+                "model": {"type": "string", "description": "Business model; omitted resolves for the selected route"},
+                "aspect_ratio": {"type": "string", "enum": ["adaptive", "21:9", "16:9", "9:16", "1:1", "4:3", "3:4"], "description": "Check video.capabilities for route-specific adapter limits, not model limits"},
+                "duration_seconds": {"type": "integer", "minimum": 1, "maximum": 15, "default": 5},
                 "route": {"type": "string", "description": "Execution channel; omitted uses the host default from video.capabilities"},
-                "quality_profile": {"type": "string", "default": "du-0"},
+                "quality_profile": {"type": "string", "description": "H3 only; omit for Grok"},
+                "mode": {"type": "string", "enum": ["text_to_video", "image_to_video"]},
+                "resolution": {"type": "string", "enum": ["480p", "720p"]},
                 "references": {"type": "object", "description": "Reference assets mapping"},
                 "project_id": {"type": "string", "description": "Project ID"},
                 "idempotency_key": {"type": "string", "description": "Unique idempotency key"},
@@ -353,16 +355,24 @@ def video_import_commit(project_id: str, import_id: str) -> types.CallToolResult
 
 @mcp.tool(name="video.preflight")
 def video_preflight(project_id: str, prompt: str, references: dict[str, list[dict[str, str]]],
-                    duration_seconds: int = 5, aspect_ratio: str = "16:9",
-                    model: str = "minimax-h3-ref2va", route: str | None = None,
-                    quality_profile: str = "du-0") -> types.CallToolResult:
+                    duration_seconds: int = 5, aspect_ratio: str | None = None,
+                    model: str | None = None, route: str | None = None,
+                    quality_profile: str | None = None, mode: str | None = None,
+                  resolution: str | None = None) -> types.CallToolResult:
     """Validate Singularity media and reveal native output and reference labels without creating a task."""
     selected = route or executor.runtime_route
+    if selected == "grok":
+        request, digest = executor.grok.normalize(project_id=require_project_id(project_id),
+            prompt=prompt, model=model, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
+            references=references, mode=mode, resolution=resolution, quality_profile=quality_profile)
+        return _result({"status": "validated", "generation_verified": False, "input_digest": digest,
+            "resolved_output": {k: request[k] for k in ("mode", "resolution", "duration_seconds", "aspect_ratio")},
+            "reference_mapping": request["references"], "prompt": request["prompt"]})
     if selected != "h3-singularity":
         raise ValueError("video.preflight currently supports h3-singularity")
     executor.runtime(selected)
-    request, digest = executor._normalize(require_project_id(project_id), model, prompt,
-        duration_seconds, aspect_ratio, references, selected, quality_profile)
+    request, digest = executor._normalize(require_project_id(project_id), model or "minimax-h3-ref2va", prompt,
+        duration_seconds, aspect_ratio or "16:9", references, selected, quality_profile or "du-0")
     return _result({"status": "validated", "gpu_verified": False, "input_digest": digest,
                     "resolved_output": request["resolved_output"], "reference_mapping": request["reference_mapping"],
                     "reference_media": request["reference_media"], "prompt": request["prompt"]})
@@ -386,17 +396,18 @@ def artifact_import(project_id: str, source_url: str, filename: str, expected_sh
 def video_create(prompt: str,
                  project_id: str,
                  idempotency_key: str,
-                 model: str = "minimax-h3-ref2va",
+                 model: str | None = None,
                  duration_seconds: int = 5,
-                 aspect_ratio: str = "16:9",
+                 aspect_ratio: str | None = None,
                  references: dict[str, list[dict[str, str]]] | None = None,
                  route: str | None = None,
-                 quality_profile: str = "du-0") -> types.CallToolResult:
+                 quality_profile: str | None = None, mode: str | None = None,
+                  resolution: str | None = None) -> types.CallToolResult:
     """Create an asynchronous video generation task."""
     record = executor.generate(project_id=project_id, idempotency_key=idempotency_key, model=model,
                                prompt=prompt, duration_seconds=duration_seconds,
                                aspect_ratio=aspect_ratio, references=references or {}, route=route,
-                               quality_profile=quality_profile)
+                               quality_profile=quality_profile, mode=mode, resolution=resolution)
     return _result({"task_id": record.video_task_id, "video_task_id": record.video_task_id,
                     "status": record.status, "created_at": record.created_at, "error": record.error,
                     "resolved_output": record.request.get("resolved_output"),
@@ -407,7 +418,8 @@ def video_create(prompt: str,
 def video_generate(project_id: str, idempotency_key: str, model: str, prompt: str,
                    duration_seconds: int, aspect_ratio: str,
                    references: dict[str, list[dict[str, str]]], route: str,
-                   quality_profile: str = "du-0") -> types.CallToolResult:
+                   quality_profile: str | None = None, mode: str | None = None,
+                  resolution: str | None = None) -> types.CallToolResult:
     """Generate with a business model and an explicitly selected runtime route.
 
     `route` selects a configured channel such as h3-sol, h3-vdn, or fal.
@@ -418,7 +430,7 @@ def video_generate(project_id: str, idempotency_key: str, model: str, prompt: st
     record = executor.generate(project_id=project_id, idempotency_key=idempotency_key, model=model,
                                prompt=prompt, duration_seconds=duration_seconds,
                                aspect_ratio=aspect_ratio, references=references, route=route,
-                               quality_profile=quality_profile)
+                               quality_profile=quality_profile, mode=mode, resolution=resolution)
     return _result({"task_id": record.video_task_id, "video_task_id": record.video_task_id,
                     "status": record.status, "created_at": record.created_at, "error": record.error})
 
@@ -433,7 +445,9 @@ def video_status(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
                     "created_at": record.created_at, "updated_at": record.updated_at, "error": record.error,
                     "timing": record.timing, "runtime_metrics": record.runtime_metrics,
                     "service": record.service, "runtime_route": record.runtime_route,
-                    "execution_instance_id": record.execution_instance_id, "stage": record.runtime_stage})
+                    "execution_instance_id": record.execution_instance_id, "stage": record.runtime_stage,
+                    "needs_attention": record.runtime_stage == "submission_unknown",
+                    "progress": (record.provider_state or {}).get("progress")})
 
 
 @mcp.tool(name="video.result")
