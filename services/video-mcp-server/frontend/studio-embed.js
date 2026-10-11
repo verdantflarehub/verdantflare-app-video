@@ -38,9 +38,12 @@ if (window.studioEmbedded) {
  window.addEventListener('DOMContentLoaded',()=>{
   document.querySelectorAll('[data-nav]').forEach(a=>{a.textContent={tasks:'任务',models:'模型',mcp:'MCP'}[a.dataset.nav]});
   parent.postMessage({channel:'vf-video',view,type:'ready'},hostOrigin);
+  let lastHeight=0;
   const postHeight=()=>{
-   const h=Math.max(document.documentElement.scrollHeight,document.body.scrollHeight);
-   if(h>0)parent.postMessage({channel:'vf-video',view,type:'resize',height:h},hostOrigin);
+   // Root scrollHeight is at least the current iframe viewport and cannot
+   // shrink after switching from a long task list to a shorter view.
+   const h=Math.ceil(document.body.getBoundingClientRect().height);
+   if(h>0&&h!==lastHeight){lastHeight=h;parent.postMessage({channel:'vf-video',view,type:'resize',height:h},hostOrigin);}
   };
   postHeight();
   window.addEventListener('load',postHeight);
