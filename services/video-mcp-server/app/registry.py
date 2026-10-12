@@ -126,8 +126,13 @@ class EtcdRegistry:
             return await self.register()
 
         resp = await self._request("/v3/lease/keepalive", {"ID": self._lease_id})
-        if resp and "result" in resp:
-            return True
+        result = resp.get("result") if isinstance(resp, dict) else None
+        if isinstance(result, dict) and str(result.get("ID")) == self._lease_id:
+            try:
+                if int(result.get("TTL", 0)) > 0:
+                    return True
+            except (TypeError, ValueError):
+                pass
 
         logger.warning("[EtcdRegistry] Lease keepalive failed, attempting re-registration")
         return await self.register()

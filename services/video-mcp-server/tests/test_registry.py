@@ -86,6 +86,31 @@ class TestEtcdRegistry(unittest.IsolatedAsyncioTestCase):
 
         await registry.stop()
 
+    async def test_expired_lease_result_without_ttl_reregisters(self) -> None:
+        calls = []
+        next_lease = iter(("101", "202"))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request.url.path)
+            if request.url.path == "/v3/lease/grant":
+                return httpx.Response(200, json={"ID": next(next_lease)})
+            if request.url.path == "/v3/kv/put":
+                return httpx.Response(200, json={"header": {"revision": "1"}})
+            if request.url.path == "/v3/lease/keepalive":
+                return httpx.Response(200, json={"result": {"ID": "101"}})
+            return httpx.Response(404)
+
+        registry = EtcdRegistry(domain="video", tools=[], etcd_endpoints="http://mock-etcd:2379")
+        registry._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            self.assertTrue(await registry.register())
+            self.assertTrue(await registry.keepalive())
+            self.assertEqual(registry._lease_id, "202")
+            self.assertEqual(calls.count("/v3/lease/grant"), 2)
+            self.assertEqual(calls.count("/v3/kv/put"), 2)
+        finally:
+            await registry._client.aclose()
+
 
 if __name__ == "__main__":
     unittest.main()
