@@ -53,14 +53,14 @@ html[data-embedded="true"][data-theme="light"] {
   height: auto !important;
 }
 
-/* Base Body: Fluid Full Width & Generous Padding */
+/* Base Body: Fluid Full Width with zero top/horizontal padding to inherit host layout */
 html[data-embedded="true"] body {
   position: relative !important;
   background: transparent !important;
   color: var(--paper) !important;
   font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif !important;
   margin: 0 !important;
-  padding: 24px 28px 48px !important;
+  padding: 0 0 36px 0 !important;
   min-height: auto !important;
   height: auto !important;
   box-sizing: border-box !important;
@@ -91,8 +91,8 @@ html[data-embedded="true"] .business-section {
 /* Top Action Buttons (Pinned to top right aligned with Tabs) */
 html[data-embedded="true"] .site-header {
   position: absolute !important;
-  top: 20px !important;
-  right: 28px !important;
+  top: 0 !important;
+  right: 0 !important;
   left: auto !important;
   bottom: auto !important;
   width: auto !important;
@@ -189,7 +189,7 @@ html[data-embedded="true"] .workspace-nav {
   align-items: center !important;
   gap: 28px !important;
   padding: 0 280px 0 0 !important; /* space for top right action buttons */
-  margin: 0 0 16px 0 !important;
+  margin: 0 0 12px 0 !important;
   border: 0 !important;
   border-bottom: 1px solid var(--line) !important;
   background: none !important;
@@ -230,7 +230,7 @@ html[data-embedded="true"] .workspace-nav a.active {
 /* Status Meta Line (Clean, no bulky box) */
 html[data-embedded="true"] .business-intro {
   padding: 0 !important;
-  margin: 0 0 10px 0 !important;
+  margin: 0 0 8px 0 !important;
 }
 
 html[data-embedded="true"] .notice {
@@ -273,7 +273,7 @@ html[data-embedded="true"] [data-business-view]:not([hidden]) {
 html[data-embedded="true"] .business-muted {
   font-size: 12px !important;
   color: var(--muted) !important;
-  margin: 0 0 14px 0 !important;
+  margin: 0 0 10px 0 !important;
   display: block !important;
 }
 
@@ -284,8 +284,8 @@ html[data-embedded="true"] .market-toolbar {
   align-items: flex-end !important;
   justify-content: space-between !important;
   gap: 16px !important;
-  padding: 14px 0 18px !important;
-  margin: 0 0 18px 0 !important;
+  padding: 10px 0 14px !important;
+  margin: 0 0 14px 0 !important;
   border-top: 1px solid var(--line) !important;
   border-bottom: 1px solid var(--line) !important;
   position: static !important;
