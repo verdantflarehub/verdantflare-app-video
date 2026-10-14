@@ -13,6 +13,18 @@ class TitleTest(unittest.TestCase):
     setUp = test_dashboard.DashboardTest.setUp
     tearDown = test_dashboard.DashboardTest.tearDown
 
+    def test_release_health_endpoint_is_ready_without_provider_calls(self):
+        from starlette.testclient import TestClient
+        with mock.patch.object(server, 'executor', self.executor), mock.patch.object(server, 'tasks', self.tasks), mock.patch.object(server, 'artifacts', self.artifacts):
+            client = TestClient(server.app, raise_server_exceptions=True)
+            try:
+                response = client.get('/health')
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()['version'], server.__version__)
+                self.assertIn('configured', response.json()['channels']['higgsfield'])
+            finally:
+                client.close()
+
     def create(self, title=None, key=None):
         return self.client.post('/api/tasks', headers=self.headers, json={**self.payload, 'title': title,
             'idempotency_key': key or self.payload['idempotency_key']})
