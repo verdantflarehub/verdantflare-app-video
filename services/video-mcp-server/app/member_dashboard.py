@@ -202,7 +202,8 @@ class MemberDashboard:
             if parts[2] == 'thumbnail':
                 return self.dashboard.thumbnail(record.video_task_id)
             if parts[2] == 'result':
-                self.executor.result(record.video_task_id)
+                # A pending result is a normal state, not an HTTP failure.
+                self.adapter.status(record)
                 return self.dashboard.detail(record.video_task_id)
         raise MemberError('not_found', 404)
 

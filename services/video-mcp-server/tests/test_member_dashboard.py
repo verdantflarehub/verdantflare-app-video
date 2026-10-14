@@ -66,6 +66,15 @@ class MemberDashboardTest(unittest.TestCase):
         self.assertEqual(self.post('tasks').json()['error'],'quote_changed')
         self.assertEqual(self.member.dashboard.records(),[])
 
+    def test_pending_result_returns_original_task_without_creating_again(self):
+        self.post('preflight')
+        first = self.post('tasks').json()
+        with patch.object(self.executor.higgsfield, 'status', side_effect=lambda record: record):
+            reply = self.post('tasks/' + first['video_task_id'] + '/result', {})
+        self.assertEqual(reply.status_code, 200)
+        self.assertEqual(reply.json()['video_task_id'], first['video_task_id'])
+        self.assertEqual(len(self.member.dashboard.records()), 1)
+
     def test_cross_project_and_missing_identity_cannot_resolve_assets_or_quote(self):
         self.deny_project=True
         self.assertEqual(self.post('preflight').status_code,403)
