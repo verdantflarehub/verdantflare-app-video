@@ -116,11 +116,13 @@ VIDEO_TOOLS_SCHEMA = [
             "type": "object",
             "properties": {
                 "source_artifact_id": {"type": "string", "description": "Source video artifact ID"},
+                "project_id": {"type": "string", "description": "Owning Studio project ID"},
+                "idempotency_key": {"type": "string", "description": "Stable key for submission and recovery"},
                 "target_fps_num": {"type": "integer", "default": 48},
                 "target_fps_den": {"type": "integer", "default": 1},
                 "backend": {"type": "string", "default": "rife"},
             },
-            "required": ["source_artifact_id"],
+            "required": ["source_artifact_id", "project_id", "idempotency_key"],
         },
     },
 ]

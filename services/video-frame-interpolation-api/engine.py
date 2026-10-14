@@ -16,7 +16,9 @@ class Engine:
         self.metadata = verify_bundle(root, LOCK, upstream)
         import torch
         from video_interpolation.gpu_guard import verify_gpu
-        verify_gpu(torch, os.environ.get("VIDEO_GPU_ALLOCATION", ""))
+        gpu_uuid = verify_gpu(torch, os.environ.get("VIDEO_GPU_ALLOCATION", ""),
+                              os.environ.get("VIDEO_GPU_SHARING_STRATEGY", "none"),
+                              os.environ.get("NVIDIA_VISIBLE_DEVICES", ""))
         if not torch.cuda.is_available() or torch.cuda.device_count() != 1:
             raise RuntimeError('exactly_one_visible_cuda_device_required')
         sys.path.insert(0, str(upstream))
@@ -27,7 +29,9 @@ class Engine:
         state = {k.removeprefix('module.'): v for k, v in state.items()}
         self.model.load_state_dict(state, strict=True)
         self.model.requires_grad_(False)
-        self.metadata['runtime_version'] = 'video-frame-interpolation-api-v0.1.2'
+        self.metadata.update(runtime_version='video-frame-interpolation-api-v0.2.0',
+                             gpu_uuid=gpu_uuid, torch_version=torch.__version__,
+                             gpu_sharing_strategy=os.environ.get('VIDEO_GPU_SHARING_STRATEGY', 'none'))
 
     def midpoint(self, left, right):
         torch = self.torch
