@@ -1082,6 +1082,16 @@ body{background:#0d120f;color:#e3e9e5}
 .task-identity>div>span{width:auto}
 .task-identity strong{font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .task-identity>.task-channel{color:#ddb16c}
+/* Model × channel; the generation mode belongs in the footer. */
+.card-thumb-wrap .task-identity.generation-identity{display:flex;align-items:center;gap:5px;max-width:calc(100% - 88px);border-color:var(--line);padding:4px 7px}
+.task-identity.generation-identity .identity-model{min-width:0;flex:0 1 auto}
+.task-identity.generation-identity .identity-separator{display:inline!important;min-width:0;width:auto;font-size:11px;color:inherit;flex:none}
+.task-identity.generation-identity .identity-channel{display:inline-flex;align-items:center;gap:4px;flex:none;color:inherit}
+.channel-logo,.channel-logo>svg,.card-thumb-wrap .channel-logo,.card-thumb-wrap .channel-logo>svg{display:inline-block;width:14px;height:14px;min-width:14px;flex:none;vertical-align:middle;transform:none!important;transition:none}
+.model-tags .generation-type{position:relative;cursor:help;white-space:nowrap;overflow:visible}
+.generation-type:focus-visible{outline:2px solid var(--accent,var(--green));outline-offset:2px}
+.generation-type::after{content:attr(data-tooltip);display:none;position:absolute;bottom:calc(100% + 7px);left:0;z-index:5;background:var(--panel,var(--bg));color:var(--ink,var(--paper));border:1px solid var(--line);border-radius:5px;padding:5px 8px;white-space:nowrap;font-size:12px;font-family:inherit;pointer-events:none}
+.generation-type:hover::after,.generation-type:focus::after{display:block}
 .card-badges{top:12px;right:12px;left:auto}
 .card-times{position:absolute;bottom:0;left:0;right:0;display:flex;justify-content:space-between;gap:12px;padding:30px 12px 12px;background:linear-gradient(transparent,#08120de8);font-size:10px;font-variant-numeric:tabular-nums;color:#ecf1ed;white-space:nowrap}
 .card-body{padding:14px 15px;flex:none;min-height:0;display:flex;flex-direction:column;justify-content:initial;gap:0}

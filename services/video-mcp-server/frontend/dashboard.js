@@ -21,33 +21,28 @@ const labels = {
   failed: "失败",
   cancelled: "已取消",
 };
-const modelDisplayNames = {
-  seedvr2: "SeedVR2",
-  rife: "RIFE",
-  "video-depth-anything": "Video-Depth-Anything",
-  "h3-latent-upscaler": "H3 Latent Upscaler",
-};
-const generationServices = new Set(["h3", "h3-sol", "h3-vdn", "h3-singularity", "fal", "grok"]);
-const knownChannels = new Set(["h3", "h3-sol", "h3-vdn", "h3-singularity", "fal", "grok"]);
+// Display metadata is shared by the list and detail API; raw IDs stay in task records.
+const generationServices = new Set(["h3", "h3-sol", "h3-vdn", "h3-singularity", "fal", "grok", "higgsfield"]);
 const serviceDisplayNames = {
-  "h3-latent-upscale": "H3 Latent Upscaler",
-  sr: "Video Super Resolution",
-  interpolate: "Frame Interpolation",
-  depth: "Depth Anything",
+  "h3-latent-upscale": "H3 Latent Upscaler", sr: "Video Super Resolution",
+  interpolate: "Frame Interpolation", depth: "Depth Anything",
 };
-const taskModel = (task) => {
-  if (!generationServices.has(task.service)) return "";
-  const model = task.model || "minimax-h3-ref2va";
-  return modelDisplayNames[model] || model;
-};
-const taskRoute = (task) => {
-  if (!generationServices.has(task.service)) return "";
-  const route = task.route || task.service;
-  return knownChannels.has(route) ? route : "";
+const taskModel = (task) => generationServices.has(task.service) ? task.presentation?.model_label || task.model || "未记录模型" : "";
+const taskRoute = (task) => generationServices.has(task.service) ? task.presentation?.channel_label || task.route || task.service || "未记录渠道" : "";
+const higgsfieldLogo = "<svg width=\"14\" height=\"14\" class=\"channel-logo\" aria-hidden=\"true\" focusable=\"false\" viewBox=\"0 0 1355 1355\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\n<rect width=\"1355\" height=\"1355\" rx=\"363\" fill=\"#D1FE17\"/>\n<path d=\"M1088.73 670.726L1087.95 662.156C1080.52 579.906 1026.99 425.16 878.52 425.16C768.341 425.16 685.111 533.914 611.658 629.796C553.046 706.582 502.264 772.452 446.385 772.452C431.533 770.898 412.391 763.49 400.676 746.73C390.125 731.522 387.392 712.035 392.858 688.649C401.448 651.619 450.686 617.315 502.644 580.677C531.161 561.19 560.472 540.529 580.79 520.651C639.402 464.134 669.094 423.205 669.094 357.336C669.094 291.467 632.76 258.716 602.283 244.682C541.331 216.625 451.862 232.994 394.818 282.114C386.227 289.913 377.625 297.31 369.807 304.328C312.371 355.392 273.696 390.086 185 363.571V470.369C302.605 522.216 401.46 423.205 438.97 377.605C467.878 347.592 498.355 330.049 521.024 330.049H522.2C532.359 330.441 540.95 334.34 547.211 341.357C557.37 353.056 561.279 366.699 559.319 381.896C555.018 413.864 521.808 451.273 460.856 492.203C389.352 540.149 269.799 620.444 260.413 721.399C253.379 793.905 290.889 866.4 349.501 894.458C486.247 959.165 569.477 847.684 657.77 729.969C725.365 639.149 789.443 553.01 878.531 553.01C958.625 553.01 988.318 619.271 988.318 660.982V669.173L980.5 670.726C786.318 705.029 680.429 886.67 680.429 970.473C680.429 1054.28 751.541 1126 839.061 1126C941.433 1126 1068.02 1038.69 1088.34 793.123L1089.12 784.162H1170V670.737H1088.73V670.726ZM982.841 796.62C967.216 943.566 891.804 1012.17 846.095 1012.17C825.385 1012.17 796.477 995.021 796.477 963.064C796.477 927.208 850.003 818.454 970.341 786.106L984.409 782.597L982.841 796.632V796.62Z\" fill=\"black\"/>\n</svg>";
+const localChannelLogo = '<svg class="channel-logo" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg>';
+const channelLogo = (task) => task.presentation?.channel_icon === "higgsfield" ? higgsfieldLogo : task.presentation?.channel_icon === "local" ? localChannelLogo : "";
+const generationBadge = (task) => {
+  const code = task.presentation?.generation_code;
+  const label = task.presentation?.generation_label;
+  return code && label ? `<span class="generation-type" tabindex="0" title="${escapeHTML(label)}" aria-label="${escapeHTML(code)} · ${escapeHTML(label)}" data-tooltip="${escapeHTML(label)}">${escapeHTML(code)}</span>` : "";
 };
 const taskOperation = (task) =>
   ({
     h3: "视频生成",
+    higgsfield: "视频生成",
+    grok: "视频生成",
+    "h3-singularity": "视频生成",
     "h3-sol": "视频生成",
     "h3-vdn": "视频生成",
     fal: "视频生成",
@@ -59,7 +54,7 @@ const taskOperation = (task) =>
 const taskService = (task) => serviceDisplayNames[task.service] || "";
 const taskIdentity = (task) => {
   if (generationServices.has(task.service)) {
-    return `<div class="task-identity"><div><span>模型：</span><strong>${escapeHTML(taskModel(task))}</strong></div>${taskRoute(task) ? `<div class="task-channel"><span>渠道：</span><strong>${escapeHTML(taskRoute(task))}</strong></div>` : ""}</div>`;
+    return `<div class="task-identity generation-identity" title="${escapeHTML(taskModel(task))} × ${escapeHTML(taskRoute(task))}"><strong class="identity-model">${escapeHTML(taskModel(task))}</strong><span class="identity-separator" aria-hidden="true">×</span><strong class="identity-channel">${channelLogo(task)}${escapeHTML(taskRoute(task))}</strong></div>`;
   }
   return `<div class="task-identity"><div><span>操作：</span><strong>${escapeHTML(taskOperation(task))}</strong></div><div><span>服务：</span><strong>${escapeHTML(taskService(task) || task.service || "未指定")}</strong></div></div>`;
 };
@@ -69,7 +64,7 @@ const taskPrompt = (task) =>
     : taskOperation(task);
 const taskTags = (task) => {
   if (generationServices.has(task.service)) {
-    return `<span>${task.route === "grok" ? (task.mode === "image_to_video" ? "图生视频" : "文生视频") : "REF2VA"}</span>${task.aspect_ratio ? `<span>${escapeHTML(task.aspect_ratio)}</span>` : ""}${task.duration_seconds != null ? `<span>${escapeHTML(task.duration_seconds)}s</span>` : ""}`;
+    return `${generationBadge(task)}${task.aspect_ratio ? `<span>${escapeHTML(task.aspect_ratio)}</span>` : ""}${task.duration_seconds != null ? `<span>${escapeHTML(task.duration_seconds)}s</span>` : ""}`;
   }
   const media = task.media || {};
   const size =
@@ -83,7 +78,7 @@ const taskTags = (task) => {
 };
 const taskTableIdentity = (task) =>
   generationServices.has(task.service)
-    ? `${escapeHTML(taskModel(task))}<br>${escapeHTML(taskRoute(task) || "未指定渠道")}`
+    ? `${escapeHTML(taskModel(task))} × ${escapeHTML(taskRoute(task))}<div class="model-tags">${generationBadge(task)}</div>`
     : `${escapeHTML(taskOperation(task))}<br>${escapeHTML(taskService(task) || task.service || "未指定服务")}`;
 let token = "",
   authorized = false,

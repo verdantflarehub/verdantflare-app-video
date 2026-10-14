@@ -545,6 +545,15 @@ html[data-embedded="true"] .task-identity .task-channel strong {
   color: var(--amber) !important;
 }
 
+html[data-embedded="true"] .generation-identity .identity-separator {
+  color: rgba(255, 255, 255, 0.75) !important;
+}
+
+html[data-embedded="true"] .generation-type::after {
+  background: var(--ink-2);
+  color: var(--paper);
+}
+
 /* Status Badge */
 html[data-embedded="true"] .card-badges {
   position: absolute !important;

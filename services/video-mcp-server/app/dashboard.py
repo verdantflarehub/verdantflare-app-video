@@ -61,6 +61,33 @@ class ImportRequest(BaseModel):
     expected_sha256: str = Field(min_length=64, max_length=64)
 
 
+def task_presentation(record):
+    """UI labels only: keep provider identifiers and stored requests unchanged."""
+    local = {"h3", "h3-sol", "h3-vdn", "h3-singularity"}
+    generating = record.service in local | {"fal", "grok", "higgsfield"}
+    route = record.request.get("route") or record.runtime_route or record.service
+    local_channel = route in local or (record.service == "h3-sol" and route == "minimax-h3-sol-ref2va")
+    model = record.request.get("model")
+    if not model and record.service in local:
+        model = "minimax-h3-ref2va"  # Historical H3 contract, never a provider fallback.
+    models = {"minimax-h3-ref2va": "MiniMax H3", "minimax-h3": "MiniMax H3",
+              "wan3_0": "Wan 3.0", "grok_video_v15_lite": "Grok Imagine 1.5 Lite",
+              "grok-imagine-video": "Grok Imagine", "seedance_2_5": "Seedance 2.5"}
+    modes = {"text_to_video": ("T2V", "文生视频"), "image_to_video": ("I2V", "图生视频"),
+             "first_last_frame_to_video": ("F2V", "首尾帧视频"),
+             "reference_to_video": ("R2V", "参考生视频"), "ref2va": ("R2V", "参考生视频")}
+    mode = record.request.get("mode")
+    if not mode and (record.service in local or model == "minimax-h3-ref2va"):
+        mode = "ref2va"
+    code, explanation = modes.get(mode, (None, None)) if generating else (None, None)
+    return {"is_generation": generating,
+            "model_label": models.get(model, model or "未记录模型") if generating else None,
+            "channel_label": ("本地" if local_channel else
+                              {"higgsfield": "Higgsfield", "fal": "fal.ai", "grok": "xAI"}.get(route, route or "未记录渠道")) if generating else None,
+            "channel_icon": ("local" if local_channel else "higgsfield" if route == "higgsfield" else None) if generating else None,
+            "generation_code": code, "generation_label": explanation}
+
+
 def public_task(record):
     record = TaskStore.with_timing(record)
     model = record.request.get("model")
@@ -73,7 +100,7 @@ def public_task(record):
         }.get(record.service)
     return {"video_task_id": record.video_task_id, "project_id": record.project_id,
             "idempotency_key": record.idempotency_key, "service": record.service, "route": record.runtime_route or record.request.get("route"),
-            "model": model,
+            "model": model, "presentation": task_presentation(record),
             "mode": record.request.get("mode"), "resolution": record.request.get("resolution"),
             "needs_attention": record.runtime_stage == "submission_unknown" or bool(record.error),
             "progress": (record.provider_state or {}).get("progress"),
