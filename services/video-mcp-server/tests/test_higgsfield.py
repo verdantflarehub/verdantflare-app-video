@@ -361,5 +361,19 @@ class HiggsfieldTest(unittest.TestCase):
         self.assertTrue(all(r.url.host == "project.internal" for r in self.calls))
 
 
+    def test_channel_health_projects_real_adapter_configuration_without_identity_or_token(self):
+        adapter = self.executor.higgsfield
+        observed = adapter.channel_health()
+        self.assertEqual(observed, {"enabled": True, "configured": True,
+            "binding_digest": hashlib.sha256(json.dumps(["team", ORG], separators=(",", ":")).encode()).hexdigest()})
+        self.assertNotIn(ORG, json.dumps(observed))
+        self.assertNotIn(adapter.token, json.dumps(observed))
+        adapter.enabled = False
+        self.assertFalse(adapter.channel_health()["enabled"])
+        adapter.token = ""
+        self.assertFalse(adapter.channel_health()["configured"])
+        self.assertEqual(self.calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()

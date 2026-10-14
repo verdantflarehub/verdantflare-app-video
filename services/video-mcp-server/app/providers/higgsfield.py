@@ -52,6 +52,12 @@ class HiggsfieldAdapter:
                  "poll": True, "cancel": False, "callback": False, "verification_status": "not_recorded"}
                 for model, bounds in MODELS.items()]
 
+    def channel_health(self):
+        """Internal, credential-free projection of the actual adapter switches."""
+        digest = hashlib.sha256(json.dumps([self.binding, self.organization],
+            separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
+        return {"enabled": self.enabled, "configured": self.configured(), "binding_digest": digest}
+
     def authorize(self, project_id, authority=None):
         from ..delivery import CALLER
         from .higgsfield_artifact import uuid7
