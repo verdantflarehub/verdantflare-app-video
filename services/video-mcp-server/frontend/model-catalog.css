@@ -1,0 +1,19 @@
+.catalog-toolbar { display:flex; flex-wrap:wrap; gap:16px; margin:24px 0 16px }
+.catalog-toolbar label { display:flex; flex-direction:column; gap:8px; color:var(--muted); font-size:12px; min-width:140px }
+.catalog-toolbar .catalog-search { flex:1; min-width:220px }
+.catalog-toolbar input,.catalog-toolbar select { border:1px solid var(--line); border-radius:6px; padding:10px 12px; background:var(--panel,var(--ink-2)); color:var(--paper,var(--ink)); font:inherit }
+.catalog-card { min-width:0; display:flex; flex-direction:column; align-items:stretch; gap:8px }
+.catalog-card h3,.catalog-card p { margin:0 }
+.catalog-card details { margin-top:auto; padding-top:12px; border-top:1px solid var(--line) }
+.catalog-card summary { cursor:pointer; color:var(--accent,var(--green)); font-size:13px }
+.catalog-channels { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px }
+.catalog-chip { border:1px solid var(--line); padding:4px 8px; border-radius:4px; font-size:12px }
+.catalog-card .catalog-spec { margin:8px 0 16px; color:var(--muted); font-size:13px }
+.catalog-detail { padding-top:12px; overflow-wrap:anywhere }
+.catalog-detail section+section { border-top:1px solid var(--line); padding-top:12px }
+.catalog-detail h4 { font-size:14px; margin:12px 0 }
+.catalog-detail h5 { font-size:13px; margin:16px 0 8px }
+.catalog-profile { margin:12px 0; font-size:13px }
+.catalog-channel-section { margin:24px 0 32px }
+.catalog-channel-section h2 { font-size:20px }
+.catalog-channel-section small { font-weight:400; color:var(--muted); font-size:13px }

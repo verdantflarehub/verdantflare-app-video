@@ -735,7 +735,7 @@ html[data-embedded="true"] tr:hover td {
 }
 
 /* Models & MCP Sections */
-html[data-embedded="true"] #modelServices,
+html[data-embedded="true"] #modelServices .business-models,
 html[data-embedded="true"] #mcpStatus .business-models {
   display: grid !important;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)) !important;

@@ -19,6 +19,14 @@ from app.tasks import TaskStore
 
 
 class DashboardTest(unittest.TestCase):
+    def test_catalog_endpoint_matches_capabilities_and_remains_read_only(self):
+        response = self.client.get('/api/model-catalog',headers=self.headers)
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.json(),self.executor.capabilities()['catalog'])
+        self.assertEqual(self.client.get('/api/model-catalog').status_code,401)
+        self.assertEqual(self.client.post('/api/model-catalog',headers=self.headers).status_code,405)
+        self.assertEqual(self.client.get('/api/dashboard',headers=self.headers).status_code,200)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)

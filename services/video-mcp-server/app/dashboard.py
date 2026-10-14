@@ -275,7 +275,9 @@ class Dashboard:
     async def endpoint(self, request: Request):
         try:
             action = request.url.path
-            if action == "/api/capabilities":
+            if action == "/api/model-catalog":
+                value = self.executor.catalog.snapshot()
+            elif action == "/api/capabilities":
                 value = self.executor.capabilities()
             elif action == "/api/dashboard":
                 value = await run_in_threadpool(self.snapshot, request)
@@ -377,7 +379,8 @@ class Dashboard:
                 Route("/dashboard/frontend/{name:path}", asset),
                 Route("/dashboard/static/{name:path}", asset),
                 Route("/dashboard/tasks/{task_id:str}", task_shell),
-                Route("/api/dashboard", self.endpoint), Route("/api/capabilities", self.endpoint), Route("/api/tasks", self.endpoint, methods=["POST"]),
+                Route("/api/dashboard", self.endpoint), Route("/api/capabilities", self.endpoint),
+                Route("/api/model-catalog", self.endpoint), Route("/api/tasks", self.endpoint, methods=["POST"]),
                 Route("/api/tasks/{task_id:str}", self.endpoint),
                 Route("/api/tasks/{task_id:str}/thumbnail", self.endpoint),
                 Route("/api/tasks/{task_id:str}/content", self.endpoint),

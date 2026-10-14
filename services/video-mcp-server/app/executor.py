@@ -53,6 +53,8 @@ def serialized(method):
 
 class VideoExecutor:
     def __init__(self, artifacts: ArtifactStore, tasks: TaskStore, client: httpx.Client | None = None) -> None:
+        from .catalog import ModelCatalog
+        self.catalog = ModelCatalog()
         self._lock = threading.RLock()
         self.artifacts = artifacts
         self.tasks = tasks
@@ -194,7 +196,7 @@ class VideoExecutor:
                         routes[-1]["readiness"] = "unreachable"
         routes.append(self.grok.capability())
         routes.extend(self.higgsfield.capabilities())
-        return {"default_model": "minimax-h3-ref2va", "default_route": self.runtime_route,
+        return {"catalog": self.catalog.snapshot(), "default_model": "minimax-h3-ref2va", "default_route": self.runtime_route,
                 "models": [{"model": "minimax-h3-ref2va"}, {"model": self.grok.model, "routes": ["grok"]},
                            *[{"model": item["model"], "routes": ["higgsfield"]} for item in self.higgsfield.capabilities()]],
                 "model_specification": {"aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
