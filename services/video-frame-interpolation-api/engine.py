@@ -46,3 +46,15 @@ class Engine:
             if not torch.isfinite(result).all():
                 raise RuntimeError('invalid_rife_output')
             return result.clamp(0, 1).mul(255).round().byte().cpu().numpy()
+
+    def begin_task(self):
+        from video_interpolation.gpu_guard import check_memory
+        self.torch.cuda.empty_cache()
+        report = check_memory(self.torch)
+        self.torch.cuda.reset_peak_memory_stats()
+        return report
+
+    def end_task(self):
+        peak = self.torch.cuda.max_memory_allocated()
+        self.torch.cuda.empty_cache()
+        return peak

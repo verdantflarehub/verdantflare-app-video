@@ -6,6 +6,17 @@ import subprocess
 import uuid
 
 
+class GPUMemoryUnavailable(RuntimeError):
+    pass
+
+
+def check_memory(torch, minimum_free_bytes=8 * 1024**3):
+    free, total = torch.cuda.mem_get_info()
+    if free < minimum_free_bytes:
+        raise GPUMemoryUnavailable('gpu_memory_occupancy_changed')
+    return {'free_bytes_before': free, 'total_bytes': total, 'minimum_free_bytes': minimum_free_bytes}
+
+
 def assigned_gpu():
     # CUDA base images declare "all"; the device plugin appends its UUID. libc
     # getenv/os.environ can retain the first duplicate, so inspect the original

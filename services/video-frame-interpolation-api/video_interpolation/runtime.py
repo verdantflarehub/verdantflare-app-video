@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from .integrity import sha256
 from .media import process, MediaError
+from .gpu_guard import GPUMemoryUnavailable
 from .schemas import InterpolationRequest
 TASK_PATTERN = re.compile('video_task_[0-9a-f]{32}')
 
@@ -106,7 +107,12 @@ class Queue:
             source = source_path(req, self.artifact_root)
             directory = self.root / 'projects' / req.project_id / task_id
             directory.mkdir(parents=True, exist_ok=False)
-            result = process(self.engine, source, directory, req)
+            memory = self.engine.begin_task()
+            try:
+                result = process(self.engine, source, directory, req)
+            finally:
+                memory['peak_allocated_bytes'] = self.engine.end_task()
+            result['gpu_memory'] = memory
             result.update(model=self.engine.metadata, input_sha256=req.source_sha256, output_sha256=sha256(directory / 'output.mp4'), preview_sha256=sha256(directory / 'preview.mp4'))
             (directory / 'manifest.json').write_text(json.dumps(result, indent=2) + '\n')
             with self.lock:
@@ -115,6 +121,8 @@ class Queue:
             logging.info('%s_completed %s', self.service, task_id)
         except Exception as exc:
             code = 'invalid_media' if isinstance(exc, MediaError) else 'inference_failed'
+            if isinstance(exc, GPUMemoryUnavailable):
+                code = 'gpu_memory_occupancy_changed'
             if isinstance(exc, HTTPException):
                 code = 'source_integrity_failed'
             logging.exception('%s_failed %s', self.service, task_id)

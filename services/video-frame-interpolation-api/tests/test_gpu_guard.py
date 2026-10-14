@@ -3,13 +3,22 @@ import unittest
 import uuid
 from unittest.mock import Mock, patch
 
-from video_interpolation.gpu_guard import assigned_gpu, verify_gpu
+from video_interpolation.gpu_guard import assigned_gpu, verify_gpu, check_memory, GPUMemoryUnavailable
 
 
 GPU = 'GPU-29a56c24-484e-d51d-fac9-b141be9e24c5'
 
 
 class GPUAllocationTest(unittest.TestCase):
+    def test_low_memory_refuses_before_inference(self):
+        self.torch.cuda.mem_get_info.return_value = (7 * 1024**3, 32 * 1024**3)
+        with self.assertRaises(GPUMemoryUnavailable):
+            check_memory(self.torch)
+
+    def test_memory_gate_reports_actual_free_memory(self):
+        self.torch.cuda.mem_get_info.return_value = (12 * 1024**3, 32 * 1024**3)
+        self.assertEqual(check_memory(self.torch)['free_bytes_before'], 12 * 1024**3)
+
     def setUp(self):
         self.torch = Mock()
         self.torch.cuda.is_available.return_value = True
