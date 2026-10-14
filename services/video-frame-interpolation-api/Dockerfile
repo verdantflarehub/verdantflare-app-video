@@ -2,7 +2,7 @@
 FROM docker.io/pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime
 LABEL org.opencontainers.image.source="https://github.com/verdantflarehub/verdantflare-app-video"
 LABEL org.opencontainers.image.title="VerdantFlare video-frame-interpolation-api"
-LABEL org.opencontainers.image.version="0.2.0"
+LABEL org.opencontainers.image.version="0.2.1"
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg git && rm -rf /var/lib/apt/lists/*
 RUN git clone https://github.com/hzwer/ECCV2022-RIFE.git /opt/rife && git -C /opt/rife checkout 5d8adbdd40e12c2c8f91930eff838aebe561c086
 # Prefer the distribution FFmpeg with libx264 over Conda's minimal binary.

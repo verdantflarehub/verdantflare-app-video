@@ -1,13 +1,32 @@
 """Validate one assigned CUDA device for native sharing or legacy HAMI."""
 import ctypes
+from pathlib import Path
 import re
 import uuid
 
 
-def verify_gpu(torch, allocation, sharing_strategy='none', visible_devices=''):
+def assigned_gpu():
+    # CUDA base images declare "all"; the device plugin appends its UUID. libc
+    # getenv/os.environ can retain the first duplicate, so inspect the original
+    # OCI process environment and require exactly one concrete assigned UUID.
+    try:
+        values = [entry.split(b'=', 1)[1].decode('ascii')
+                  for entry in Path('/proc/self/environ').read_bytes().split(b'\0')
+                  if entry.startswith(b'NVIDIA_VISIBLE_DEVICES=')]
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError('native_gpu_assignment_unavailable') from exc
+    concrete = [value for value in values if value not in ('all', 'void', 'none', '')]
+    if len(concrete) != 1 or not re.fullmatch(r'GPU-[0-9a-f-]{36}', concrete[0]):
+        raise RuntimeError('native_single_gpu_allocation_required')
+    return concrete[0]
+
+
+def verify_gpu(torch, allocation, sharing_strategy='none', visible_devices=None):
     if not torch.cuda.is_available() or torch.cuda.device_count() != 1:
         raise RuntimeError('exactly_one_cuda_gpu_required')
     if sharing_strategy == 'time-slicing':
+        if visible_devices is None:
+            visible_devices = assigned_gpu()
         match = re.fullmatch(r'GPU-[0-9a-f-]{36}', visible_devices)
         if allocation or not match:
             raise RuntimeError('native_single_gpu_allocation_required')
