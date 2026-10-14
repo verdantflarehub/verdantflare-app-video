@@ -97,7 +97,13 @@ class Media:
         if abs(duration - generation["duration_seconds"]) > max(2 / fps, .5):
             raise ProviderError("media_contract_mismatch")
         ratio = Fraction(generation["aspect_ratio"].replace(":", "/"))
-        if abs(video["width"] - video["height"] * ratio) > 2:
+        ratio_error = abs(video["width"] - video["height"] * ratio)
+        # Official Grok Lite 480p advertises 854x480 but encodes 848x480.
+        # Accept only the observed 16-pixel grid rounding, with <=1% error.
+        aligned_grok = (generation.get("model") == "grok_video_v15_lite" and
+                        video["width"] % 16 == 0 and video["height"] % 16 == 0 and
+                        ratio_error <= 8 and ratio_error / (video["height"] * ratio) <= .01)
+        if ratio_error > 2 and not aligned_grok:
             raise ProviderError("media_contract_mismatch")
         if min(video["width"], video["height"]) < int(generation["resolution"][:-1]):
             raise ProviderError("media_contract_mismatch")

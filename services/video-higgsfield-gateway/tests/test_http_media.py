@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 import httpx
 
@@ -103,6 +104,20 @@ class MediaTests(unittest.TestCase):
     def test_path_traversal_is_rejected(self):
         with self.assertRaisesRegex(ProviderError, "invalid_job_id"):
             self.media.path("../credentials")
+
+    def test_grok_encoder_alignment_retains_strict_ratio_boundary(self):
+        generation = {"model": "grok_video_v15_lite", "duration_seconds": 2,
+                      "resolution": "480p", "aspect_ratio": "16:9"}
+        def probe(width, model="grok_video_v15_lite"):
+            data = {"streams": [{"codec_type": "video", "codec_name": "h264", "width": width,
+                     "height": 480, "avg_frame_rate": "24/1"}], "format": {"duration": "2.042"}}
+            with patch("subprocess.run", return_value=SimpleNamespace(stdout=json.dumps(data))):
+                return Media.probe(Path("synthetic.mp4"), {**generation, "model": model})
+        self.assertEqual(probe(848)["width"], 848)
+        self.assertEqual(probe(854)["width"], 854)
+        for width, model in [(832, "grok_video_v15_lite"), (848, "seedance_2_5"), (847, "grok_video_v15_lite")]:
+            with self.assertRaisesRegex(ProviderError, "media_contract_mismatch"):
+                probe(width, model)
 
 
 if __name__ == "__main__":
