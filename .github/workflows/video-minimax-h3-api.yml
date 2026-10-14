@@ -16,7 +16,7 @@ concurrency:
 
 env:
   SERVICE: video-minimax-h3-api
-  VERSION: 0.5.2
+  VERSION: 0.6.0
 
 jobs:
   build:
