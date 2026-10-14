@@ -207,7 +207,9 @@ async function api(path, options = {}) {
       502: "推理或素材服务暂时不可用。提交结果不确定时请先查询原任务，不要更换幂等键重发。",
       503: "服务尚未配置访问 Token。",
     };
-    throw new Error(messages[response.status] || "操作失败，请稍后重试。");
+    const error = new Error(messages[response.status] || "操作失败，请稍后重试。");
+    error.status = response.status;
+    throw error;
   }
   return options.blob ? response.blob() : response.json();
 }
@@ -352,7 +354,7 @@ function render(data) {
   const galleryHTML = data.tasks
     .map(
       (t) =>
-        `<article class="model-card" tabindex="0" role="button" data-task="${escapeHTML(t.video_task_id)}" aria-label="查看 ${escapeHTML(t.idempotency_key)}"><div class="card-thumb-wrap"><span>${t.status === "succeeded" ? "▶" : t.status === "running" ? "◌" : "◇"}</span>${taskIdentity(t)}<div class="card-badges">${badge(t)}</div><div class="card-times"><span title="开始时间">${date(t.created_at)}</span><span title="排队 / 运行">${elapsed(t)}</span></div></div><div class="card-body"><div><div class="card-title-row"><span title="${escapeHTML(t.video_task_id)} · ${escapeHTML(t.project_id)} / ${escapeHTML(t.idempotency_key)}">${escapeHTML(t.project_id)} / ${escapeHTML(t.idempotency_key)}</span></div><p class="card-prompt">${escapeHTML(taskPrompt(t))}</p></div><div class="card-footer"><div class="model-tags">${taskTags(t)}</div><span class="card-footer-action">查看详情 →</span></div></div></article>`,
+        `<article class="model-card" tabindex="0" role="button" data-task="${escapeHTML(t.video_task_id)}" aria-label="查看 ${escapeHTML(t.idempotency_key)}"><div class="card-thumb-wrap"><span>${t.status === "succeeded" ? "▶" : t.status === "running" ? "◌" : "◇"}</span>${taskIdentity(t)}<div class="card-badges">${badge(t)}</div><div class="card-times"><span title="开始时间">${date(t.created_at)}</span><span title="排队 / 运行">${elapsed(t)}</span></div></div><div class="card-body"><div><div class="card-title-row"><span title="${escapeHTML(t.video_task_id)} · ${escapeHTML(t.project_id)} / ${escapeHTML(t.idempotency_key)}">${escapeHTML(taskDisplayName(t))}</span></div><p class="card-prompt">${escapeHTML(taskPrompt(t))}</p></div><div class="card-footer"><div class="model-tags">${taskTags(t)}</div><span class="card-footer-action">查看详情 →</span></div></div></article>`,
     )
     .join("");
   reconcileGallery(galleryHTML, data.tasks);
@@ -365,6 +367,7 @@ function render(data) {
   if ($("taskRows").innerHTML !== tableHTML)
     $("taskRows").innerHTML = tableHTML;
   previews(data.tasks);
+  if (window.studioEmbedded) window.studioNavigate("/dashboard" + (location.hash || "#tasks"));
   $("pageLabel").textContent =
     `第 ${page} / ${Math.max(1, Math.ceil(total / 24))} 页 · ${total} 个任务`;
   $("prevPage").disabled = page <= 1;
@@ -666,6 +669,12 @@ if (window.studioEmbedded) {
           page,
           table: $("btnViewTable").classList.contains("active"),
         };
+  const saveView = () => {
+    if (!detailTaskId && authorized) window.studioNavigate("/dashboard" + (location.hash || "#tasks"));
+  };
+  for (const eventName of ["click", "change", "input"]) {
+    document.addEventListener(eventName, () => queueMicrotask(saveView));
+  }
   window.addEventListener("studio-restore", (event) => {
     if (detailTaskId) {
       authorized = true;

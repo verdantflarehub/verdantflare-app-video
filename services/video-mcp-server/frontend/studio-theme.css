@@ -812,3 +812,9 @@ html[data-embedded="true"] #imagePreview {
   color: var(--paper) !important;
   border-color: var(--line) !important;
 }
+
+/* Studio owns the sole breadcrumb in hosted mode. Details have no root tabs. */
+html[data-embedded="true"] .video-breadcrumb,
+html[data-embedded="true"][data-page="task"] .workspace-nav,
+html[data-embedded="true"][data-page="task"] .site-header,
+html[data-embedded="true"][data-page="task"] .business-intro { display: none !important; }

@@ -1,5 +1,6 @@
 "use strict";
 // Explicit hosted mode. Never access host DOM, cookies, storage or credentials.
+if (/\/dashboard\/tasks\/[^/]+$/.test(location.pathname)) document.documentElement.dataset.page = 'task';
 window.studioEmbedded = new URLSearchParams(location.search).get('embed') === '1' && window.parent !== window;
 if (window.studioEmbedded) {
  document.documentElement.dataset.embedded='true';
