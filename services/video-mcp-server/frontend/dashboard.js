@@ -92,7 +92,8 @@ let token = "",
   total = 0,
   busy = false,
   timer,
-  searchTimer;
+  searchTimer,
+  listReady = false;
 const thumbnails = new Map();
 let modalTask = null,
   modalUrls = [],
@@ -156,6 +157,7 @@ function closeModal(id) {
   restoreFocus?.focus();
 }
 function invalidate() {
+  listReady = false;
   thumbnails.forEach((v) => URL.revokeObjectURL(v.url));
   thumbnails.clear();
   authorized = false;
@@ -367,6 +369,7 @@ function render(data) {
   if ($("taskRows").innerHTML !== tableHTML)
     $("taskRows").innerHTML = tableHTML;
   previews(data.tasks);
+  listReady = true;
   if (window.studioEmbedded) window.studioNavigate("/dashboard" + (location.hash || "#tasks"));
   $("pageLabel").textContent =
     `第 ${page} / ${Math.max(1, Math.ceil(total / 24))} 页 · ${total} 个任务`;
@@ -670,7 +673,7 @@ if (window.studioEmbedded) {
           table: $("btnViewTable").classList.contains("active"),
         };
   const saveView = () => {
-    if (!detailTaskId && authorized) window.studioNavigate("/dashboard" + (location.hash || "#tasks"));
+    if (!detailTaskId && authorized && listReady) window.studioNavigate("/dashboard" + (location.hash || "#tasks"));
   };
   for (const eventName of ["click", "change", "input"]) {
     document.addEventListener(eventName, () => queueMicrotask(saveView));
