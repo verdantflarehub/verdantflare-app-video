@@ -40,6 +40,13 @@ class HiggsfieldTest(unittest.TestCase):
         self.assertEqual(record.request["mode"], "reference_to_video")
         self.assertEqual(record.request["resolution"], "480p")
         self.assertEqual([v["kind"] for v in record.request["sources"]], ["image", "video"])
+        from app import server
+        with patch.object(server, "executor", self.executor), patch.object(self.executor.higgsfield, "cost", return_value=12) as quote:
+            preview = server.video_preflight(project_id=PROJECT, route="higgsfield", model="seedance_2_5_draft",
+                prompt="dance", duration_seconds=4, references=refs).structured_content
+            self.assertEqual(preview["quoted_credits"], 12)
+            self.assertEqual(quote.call_args.args[0]["mode"], "reference_to_video")
+            self.assertEqual(len(quote.call_args.args[0]["sources"]), 2)
         for changes in ({"mode": "image_to_video"}, {"resolution": "720p"}):
             with self.assertRaises(ValueError):
                 self.create(model="seedance_2_5_draft", duration_seconds=4, references=refs, **changes)

@@ -390,7 +390,7 @@ def video_preflight(project_id: str, prompt: str, references: dict[str, list[dic
         return _result({"status": "validated", "generation_verified": False, "input_digest": digest,
             "resolved_output": {k: request[k] for k in ("model", "mode", "resolution", "duration_seconds", "aspect_ratio")},
             "reference_mapping": request["references"],
-            **({"quoted_credits": executor.higgsfield.cost(request)} if request["model"] == "wan3_0" else {})})
+            **({"quoted_credits": executor.higgsfield.cost(request)} if request["model"] in {"wan3_0", "seedance_2_5_draft"} else {})})
     if selected == "grok":
         request, digest = executor.grok.normalize(project_id=require_project_id(project_id),
             prompt=prompt, model=model, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
