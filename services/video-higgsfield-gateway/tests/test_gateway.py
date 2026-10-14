@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from higgsfield_gateway.cli import CLI, DMIT_PROXY, ProviderError
 from higgsfield_gateway.credentials import CredentialError, handover_receipt, import_bundle
 from higgsfield_gateway.jobs import Gateway, GatewayError
-from higgsfield_gateway.models import Generation, JobRequest
+from higgsfield_gateway.models import Generation, JobRequest, LimitUpdate
 
 ORG = "0199abcd-0000-7000-8000-000000000001"
 USER = "0199abcd-0000-7000-8000-000000000002"
@@ -129,7 +129,10 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(self.creates(), 1)
 
     def test_concurrent_requests_obey_atomic_budget(self):
-        gateway = self.make_gateway(credit_limit=2)
+        gateway = self.gateway
+        gateway.update_limits(LimitUpdate(binding_id="team", revision=1, credit_limit="2",
+                              submission_limit=2, operation_id="test-budget"),
+                              user_id=USER, organization_id=ORG, station_id="station-test")
         def submit(n):
             try:
                 return gateway.submit(request(n))["status"]
@@ -179,6 +182,9 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(self.creates(), 1)
 
     def test_zero_limits_disable_generation(self):
+        self.gateway.update_limits(LimitUpdate(binding_id="team", revision=1, credit_limit="0",
+                                   submission_limit=0, operation_id="test-pause"),
+                                   user_id=USER, organization_id=ORG, station_id="station-test")
         with self.assertRaisesRegex(GatewayError, "account_budget_exceeded"):
             self.make_gateway(credit_limit=0, submission_limit=0).submit(request())
         self.assertEqual(self.creates(), 0)

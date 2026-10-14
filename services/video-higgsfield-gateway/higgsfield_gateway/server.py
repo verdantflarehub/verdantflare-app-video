@@ -19,7 +19,7 @@ from .cli import CLI, ProviderError
 from .credentials import lifetime_lock
 from .jobs import Gateway, GatewayError
 from .media import Media
-from .models import Generation, JobRequest
+from .models import Generation, JobRequest, ReferenceMedia
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
@@ -54,6 +54,13 @@ def create_app(gateway=None, token=None):
             return JSONResponse({"error": "unauthorized"}, status_code=401)
         g = request.app.state.gateway
         try:
+            if request.method == "PUT":
+                reference = ReferenceMedia.model_validate({
+                    "project_id": request.path_params["project"], "sha256": request.path_params["digest"],
+                    "format": request.path_params["format"], "kind": request.headers.get("X-Media-Kind"),
+                    "size": int(request.headers.get("Content-Length", "0"))})
+                result = await g.inputs.receive(reference, request.stream())
+                return JSONResponse(result, headers={"Cache-Control": "no-store"})
             data = None
             if request.method == "POST":
                 content = bytearray()
@@ -97,6 +104,7 @@ def create_app(gateway=None, token=None):
 
     app = Starlette(routes=[Route("/health", health),
         Route("/v1/account", handle), Route("/v1/models", handle),
+        Route("/v1/inputs/{project:str}/{digest:str}/{format:str}", handle, methods=["PUT"]),
         Route("/v1/cost", handle, methods=["POST"]), Route("/v1/jobs", handle, methods=["POST"]),
         Route("/v1/jobs/{identity:str}", handle), Route("/v1/jobs/{identity:str}/content", handle)], lifespan=lifespan)
     app.state.gateway = gateway

@@ -38,6 +38,7 @@ class CLI:
 
     def run(self, args: list[str], timeout: int = 60):
         allowed = {("account", "status"), ("model", "get"), ("workspace", "status"),
+                   ("upload", "create"),
                    ("generate", "cost"), ("generate", "create"), ("generate", "get")}
         if tuple(args[:2]) not in allowed:
             raise ProviderError("command_denied")

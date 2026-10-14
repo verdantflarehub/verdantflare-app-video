@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from decimal import Decimal
 import hashlib
 import io
 import json
@@ -16,7 +17,8 @@ import uuid
 from PIL import Image
 
 from .cli import ProviderError
-from .models import Generation, JobRequest, MODELS
+from .models import Generation, JobRequest, LimitUpdate, MODELS
+from .inputs import Inputs
 
 
 class GatewayError(RuntimeError):
@@ -39,11 +41,13 @@ class Gateway:
             raise ValueError("account_binding_required")
         self.root, self.cli = root, cli
         self.binding, self.organization, self.workspace = binding, organization, workspace
-        self.credit_limit, self.submission_limit = credit_limit, submission_limit
+        initial = LimitUpdate(binding_id=binding, revision=1, credit_limit=str(credit_limit),
+                              submission_limit=submission_limit, operation_id="initial-limits")
         self.max_concurrent, self.max_job_credits = max_concurrent, max_job_credits
         self.media = media
         self._lock = threading.RLock()
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.inputs = Inputs(root / "inputs")
         with self.db() as db:
             db.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, digest TEXT NOT NULL, record TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS binding (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL)")
@@ -52,6 +56,14 @@ class Gateway:
             if old and old[0] != identity:
                 raise GatewayError("account_binding_changed")
             db.execute("INSERT OR IGNORE INTO binding VALUES(1, ?)", (identity,))
+            db.execute("CREATE TABLE IF NOT EXISTS limits (id INTEGER PRIMARY KEY CHECK(id=1), record TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS limit_operations "
+                       "(id TEXT PRIMARY KEY, digest TEXT NOT NULL, record TEXT NOT NULL)")
+            # Environment limits initialize new journals only; a restart must
+            # never discard a management update or reset existing reservations.
+            initial_record = initial.model_dump(exclude={"operation_id"})
+            initial_record.update(updated_at=now(), updated_by=None)
+            db.execute("INSERT OR IGNORE INTO limits VALUES(1, ?)", (json.dumps(initial_record),))
             # Any process death after durable intent may already have spent credits.
             for row in db.execute("SELECT record FROM jobs").fetchall():
                 record = json.loads(row[0])
@@ -82,6 +94,52 @@ class Gateway:
             raise GatewayError("job_not_found", 404)
         return json.loads(row[0])
 
+    @staticmethod
+    def _limits(db):
+        row = db.execute("SELECT record FROM limits WHERE id=1").fetchone()
+        if not row:
+            raise GatewayError("limits_unavailable", 503)
+        return json.loads(row[0])
+
+    def limits(self):
+        with self.db() as db:
+            value = self._limits(db)
+            jobs = [json.loads(row[0]) for row in db.execute("SELECT record FROM jobs")]
+            reserved = sum((Decimal(str(job["quoted_credits"])) for job in jobs), Decimal(0))
+            active = [job for job in jobs if job["status"] not in {"completed", "failed"}]
+            value.update(submitted_count=len(jobs), reserved_credits=str(reserved),
+                         active_count=len(active),
+                         active_reserved_credits=str(sum((Decimal(str(job["quoted_credits"])) for job in active), Decimal(0))),
+                         budget_available=(len(jobs) < value["submission_limit"] and
+                                           reserved <= Decimal(value["credit_limit"])))
+            return value
+
+    def update_limits(self, change: LimitUpdate, *, user_id: str, organization_id: str, station_id: str):
+        # The management listener supplies these identities only after checking
+        # its Studio service credential. No identity comes from the request body.
+        if change.binding_id != self.binding or organization_id != self.organization:
+            raise GatewayError("account_access_denied", 403)
+        if not user_id or not station_id or len(user_id) > 128 or len(station_id) > 128:
+            raise GatewayError("account_access_denied", 403)
+        actor = {"user_id": user_id, "organization_id": organization_id, "station_id": station_id}
+        payload = {"change": change.model_dump(), "actor": actor}
+        digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+        with self._lock, self.db() as db:
+            prior = db.execute("SELECT digest,record FROM limit_operations WHERE id=?", (change.operation_id,)).fetchone()
+            if prior:
+                if prior[0] != digest:
+                    raise GatewayError("idempotency_conflict")
+                return json.loads(prior[1])["after"]
+            before = self._limits(db)
+            if change.revision != before["revision"]:
+                raise GatewayError("limits_revision_conflict")
+            after = change.model_dump(exclude={"operation_id"})
+            after.update(revision=before["revision"] + 1, updated_at=now(), updated_by=user_id)
+            audit = {"actor": actor, "before": before, "after": after}
+            db.execute("UPDATE limits SET record=? WHERE id=1", (json.dumps(after),))
+            db.execute("INSERT INTO limit_operations VALUES(?,?,?)", (change.operation_id, digest, json.dumps(audit)))
+            return after
+
     def check_binding(self):
         path = self.cli.state / "binding.json"
         try:
@@ -105,6 +163,10 @@ class Gateway:
             raise GatewayError("workspace_binding_mismatch", 503)
 
     def account(self):
+        with self._lock:
+            return self._account()
+
+    def _account(self):
         self.check_binding()
         data = self.cli.run(["account", "status"])
         if (not isinstance(data, dict) or type(data.get("credits")) not in (int, float) or
@@ -138,9 +200,12 @@ class Gateway:
             os.chmod(path, 0o600)
             yield path
 
-    def quote(self, generation: Generation, path=None):
-        data = self.cli.run(generation.arguments("cost", path))
-        if not isinstance(data, dict) or type(data.get("credits")) not in (int, float) or not 0 < data["credits"] <= self.max_job_credits:
+    def reference_ids(self, generation):
+        return [self.inputs.upload(ref, self.cli, self.workspace) for ref in generation.references]
+
+    def quote(self, generation: Generation, path=None, media_ids=None):
+        data = self.cli.run(generation.arguments("cost", path, media_ids))
+        if not isinstance(data, dict) or type(data.get("credits")) not in (int, float) or not 0 <= data["credits"] <= self.max_job_credits:
             raise GatewayError("cost_not_allowed")
         return data["credits"]
 
@@ -148,13 +213,16 @@ class Gateway:
         with self._lock:
             self.check_binding()
             with self.source(generation) as path:
-                return {"credits": self.quote(generation, path)}
+                return {"credits": self.quote(generation, path, self.reference_ids(generation))}
 
     def submit(self, request: JobRequest):
         if request.binding_id != self.binding or request.organization_id != self.organization:
             raise GatewayError("account_access_denied", 403)
         # Image bytes never enter the durable journal, only their immutable digest.
         body = request.model_dump()
+        if not request.generation.references:
+            # Preserve existing durable request digests across this schema upgrade.
+            body["generation"].pop("references", None)
         if request.generation.source:
             body["generation"]["source"].pop("content_base64")
         digest = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
@@ -167,13 +235,15 @@ class Gateway:
                     return self.public(json.loads(old[1]))
             account = self.account()
             with self.source(request.generation) as path:
-                cost = self.quote(request.generation, path)
+                media_ids = self.reference_ids(request.generation)
+                cost = self.quote(request.generation, path, media_ids)
                 with self.db() as db:
                     jobs = [json.loads(row[0]) for row in db.execute("SELECT record FROM jobs")]
                     if any(job["stage"] == "submission_unknown" for job in jobs):
                         raise GatewayError("account_reconciliation_required")
-                    if (len(jobs) >= self.submission_limit or
-                            sum(job["quoted_credits"] for job in jobs) + cost > self.credit_limit):
+                    limits = self._limits(db)
+                    if (len(jobs) >= limits["submission_limit"] or
+                            sum((Decimal(str(job["quoted_credits"])) for job in jobs), Decimal(0)) + Decimal(str(cost)) > Decimal(limits["credit_limit"])):
                         raise GatewayError("account_budget_exceeded")
                     active = [job for job in jobs if job["status"] not in {"completed", "failed"}]
                     if len(active) >= self.max_concurrent:
@@ -183,10 +253,11 @@ class Gateway:
                     if sum(job["quoted_credits"] for job in active) + cost > account["credits"]:
                         raise GatewayError("insufficient_credits")
                     record = {**body, "status": "running", "stage": "submitting", "remote_id": None,
+                              "reference_upload_ids": media_ids,
                               "quoted_credits": cost, "created_at": now(), "updated_at": now(), "error": None}
                     db.execute("INSERT INTO jobs VALUES(?,?,?)", (request.request_id, digest, json.dumps(record)))
                 try:
-                    response = self.cli.run(request.generation.arguments("create", path), timeout=90)
+                    response = self.cli.run(request.generation.arguments("create", path, media_ids), timeout=90)
                     # Fixed CLI 1.1.26 returns a list of job UUIDs for create.
                     if not isinstance(response, list) or len(response) != 1 or not isinstance(response[0], str):
                         raise ValueError
@@ -243,6 +314,7 @@ class Gateway:
         return {key: record[key] for key in keys if key in record}
 
     def capabilities(self):
+        limits = self.limits()
         return {"binding_id": self.binding, "models": MODELS,
-                "generation_enabled": self.credit_limit > 0 and self.submission_limit > 0,
+                "generation_enabled": limits["budget_available"],
                 "readiness": "not_checked"}

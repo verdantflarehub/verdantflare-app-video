@@ -15,7 +15,7 @@ import httpx
 
 from ..tasks import TaskConflict
 
-MODELS = {"grok_video_v15_lite": (2, 15), "seedance_2_5": (4, 15)}
+MODELS = {"grok_video_v15_lite": (2, 15), "seedance_2_5": (4, 15), "wan3_0": (2, 30)}
 RATIOS = {"16:9", "9:16", "4:3", "3:4", "1:1"}
 
 
@@ -46,7 +46,9 @@ class HiggsfieldAdapter:
                  "limit_scope": "adapter", "duration_seconds": {"minimum": bounds[0], "maximum": bounds[1]},
                  "resolutions": ["720p"] if model == "seedance_2_5" else ["480p", "720p"],
                  "aspect_ratios": sorted(RATIOS | ({"21:9"} if model == "seedance_2_5" else set())),
-                 "modes": ["text_to_video"] if model == "seedance_2_5" else ["text_to_video", "image_to_video"],
+                 "modes": (["text_to_video", "reference_to_video"] if model == "wan3_0" else
+                           ["text_to_video"] if model == "seedance_2_5" else ["text_to_video", "image_to_video"]),
+                 "reference_limits": {"images": 4, "videos": 1, "audios": 0} if model == "wan3_0" else None,
                  "poll": True, "cancel": False, "callback": False, "verification_status": "not_recorded"}
                 for model, bounds in MODELS.items()]
 
@@ -89,13 +91,27 @@ class HiggsfieldAdapter:
         if not isinstance(references, dict) or set(references) - {"images", "videos", "audios"}:
             raise ValueError("invalid_references")
         refs = {k: references.get(k, []) for k in ("images", "videos", "audios")}
-        if any(not isinstance(v, list) for v in refs.values()) or refs["videos"] or refs["audios"] or len(refs["images"]) > 1:
+        if any(not isinstance(v, list) for v in refs.values()) or refs["audios"]:
             raise ValueError("unsupported_references")
-        resolved_mode = "image_to_video" if refs["images"] else "text_to_video"
+        mixed = model == "wan3_0"
+        if len(refs["images"]) > (4 if mixed else 1) or len(refs["videos"]) > (1 if mixed else 0):
+            raise ValueError("unsupported_references")
+        has_refs = bool(refs["images"] or refs["videos"])
+        resolved_mode = "reference_to_video" if mixed and has_refs else "image_to_video" if has_refs else "text_to_video"
         if mode is not None and mode != resolved_mode:
             raise ValueError("mode_reference_mismatch")
         source = None
-        if refs["images"]:
+        sources = []
+        if mixed:
+            for group, kind in (("images", "image"), ("videos", "video")):
+                for ref in refs[group]:
+                    if (not isinstance(ref, dict) or set(ref) != {"artifact_id", "purpose"} or
+                            not isinstance(ref["purpose"], str) or not 0 < len(ref["purpose"]) <= 256 or
+                            ref["purpose"] in {"first_frame", "last_frame"}):
+                        raise ValueError("invalid_reference")
+                    _, info = self.reference_source(project_id, ref["artifact_id"], kind)
+                    sources.append(info)
+        elif refs["images"]:
             if model != "grok_video_v15_lite":
                 raise ValueError("unsupported_references")
             ref = refs["images"][0]
@@ -121,6 +137,8 @@ class HiggsfieldAdapter:
         value = dict(project_id=project_id, model=model, prompt=prompt, duration_seconds=duration_seconds,
                      aspect_ratio=aspect_ratio, references=refs, mode=resolved_mode, resolution=resolution,
                      source=source, route="higgsfield", binding_id=self.binding, gateway_profile=self.profile)
+        if mixed:
+            value["sources"] = sources
         digest = "sha256:" + hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         return value, digest
 
@@ -140,15 +158,62 @@ class HiggsfieldAdapter:
             runtime_route="higgsfield", runtime_version="higgsfield-cli-1.1.26")
         return self.executor.tasks.update(record, service="higgsfield", runtime_stage="prepared", provider_state={})
 
-    def payload(self, record):
-        p = record.request
+    def reference_source(self, project_id, artifact_id, kind):
+        asset = self.executor.artifacts.get(artifact_id, project_id)
+        allowed = {"image/png": "png", "image/jpeg": "jpeg", "image/webp": "webp"} if kind == "image" else {"video/mp4": "mp4"}
+        if asset.media_type not in allowed or not 0 < asset.size <= (10 if kind == "image" else 128) * 1024 * 1024:
+            raise ValueError("unsupported_reference_media")
+        path = self.executor.artifacts.content_path(asset)
+        if path.stat().st_size != asset.size:
+            raise ValueError("source_integrity_failed")
+        with path.open("rb") as stream:
+            if hashlib.file_digest(stream, "sha256").hexdigest() != asset.sha256:
+                raise ValueError("source_integrity_failed")
+        return path, {"project_id": project_id, "sha256": asset.sha256, "size": asset.size,
+                      "kind": kind, "format": allowed[asset.media_type]}
+
+    def generation_payload(self, p):
         generation = {k: p[k] for k in ("model", "prompt", "duration_seconds", "aspect_ratio", "resolution", "mode")}
         if p["source"]:
-            data, source = self.executor.grok.source(record.project_id, p["references"]["images"][0]["artifact_id"])
+            data, source = self.executor.grok.source(p["project_id"], p["references"]["images"][0]["artifact_id"])
             if source != p["source"]:
                 raise ValueError("source_integrity_failed")
             generation["source"] = {"content_base64": base64.b64encode(data).decode(), "sha256": source["sha256"],
                                     "format": source["mime"].split("/")[1]}
+        if p.get("sources"):
+            references = []
+            for group, kind in (("images", "image"), ("videos", "video")):
+                for ref in p["references"][group]:
+                    path, info = self.reference_source(p["project_id"], ref["artifact_id"], kind)
+                    if len(references) >= len(p["sources"]) or info != p["sources"][len(references)]:
+                        raise ValueError("source_integrity_failed")
+                    with path.open("rb") as stream:
+                        response = self.client.put(self.url + "/v1/inputs/" + info["project_id"] + "/" + info["sha256"] + "/" + info["format"],
+                            headers={**self.headers(), "Content-Length": str(info["size"]),
+                                     "Content-Type": "application/octet-stream", "X-Media-Kind": kind},
+                            content=stream, timeout=120)
+                    response.raise_for_status()
+                    if response.json() != {"status": "committed", **info}:
+                        raise ValueError("input_receipt_mismatch")
+                    references.append(info)
+            if len(references) != len(p["sources"]):
+                raise ValueError("source_integrity_failed")
+            generation["references"] = references
+        return generation
+
+    def cost(self, request):
+        response = self.client.post(self.url + "/v1/cost", headers=self.headers(), json=self.generation_payload(request))
+        response.raise_for_status()
+        data = response.json()
+        value = data.get("credits")
+        import math
+        if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+            raise ValueError("invalid_cost")
+        return value
+
+    def payload(self, record):
+        p = record.request
+        generation = self.generation_payload(p)
         return {"request_id": record.video_task_id, "binding_id": p["binding_id"], "project_id": record.project_id,
                 "organization_id": record.authority["organization_id"], "user_id": record.authority["user_id"],
                 "generation": generation}

@@ -310,5 +310,46 @@ class HiggsfieldTest(unittest.TestCase):
             CALLER.reset(token)
 
 
+    def test_wan_references_stream_in_order_and_quote_does_not_generate(self):
+        refs = {"images": [], "videos": []}
+        for group, mime, filename, payload in (("images", "image/png", "a.png", b"a" * 50),
+                ("images", "image/png", "b.png", b"b" * 60), ("videos", "video/mp4", "dance.mp4", b"v" * 100)):
+            asset = self.executor.artifacts.create_from_chunks(project_id=PROJECT, operation="import",
+                filename=filename, media_type=mime, chunks=[payload])
+            refs[group].append({"artifact_id": asset.artifact_id, "purpose": "reference"})
+        received = []
+        def respond(req):
+            if req.method == "PUT":
+                parts = req.url.path.split("/")
+                info = {"project_id": parts[-3], "sha256": parts[-2], "format": parts[-1],
+                        "kind": req.headers["X-Media-Kind"], "size": len(req.content)}
+                self.assertEqual(hashlib.sha256(req.content).hexdigest(), info["sha256"])
+                received.append(info)
+                return httpx.Response(200, json={"status": "committed", **info})
+            if req.url.path == "/v1/cost":
+                self.assertEqual(json.loads(req.content)["references"], received)
+                return httpx.Response(200, json={"credits": 0})
+            return self.respond(req)
+        self.executor.higgsfield.client = httpx.Client(transport=httpx.MockTransport(respond))
+        record = self.create(model="wan3_0", duration_seconds=15, aspect_ratio="9:16", resolution="480p", references=refs)
+        self.assertEqual(record.request["mode"], "reference_to_video")
+        self.assertEqual(self.executor.higgsfield.cost(record.request), 0)
+        self.assertEqual([r["kind"] for r in received], ["image", "image", "video"])
+        self.assertEqual(record.runtime_stage, "prepared")
+        self.assertFalse(any(r.url.path == "/v1/jobs" for r in self.calls))
+        self.executor.higgsfield.client.close()
+
+    def test_wan_rejects_foreign_and_tampered_references_before_upload(self):
+        asset = self.executor.artifacts.create_from_chunks(project_id=PROJECT, operation="import",
+            filename="a.png", media_type="image/png", chunks=[b"original"])
+        refs = {"images": [{"artifact_id": asset.artifact_id, "purpose": "identity"}]}
+        with self.assertRaises(Exception):
+            self.create(project_id=uuid7(), model="wan3_0", references=refs)
+        self.executor.artifacts.content_path(asset).write_bytes(b"tampered")
+        with self.assertRaisesRegex(ValueError, "source_integrity_failed"):
+            self.create(model="wan3_0", references=refs)
+        self.assertTrue(all(r.url.host == "project.internal" for r in self.calls))
+
+
 if __name__ == "__main__":
     unittest.main()
