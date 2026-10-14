@@ -369,6 +369,14 @@ def video_preflight(project_id: str, prompt: str, references: dict[str, list[dic
     """Validate Singularity media and reveal native output and reference labels without creating a task."""
     selected = route or executor.runtime_route
     normalize_postprocess(postprocess, selected)
+    if selected == "higgsfield":
+        executor.higgsfield.authorize(project_id)
+        request, digest = executor.higgsfield.normalize(project_id=require_project_id(project_id),
+            prompt=prompt, model=model, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
+            references=references, mode=mode, resolution=resolution, quality_profile=quality_profile)
+        return _result({"status": "validated", "generation_verified": False, "input_digest": digest,
+            "resolved_output": {k: request[k] for k in ("model", "mode", "resolution", "duration_seconds", "aspect_ratio")},
+            "reference_mapping": request["references"]})
     if selected == "grok":
         request, digest = executor.grok.normalize(project_id=require_project_id(project_id),
             prompt=prompt, model=model, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
@@ -454,6 +462,8 @@ def video_status(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
     if not tid:
         return _result({"error": "task_id is required"})
     existing = executor.tasks.get(tid)
+    if existing.service == 'higgsfield':
+        executor.higgsfield.authorize_record(existing)
     if existing.service == 'interpolate' or existing.request.get('postprocess'):
         authorize(executor.client, existing.project_id)
     record = executor.status(tid)
@@ -472,9 +482,13 @@ def video_result(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
     if not tid:
         return _result({"error": "task_id is required"})
     existing = executor.tasks.get(tid)
+    if existing.service == 'higgsfield':
+        executor.higgsfield.authorize_record(existing)
     if existing.service == 'interpolate' or existing.request.get('postprocess'):
         authorize(executor.client, existing.project_id)
     record = executor.result(tid)
+    if record.service == 'higgsfield':
+        return _result(executor.higgsfield.public_result(record))
     if record.service in executor.processing:
         res = executor.processing[record.service].public_result(record)
         res["task_id"] = record.video_task_id

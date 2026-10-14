@@ -92,6 +92,8 @@ class VideoExecutor:
         self.fal = FalAdapter(self)
         from .providers.grok import GrokVideoAdapter
         self.grok = GrokVideoAdapter(self)
+        from .providers.higgsfield import HiggsfieldAdapter
+        self.higgsfield = HiggsfieldAdapter(self)
         from .delivery import Delivery
         self.delivery = Delivery(self)
 
@@ -191,8 +193,10 @@ class VideoExecutor:
                     except (httpx.HTTPError, ValueError, AttributeError):
                         routes[-1]["readiness"] = "unreachable"
         routes.append(self.grok.capability())
+        routes.extend(self.higgsfield.capabilities())
         return {"default_model": "minimax-h3-ref2va", "default_route": self.runtime_route,
-                "models": [{"model": "minimax-h3-ref2va"}, {"model": self.grok.model, "routes": ["grok"]}],
+                "models": [{"model": "minimax-h3-ref2va"}, {"model": self.grok.model, "routes": ["grok"]},
+                           *[{"model": item["model"], "routes": ["higgsfield"]} for item in self.higgsfield.capabilities()]],
                 "model_specification": {"aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
                                         "omni_adaptive": True},
                 "postprocess": {"interpolate": self.delivery.capability()},
@@ -378,6 +382,10 @@ class VideoExecutor:
         route = route or self.runtime_route
         from .delivery import normalize, authorize
         normalize(postprocess, route)
+        if route == "higgsfield":
+            return self.higgsfield.generate(project_id=project_id, idempotency_key=idempotency_key,
+                model=model, prompt=prompt, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
+                references=references, quality_profile=quality_profile, mode=mode, resolution=resolution)
         if route == "grok":
             return self.grok.generate(project_id=project_id, idempotency_key=idempotency_key,
                 model=model, prompt=prompt, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
@@ -483,6 +491,8 @@ class VideoExecutor:
     @serialized
     def status(self, video_task_id: str) -> TaskRecord:
         record = self.tasks.get(video_task_id)
+        if record.service == "higgsfield":
+            return self.higgsfield.status(record)
         if record.service == "grok":
             return self.grok.status(record)
         if (record.service == "h3-singularity" and not record.runtime_task_id
@@ -574,6 +584,8 @@ class VideoExecutor:
     @serialized
     def result(self, video_task_id: str) -> TaskRecord:
         record = self.tasks.get(video_task_id)
+        if record.service == "higgsfield":
+            return self.higgsfield.result(record)
         if record.service == "grok":
             return self.grok.result(record)
         if record.service == "fal":

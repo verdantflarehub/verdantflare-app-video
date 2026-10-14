@@ -124,7 +124,7 @@ class Dashboard:
                 self.services["h3-sol"] = "unavailable"
         errors = 0
         for record in self.records():
-            if record.status in {"queued", "running"} and (record.runtime_task_id or record.service in {"depth", "sr", "interpolate", "h3-singularity", "grok"}):
+            if record.status in {"queued", "running"} and (record.runtime_task_id or record.service in {"depth", "sr", "interpolate", "h3-singularity", "grok", "higgsfield"}):
                 try:
                     self.executor.status(record.video_task_id)
                 except (ExecutionError, OSError, ValueError):
@@ -134,7 +134,7 @@ class Dashboard:
 
     def recover_incomplete_submissions(self):
         for record in self.records():
-            if record.status == "queued" and not record.runtime_task_id and record.service not in {"depth", "sr", "interpolate", "grok"}:
+            if record.status == "queued" and not record.runtime_task_id and record.service not in {"depth", "sr", "interpolate", "grok", "higgsfield"}:
                 self.executor.tasks.update(record, status="queued" if record.service == "h3-singularity" else "failed", error={
                     "code": "submission_unconfirmed",
                     "message": "Submission interrupted; do not resubmit automatically"})
@@ -153,6 +153,15 @@ class Dashboard:
         page = max(1, int(query.get("page", "1")))
         size = max(1, min(100, int(query.get("page_size", "24"))))
         records = self.records()
+        visible = []
+        for record in records:
+            if record.service == "higgsfield":
+                try:
+                    self.executor.higgsfield.authorize_record(record)
+                except (PermissionError, ValueError, httpx.HTTPError):
+                    continue
+            visible.append(record)
+        records = visible
         projects = sorted({r.project_id for r in records})
         rows = [public_task(r) for r in records]
         for key in ("project_id", "service"):
@@ -179,6 +188,8 @@ class Dashboard:
 
     def detail(self, task_id):
         record = self.executor.tasks.get(task_id)
+        if record.service == "higgsfield":
+            self.executor.higgsfield.authorize_record(record)
         value = public_task(record)
         value["runtime_version"] = record.runtime_version or self.executor.runtime_version
         value["references"] = []
@@ -191,10 +202,14 @@ class Dashboard:
                     value["references"].append({"kind": kind, "purpose": item["purpose"], "unavailable": True})
         if record.artifact_id:
             value["artifact"] = self.executor.artifacts.get(record.artifact_id, record.project_id).model_dump()
+        if record.service == "higgsfield" and record.status == "succeeded":
+            value.update(self.executor.higgsfield.public_result(record))
         return value
 
     def thumbnail(self, task_id):
         record = self.executor.tasks.get(task_id)
+        if record.service == "higgsfield":
+            self.executor.higgsfield.authorize_record(record)
         reference = record.request.get("references", {}).get("images", [])
         artifact_id = record.artifact_id or (reference[0]["artifact_id"] if reference else None)
         if not artifact_id:
@@ -227,6 +242,9 @@ class Dashboard:
             elif action.endswith("/result"):
                 def result():
                     with self.result_lock:
+                        record = self.executor.tasks.get(request.path_params["task_id"])
+                        if record.service == "higgsfield":
+                            self.executor.higgsfield.authorize_record(record)
                         self.executor.result(request.path_params["task_id"])
                         return self.detail(request.path_params["task_id"])
                 value = await run_in_threadpool(result)
@@ -242,10 +260,10 @@ class Dashboard:
                     value = artifact.model_dump()
                 else:
                     inputs = Submission.model_validate_json(body)
-                    service = ("grok" if inputs.route == "grok" else "fal" if inputs.route == "fal" else
+                    service = ("higgsfield" if inputs.route == "higgsfield" else "grok" if inputs.route == "grok" else "fal" if inputs.route == "fal" else
                                "h3-sol" if inputs.route.startswith("h3-sol") else
                                "h3-singularity" if inputs.route == "h3-singularity" else "h3")
-                    if service not in {"h3", "h3-sol", "h3-singularity", "fal", "grok"}:
+                    if service not in {"h3", "h3-sol", "h3-singularity", "fal", "grok", "higgsfield"}:
                         return JSONResponse({"error": "service_not_connected"}, status_code=409)
                     if service == "fal" and not self.executor.fal.connected():
                         return JSONResponse({"error": "service_not_connected"}, status_code=409)
@@ -263,6 +281,8 @@ class Dashboard:
             return JSONResponse(value, headers={"Cache-Control": "no-store"})
         except (TaskNotFound, ArtifactNotFound):
             return JSONResponse({"error": "not_found"}, status_code=404)
+        except PermissionError:
+            return JSONResponse({"error": "permission_denied"}, status_code=403)
         except TaskConflict:
             return JSONResponse({"error": "idempotency_conflict"}, status_code=409)
         except (ValidationError, ValueError, KeyError, TypeError):
