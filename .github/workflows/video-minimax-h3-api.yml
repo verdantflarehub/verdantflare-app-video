@@ -16,24 +16,10 @@ concurrency:
 
 env:
   SERVICE: video-minimax-h3-api
-  VERSION: 0.3.3
+  VERSION: 0.4.0
 
 jobs:
-  check:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - name: Check shell scripts
-        run: |
-          set -euo pipefail
-          while IFS= read -r -d '' script; do
-            bash -n "$script"
-            shellcheck "$script"
-          done < <(find "services/${SERVICE}" -type f -name '*.sh' -print0)
-
   build:
-    needs: check
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:

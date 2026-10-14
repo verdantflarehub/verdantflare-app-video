@@ -1,13 +1,13 @@
-[project]
-name = "verdantflare-video-minimax-h3-api"
-version = "0.3.3"
-requires-python = ">=3.12"
-dependencies = []
-
 [build-system]
-requires = ["setuptools==78.1.0"]
+requires = ["setuptools>=75"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-# Service entrypoint wraps the upstream container runtime.
-py-modules = []
+[project]
+name = "verdantflare-video-minimax-h3-api"
+version = "0.4.0"
+description = "Authenticated 5090 API facade for the MiniMax H3 Singularity runtime"
+requires-python = ">=3.12"
+dependencies = ["fastapi==0.135.1", "uvicorn==0.40.0", "httpx==0.28.1"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
