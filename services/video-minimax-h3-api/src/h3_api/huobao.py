@@ -348,7 +348,7 @@ def create_app(settings: Settings, client=None):
         if client is None:
             await backend.aclose()
 
-    app = FastAPI(title='Huobao H3 bridge', version='0.5.2', lifespan=lifespan,
+    app = FastAPI(title='Huobao H3 bridge', version='0.6.0', lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.state.ledger = ledger
 

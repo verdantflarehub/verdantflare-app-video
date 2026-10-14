@@ -10,7 +10,7 @@ RUN useradd --system --uid 10001 --no-create-home h3api
 USER 10001:10001
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8000
-LABEL org.opencontainers.image.title="VerdantFlare MiniMax H3 5090 API" \
-      org.opencontainers.image.version="0.5.2" \
+LABEL org.opencontainers.image.title="VerdantFlare Huobao H3 Bridge" \
+      org.opencontainers.image.version="0.6.0" \
       org.opencontainers.image.licenses="Apache-2.0"
-ENTRYPOINT ["python", "-m", "h3_api.app"]
+ENTRYPOINT ["python", "-m", "h3_api.huobao"]

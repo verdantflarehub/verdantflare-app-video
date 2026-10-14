@@ -1,14 +1,10 @@
-# MiniMax H3 API
+# Huobao H3 兼容层
 
-同一轻量镜像提供两种独立启动入口，均不加载模型、不申请 GPU。原 SGLang 版本保存在相邻 `video-minimax-h3-raw/`。产品契约和现场配置以设计工作区为准，不把本包当成 MiniMax 官方完整 API。
+轻量镜像只提供 Huobao `/v2` 兼容入口，不加载模型、不申请 GPU。5090 的 `/v1` 由相邻 `video-minimax-h3-singularity/` 提供，Video MCP 直接调用该服务。原 SGLang 版本保存在相邻 `video-minimax-h3-raw/`。产品契约和现场配置以设计工作区为准，不把本包当成 MiniMax 官方完整 API。
 
-## 1. 内部 Runtime 代理
+## 1. Huobao 兼容进程
 
-默认启动 `python -m h3_api.app`，保持 `/v1/videos`、任务查询、幂等查询及内容下载契约。`H3_API_TOKEN` 是入站凭据，`SINGULARITY_RUNTIME_TOKEN` 是出站凭据，`H3_API_UPSTREAM_URL` 指定内部 Singularity origin。`/live` 检查进程，`/health` 检查 Runtime，`/capabilities` 需要 Bearer。
-
-## 2. Huobao 兼容进程
-
-启动 `python -m h3_api.huobao`，提供 `/v2/video_generation`、`/v2/query/video_generation/{task_id}` 及短时签名下载。仅通过 Studio 调用项目权限、素材导入和 Video 工具；不接收调用者传入的用户、组织或项目，不转交 Runtime 凭据。
+默认启动 `python -m h3_api.huobao`，提供 `/v2/video_generation`、`/v2/query/video_generation/{task_id}` 及短时签名下载。仅通过 Studio 调用项目权限、素材导入和 Video 工具；不接收调用者传入的用户、组织或项目，不转交 Runtime 凭据。
 
 必需配置：`STUDIO_ORIGIN`、`STUDIO_BEARER_TOKEN`、`HUOBAO_API_KEY`、`HUOBAO_SIGNING_KEY`、`HUOBAO_PROJECT_ID`、`HUOBAO_OWNER_USER_ID`、`HUOBAO_OWNER_ORG_ID`。凭据与真实归属从受控 Secret 注入。
 
@@ -16,7 +12,7 @@
 
 支持参考生成、4–15 秒、768P；不支持纯文生、首尾帧和 2K。单素材 32 MiB、总素材 96 MiB、JSON 请求 48 MiB；图片 9、视频 3、音频 3，总计最多 12。下游还会执行格式、时长、像素和完整解码校验。调用方传 `Idempotency-Key`；无此头时同请求 24 小时内复用原任务。生产接口不暴露原始上游异常，诊断按固定任务 ID 查受控记录。
 
-## 3. 检查与部署依据
+## 2. 检查与部署依据
 
 本地轻量测试：`PYTHONPATH=src python -m pytest tests`。镜像仅由 release GitHub Actions 构建。
 

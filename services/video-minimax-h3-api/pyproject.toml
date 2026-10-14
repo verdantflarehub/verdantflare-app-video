@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "verdantflare-video-minimax-h3-api"
-version = "0.5.2"
-description = "Authenticated 5090 API facade for the MiniMax H3 Singularity runtime"
+version = "0.6.0"
+description = "Huobao v2 video compatibility bridge through VerdantFlare Studio MCP"
 requires-python = ">=3.12"
 dependencies = ["fastapi==0.135.1", "uvicorn==0.40.0", "httpx==0.28.1"]
 
