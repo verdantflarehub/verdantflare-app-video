@@ -156,6 +156,7 @@ class ReferenceTests(unittest.TestCase):
         self.assertEqual(args[-4:], ["--image-references", REMOTE, "--video-references", REMOTE])
         self.gateway.submit(request())
         legacy = request().model_dump()
+        legacy.pop("price_ceiling")  # This field did not exist in the old schema.
         legacy["generation"].pop("references")
         expected = hashlib.sha256(json.dumps(legacy, sort_keys=True).encode()).hexdigest()
         with self.gateway.db() as db:

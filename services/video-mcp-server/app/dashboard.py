@@ -353,6 +353,8 @@ class Dashboard:
             return JSONResponse({"error": "operation_failed"}, status_code=500)
 
     def routes(self):
+        from .member_dashboard import MemberDashboard
+        members = MemberDashboard(self)
         async def shell(request):
             if request.url.path.endswith("/"):
                 return RedirectResponse("../dashboard")
@@ -375,7 +377,7 @@ class Dashboard:
                     return FileResponse(candidate, headers={"Cache-Control": "no-cache"})
             return JSONResponse({"error": "not_found"}, status_code=404)
 
-        return [*self.resources.routes(), Route("/dashboard", shell), Route("/dashboard/", shell),
+        return [*self.resources.routes(), *members.routes(), Route("/dashboard", shell), Route("/dashboard/", shell),
                 Route("/dashboard/frontend/{name:path}", asset),
                 Route("/dashboard/static/{name:path}", asset),
                 Route("/dashboard/tasks/{task_id:str}", task_shell),

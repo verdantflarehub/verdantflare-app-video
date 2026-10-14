@@ -380,6 +380,7 @@ function render(data) {
 }
 async function refresh() {
   clearTimeout(timer);
+  if (/^#(?:create|higgsfield(?:-task-[a-zA-Z0-9_-]+)?)$/.test(location.hash)) return;
   if (!authorized || document.hidden) return;
   if (busy) {
     timer = setTimeout(refresh, 500);
@@ -398,6 +399,10 @@ async function refresh() {
     }
     $("pollState").textContent = "2s 自动刷新";
   } catch (error) {
+    if (error.status === 403 && !detailTaskId && window.studioEmbedded) {
+      location.hash = '#higgsfield';
+      return;
+    }
     if (version === revision) {
       notice(error.message, true);
       $("pollState").textContent = "连接异常 · 任务为最后快照";

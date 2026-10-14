@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 import hashlib
 import io
@@ -235,15 +235,34 @@ class Gateway:
 
     def cost(self, generation):
         with self._lock:
-            self.check_binding()
+            account = self.account()
             with self.source(generation) as path:
-                return {"credits": self.quote(generation, path, self.reference_ids(generation))}
+                credits = self.quote(generation, path, self.reference_ids(generation))
+            reason = None
+            with self.db() as db:
+                limits = self._limits(db)
+                jobs = [json.loads(row[0]) for row in db.execute("SELECT record FROM jobs")]
+                active = [job for job in jobs if job["status"] not in {"completed", "failed"}]
+                if any(job["stage"] == "submission_unknown" for job in jobs):
+                    reason = "account_reconciliation_required"
+                elif (Decimal(limits["credit_limit"]) == 0 or len(jobs) >= limits["submission_limit"] or
+                      sum((Decimal(str(job["quoted_credits"])) for job in jobs), Decimal(0)) + Decimal(str(credits)) > Decimal(limits["credit_limit"])):
+                    reason = "account_budget_exceeded"
+                elif len(active) >= self.max_concurrent:
+                    reason = "account_concurrency_exceeded"
+                elif sum(job["quoted_credits"] for job in active) + credits > account["credits"]:
+                    reason = "insufficient_credits"
+            observed = datetime.now(UTC)
+            return {"credits": credits, "can_submit": reason is None, "blocked_reason": reason,
+                    "observed_at": observed.isoformat(), "expires_at": (observed + timedelta(seconds=60)).isoformat()}
 
     def submit(self, request: JobRequest):
         if request.binding_id != self.binding or request.organization_id != self.organization:
             raise GatewayError("account_access_denied", 403)
         # Image bytes never enter the durable journal, only their immutable digest.
         body = request.model_dump()
+        if request.price_ceiling is None:
+            body.pop("price_ceiling", None)  # Preserve all existing immutable digests.
         if not request.generation.references:
             # Preserve existing durable request digests across this schema upgrade.
             body["generation"].pop("references", None)
@@ -261,6 +280,8 @@ class Gateway:
             with self.source(request.generation) as path:
                 media_ids = self.reference_ids(request.generation)
                 cost = self.quote(request.generation, path, media_ids)
+                if request.price_ceiling is not None and cost > request.price_ceiling:
+                    raise GatewayError("quote_changed")
                 with self.db() as db:
                     jobs = [json.loads(row[0]) for row in db.execute("SELECT record FROM jobs")]
                     if any(job["stage"] == "submission_unknown" for job in jobs):

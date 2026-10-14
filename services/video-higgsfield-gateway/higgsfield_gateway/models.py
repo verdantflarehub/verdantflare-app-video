@@ -132,6 +132,7 @@ class JobRequest(BaseModel):
     user_id: str = Field(pattern=r"^[0-9a-f-]{36}$")
     project_id: str = Field(pattern=r"^[0-9a-f-]{36}$")
     generation: Generation
+    price_ceiling: float | int | None = Field(default=None, ge=0, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def reference_scope(self):

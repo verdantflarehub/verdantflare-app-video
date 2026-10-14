@@ -62,24 +62,35 @@ class HiggsfieldAdapter:
         return {"enabled": self.enabled, "configured": self.configured(), "binding_digest": digest}
 
     def authorize(self, project_id, authority=None):
+        actor = self.authorize_member(authority)
+        self.project_request("open", {"project_id": project_id, "require_write": True}, actor)
+        return actor
+
+    def authorize_member(self, authority=None):
         from ..delivery import CALLER
-        from .higgsfield_artifact import uuid7
         actor = authority if authority is not None else CALLER.get()
         if (not actor or actor.get("organization_id") != self.organization or
                 not actor.get("user_id") or (self.members and actor["user_id"] not in self.members)):
             raise PermissionError("higgsfield_account_access_denied")
+        return dict(actor)
+
+    def project_request(self, operation, body, actor=None):
+        from .higgsfield_artifact import uuid7
+        actor = self.authorize_member(actor)
+        if operation not in {"open", "list"}:
+            raise ValueError("unsupported_project_operation")
         url = os.getenv("VIDEO_PROJECT_SERVICE_URL", "").rstrip("/")
         token = os.getenv("VIDEO_PROJECT_SERVICE_TOKEN", "")
         if not url or not token:
             raise ValueError("project_authorization_not_configured")
-        response = self.client.post(url + "/internal/v1/project/open",
+        response = self.client.post(url + "/internal/v1/project/" + operation,
             headers={"Authorization": "Bearer " + token, "X-User-Id": actor["user_id"],
                      "X-Organization-Id": actor["organization_id"], "X-Request-Id": uuid7()},
-            json={"project_id": project_id, "require_write": True}, timeout=15)
+            json=body, timeout=15)
         if response.status_code in {401, 403, 404}:
             raise PermissionError("project_access_denied")
         response.raise_for_status()
-        return dict(actor)
+        return response.json()
 
     def authorize_record(self, record):
         actor = self.authorize(record.project_id)
@@ -153,7 +164,7 @@ class HiggsfieldAdapter:
         digest = "sha256:" + hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         return value, digest
 
-    def generate(self, *, idempotency_key, **kwargs):
+    def generate(self, *, idempotency_key, price_ceiling=None, **kwargs):
         actor = self.authorize(kwargs["project_id"])
         request, digest = self.normalize(**kwargs)
         old = self.executor.tasks.find_idempotency(request["project_id"], idempotency_key)
@@ -164,6 +175,11 @@ class HiggsfieldAdapter:
             return old
         if not self.enabled or not self.configured():
             raise ValueError("higgsfield_not_configured")
+        if price_ceiling is not None:
+            import math
+            if type(price_ceiling) not in (int, float) or not math.isfinite(price_ceiling) or price_ceiling < 0:
+                raise ValueError("invalid_price_ceiling")
+            request["price_ceiling"] = price_ceiling
         record = self.executor.tasks.create(project_id=request["project_id"], idempotency_key=idempotency_key,
             input_digest=digest, request=request, runtime_task_id="", status="queued", authority=actor,
             runtime_route="higgsfield", runtime_version="higgsfield-cli-1.1.26")
@@ -213,6 +229,9 @@ class HiggsfieldAdapter:
         return generation
 
     def cost(self, request):
+        return self.quote(request)["credits"]
+
+    def quote(self, request):
         response = self.client.post(self.url + "/v1/cost", headers=self.headers(), json=self.generation_payload(request))
         response.raise_for_status()
         data = response.json()
@@ -220,13 +239,14 @@ class HiggsfieldAdapter:
         import math
         if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
             raise ValueError("invalid_cost")
-        return value
+        return data
 
     def payload(self, record):
         p = record.request
         generation = self.generation_payload(p)
         return {"request_id": record.video_task_id, "binding_id": p["binding_id"], "project_id": record.project_id,
                 "organization_id": record.authority["organization_id"], "user_id": record.authority["user_id"],
+                **({"price_ceiling": p["price_ceiling"]} if "price_ceiling" in p else {}),
                 "generation": generation}
 
     def headers(self):
