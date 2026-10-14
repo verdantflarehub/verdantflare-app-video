@@ -8,6 +8,8 @@ import subprocess
 import tempfile
 import time
 
+from .refresh import snapshot, observe_success
+
 DMIT_PROXY = "http://openclash.openclash.svc.cluster.local:1081"
 CLI_VERSION = "1.1.26"
 MAX_OUTPUT_BYTES = 4 * 1024 * 1024
@@ -37,6 +39,12 @@ class CLI:
         return env
 
     def run(self, args: list[str], timeout: int = 60):
+        before = snapshot(self.state)
+        result = self._run(args, timeout)
+        observe_success(self.state, before)
+        return result
+
+    def _run(self, args: list[str], timeout: int = 60):
         allowed = {("account", "status"), ("account", "transactions"), ("model", "get"), ("workspace", "status"),
                    ("upload", "create"),
                    ("generate", "cost"), ("generate", "create"), ("generate", "get")}

@@ -12,6 +12,7 @@ from higgsfield_gateway.cli import ProviderError
 from higgsfield_gateway.jobs import Gateway
 from higgsfield_gateway.management import create_management_app
 from higgsfield_gateway.server import create_app
+from higgsfield_gateway.refresh import snapshot, observe_success
 
 
 class ManagementTest(unittest.IsolatedAsyncioTestCase):
@@ -40,6 +41,29 @@ class ManagementTest(unittest.IsolatedAsyncioTestCase):
     def change(self, **overrides):
         return dict(binding_id="team", revision=1, credit_limit="4", submission_limit=2,
                     operation_id="management-save", **overrides)
+
+    async def test_authorization_projects_only_persisted_rotation_time(self):
+        import json
+        import time
+        path = self.cli.state / "credentials.json"
+        expiry = int(time.time()) + 3600
+        path.write_text(json.dumps({"auth_version": 2, "expires_at": expiry,
+                                    "access_token": "old-secret", "refresh_token": "old-refresh"}))
+        before = snapshot(self.cli.state)
+        initial = (await self.client.get("/authorization", headers=self.headers())).json()
+        self.assertIsNone(initial["last_refresh_at"])
+        path.write_text(json.dumps({"auth_version": 2, "expires_at": expiry + 3600,
+                                    "access_token": "new-secret", "refresh_token": "new-refresh"}))
+        observe_success(self.cli.state, before)
+        checked = await self.check()
+        self.assertIsNotNone(checked["last_refresh_at"])
+        observed = checked["last_refresh_at"]
+        for private in ("old-secret", "new-secret", "old-refresh", "new-refresh", "expires_at"):
+            self.assertNotIn(private, json.dumps(checked))
+        from higgsfield_gateway.management import Management
+        self.assertEqual(Management(self.gateway).authorization()["last_refresh_at"], observed)
+        path.unlink()
+        self.assertIsNone(Management(self.gateway).authorization()["last_refresh_at"])
 
     async def test_read_and_write_reject_missing_wrong_and_duplicate_identity(self):
         cases = [{}, self.headers(Authorization="Bearer " + self.execution_token),

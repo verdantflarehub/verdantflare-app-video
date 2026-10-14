@@ -25,6 +25,7 @@ from .cli import ProviderError
 from .channel import generation_status
 from .jobs import GatewayError, now
 from .models import LimitUpdate
+from .refresh import last_refresh
 
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
@@ -83,7 +84,8 @@ class Management:
             "error_code": "AUTHORIZATION_NOT_CHECKED", "check_id": None,
         }
         result.update(binding_id=self.gateway.binding, refresh_owner="server",
-                      last_refresh_at=None, workspace_matches=(result["status"] == "authorized"))
+                      last_refresh_at=last_refresh(self.gateway.cli.state),
+                      workspace_matches=(result["status"] == "authorized"))
         # A successful account read is evidence of authorization, not proof of
         # an OAuth rotation. Do not invent a last-refresh timestamp.
         result["stale"] = (result["status"] != "authorized" or result["observed_at"] is None)

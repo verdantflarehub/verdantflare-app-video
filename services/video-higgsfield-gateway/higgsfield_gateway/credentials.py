@@ -65,6 +65,8 @@ def import_bundle(root: Path, bundle: dict, expected_revision: str | None = None
     # cannot make a new token available under an old workspace declaration.
     atomic_json(root / "config.json", config)
     atomic_json(root / "binding.json", {"workspace_id": workspace})
+    # A new authorization must not inherit the previous credential's evidence.
+    (root / "refresh-observation.json").unlink(missing_ok=True)
     atomic_json(target, credentials)
     revision = hashlib.sha256(target.read_bytes()).hexdigest()
     atomic_json(root / "handover-receipt.json", {"revision": revision, "workspace_id": workspace})
