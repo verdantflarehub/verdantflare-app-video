@@ -131,23 +131,10 @@ class MemberDashboard:
                     value['unavailable_modes'] = {'image_to_video':'media_contract_mismatch'}
             return {'routes':values}
         if action == 'projects':
-            params = {'require_write':True, 'limit':50, 'cursor':query.get('cursor','')}
-            try:
-                value = self.adapter.project_request('list', params)
-            except httpx.HTTPStatusError as error:
-                # Deployed legacy Project supports write checks on open, but
-                # its list schema predates require_write. Never infer access.
-                if error.response.status_code != 400:
-                    raise
-                value = self.adapter.project_request('list', {k:v for k,v in params.items() if k != 'require_write'})
-                writable = []
-                for project in value['items']:
-                    try:
-                        self.adapter.authorize(project['project_id'])
-                        writable.append(project)
-                    except PermissionError:
-                        continue
-                value = {**value, 'items':writable}
+            params = {'require_write':True, 'limit':50}
+            if query.get('cursor'):
+                params['cursor'] = query['cursor']
+            value = self.adapter.project_request('list', params)
             return {'items':[{k:p[k] for k in ('project_id','name')} for p in value['items']],
                     'next_cursor':value.get('next_cursor','')}
         if action == 'assets':

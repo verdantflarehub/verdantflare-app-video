@@ -75,20 +75,13 @@ class MemberDashboardTest(unittest.TestCase):
         self.assertEqual(reply.json()['video_task_id'], first['video_task_id'])
         self.assertEqual(len(self.member.dashboard.records()), 1)
 
-    def test_legacy_project_listing_still_checks_every_project_for_write(self):
-        def listing(operation, body):
-            if 'require_write' in body:
-                response = httpx.Response(400, request=httpx.Request('POST', 'https://project.invalid/list'))
-                raise httpx.HTTPStatusError('old list schema', request=response.request, response=response)
-            return {'items':[{'project_id':'allowed','name':'Allowed'}, {'project_id':'denied','name':'Denied'}], 'next_cursor':'cursor'}
-        def authorize(project):
-            if project == 'denied':
-                raise PermissionError()
-        with patch.object(self.executor.higgsfield,'project_request',side_effect=listing), patch.object(self.executor.higgsfield,'authorize',side_effect=authorize) as check:
+    def test_project_listing_omits_empty_cursor_and_always_requires_write(self):
+        with patch.object(self.executor.higgsfield,'project_request',return_value={'items':[], 'next_cursor':''}) as listing:
             response = self.http.get('/api/higgsfield/projects')
-        self.assertEqual(response.status_code,200)
-        self.assertEqual(response.json(),{'items':[{'project_id':'allowed','name':'Allowed'}],'next_cursor':'cursor'})
-        self.assertEqual(check.call_count,2)
+            self.assertEqual(response.status_code,200)
+            listing.assert_called_with('list',{'require_write':True,'limit':50})
+            self.http.get('/api/higgsfield/projects?cursor=next')
+            listing.assert_called_with('list',{'require_write':True,'limit':50,'cursor':'next'})
 
     def test_cross_project_and_missing_identity_cannot_resolve_assets_or_quote(self):
         self.deny_project=True
