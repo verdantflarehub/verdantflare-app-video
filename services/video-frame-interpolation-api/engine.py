@@ -1,5 +1,6 @@
 """Pinned ECCV2022 RIFE IFNet, loaded once per single-GPU worker."""
 import json
+from importlib.metadata import version
 import os
 from pathlib import Path
 import sys
@@ -28,7 +29,7 @@ class Engine:
         state = {k.removeprefix('module.'): v for k, v in state.items()}
         self.model.load_state_dict(state, strict=True)
         self.model.requires_grad_(False)
-        self.metadata.update(runtime_version='video-frame-interpolation-api-v0.2.1',
+        self.metadata.update(runtime_version='video-frame-interpolation-api-v' + version('verdantflare-video-frame-interpolation-api'),
                              gpu_uuid=gpu_uuid, torch_version=torch.__version__,
                              gpu_sharing_strategy=os.environ.get('VIDEO_GPU_SHARING_STRATEGY', 'none'))
 
