@@ -35,7 +35,8 @@
   }
   function go(hash) { location.hash = hash; }
   function shell(title, subtitle, content) {
-    root.innerHTML = `<div class="hf-head"><div><a href="#higgsfield">← Higgsfield 任务</a><h1 tabindex="-1">${esc(title)}</h1><p class="hf-muted">${esc(subtitle)}</p></div><div class="hf-actions"><a class="button" href="#tasks">全部任务</a><a class="button primary" href="#create">＋ 新建视频</a></div></div><p id="hf-message" class="hf-notice" role="status" aria-live="polite"></p>${content}`;
+    root.innerHTML = `<div class="hf-head"><div>${location.hash==='#higgsfield'?'':'<a href="#higgsfield">← Higgsfield 任务</a>'}<h1 tabindex="-1">${esc(title)}</h1><p class="hf-muted">${esc(subtitle)}</p></div><div class="hf-actions"><button class="button" id="hf-reload">刷新</button><a class="button" href="#tasks">全部任务</a>${location.hash==='#create'?'':'<a class="button primary" href="#create">＋ 新建视频</a>'}</div></div><p id="hf-message" class="hf-notice" role="status" aria-live="polite"></p>${content}`;
+    $('reload').onclick = () => { if (!busy) route(); };
   }
   function options(values, labels = {}) { return values.map(v => `<option value="${esc(v)}">${esc(labels[v] || v)}</option>`).join(''); }
   function capture() {
@@ -113,7 +114,7 @@
   }
   function lockInputs(locked) { root.querySelectorAll('#hf-inputs input, #hf-inputs select, #hf-inputs textarea, #hf-upload').forEach(el => el.disabled = locked); }
   async function createPage(generation) {
-    shell('新建视频', '模型 × 渠道 · 项目素材与会员额度统一使用', '<p>正在读取可用项目与模型…</p>');
+    shell('新建视频', '模型 × 渠道 · 项目素材与会员额度统一使用', '<p id="hf-loading">正在读取可用项目与模型…</p>');
     const [ps, cs] = await Promise.all([request('projects'), request('capabilities')]);
     if (epoch !== generation) return;
     projects = ps.items; capabilities = cs.routes;
@@ -211,10 +212,11 @@
   async function route() {
     const next=location.hash;const generation=++epoch;clearTimeout(poll);clearTimeout(quoteTimer);releaseMedia();quote=null;task=null;
     root.hidden=!active();document.querySelector('.business-intro').hidden=active();
+    document.documentElement.dataset.hfMember=String(active());
     if(!active()){page='';if(authorized)refresh();return;}
     document.querySelectorAll('[data-business-view],#taskDetail').forEach(el=>el.hidden=true);
     page=next;save();
-    try{if(next==='#create')await createPage(generation);else if(next==='#higgsfield')await listPage(generation);else await detailPage(next.slice('#higgsfield-task-'.length),generation);}catch(e){if(epoch===generation)message(e.message,true);}
+    try{if(next==='#create')await createPage(generation);else if(next==='#higgsfield')await listPage(generation);else await detailPage(next.slice('#higgsfield-task-'.length),generation);}catch(e){if(epoch===generation){$('loading')?.remove();message(e.message+' 可点击刷新重新读取。',true);}}
   }
   window.addEventListener('studio-restore',event=>{if(!restored&&event.detail?.higgsfield){const value=event.detail.higgsfield;draft=value.draft||{};attempt=value.attempt||uuid();pending=value.pending||null;filter=value.filter||filter;selected=new Map((value.selected||[]).map(a=>[a.artifact_id,a]));}restored=true;route();});
   window.addEventListener('hashchange',route);

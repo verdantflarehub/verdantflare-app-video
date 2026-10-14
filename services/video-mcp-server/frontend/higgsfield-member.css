@@ -1,4 +1,10 @@
 .hf-member { color: var(--paper); max-width: 1400px; margin: 0 auto; padding: 20px 0; }
+html[data-hf-member="true"] .site-header .nav-actions { display: none !important; }
+.hf-member a:not(.button):not(.hf-card) { color: var(--green); text-decoration: none; }
+.hf-member .task-identity.generation-identity { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 0; border: 0; background: transparent; }
+html[data-embedded="true"] .hf-member .task-identity strong,
+html[data-embedded="true"] .hf-member .generation-identity .identity-separator { color: var(--paper) !important; }
+.hf-member .task-identity strong { white-space: normal; }
 .hf-member [hidden] { display: none !important; }
 .hf-member h1 { font-size: 26px; margin: 12px 0 6px; }
 .hf-member h2 { font-size: 18px; margin: 0 0 16px; }
