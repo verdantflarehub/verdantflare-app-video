@@ -67,6 +67,11 @@
     if (!$('assets')) return;
     $('assets').innerHTML = assets.length ? assets.map(a => `<div class="hf-asset"><label><input type="checkbox" data-asset="${esc(a.artifact_id)}" ${selected.has(a.artifact_id)?'checked':''}>${esc(a.filename)}</label><p class="hf-muted">${a.media_type.startsWith('image/')?'图片':'视频'} · ${(a.size/1024/1024).toFixed(1)} MB</p>${selected.has(a.artifact_id)?`<label>参考用途<select data-purpose="${esc(a.artifact_id)}">${options(a.media_type.startsWith('image/')?['identity','scene','style']:['motion','camera'], {identity:'人物外观',scene:'场景',style:'风格',motion:'动作',camera:'镜头'})}</select></label>`:''}</div>`).join('') : '<p class="hf-muted">当前项目暂无已导入的参考素材，可从本机上传。</p>';
     for (const a of selected.values()) { const field = root.querySelector(`[data-purpose="${CSS.escape(a.artifact_id)}"]`); if (field) field.value = a.purpose; }
+    const counts = { images:0, videos:0 };
+    for (const a of selected.values()) {
+      const input = root.querySelector(`[data-asset="${CSS.escape(a.artifact_id)}"]`);
+      if (input) { const label = document.createElement('strong'); label.textContent = `${a.kind === 'images' ? 'Image' : 'Video'} ${++counts[a.kind]} · `; input.after(label); }
+    }
     for (const card of $('assets').querySelectorAll('.hf-asset')) {
       const id = card.querySelector('[data-asset]').dataset.asset;
       const asset = assets.find(a => a.artifact_id === id);
@@ -193,7 +198,8 @@
         const existingVideo=$('video');const oldURL=existingVideo?.src;
         const facts=[['模型与渠道',(names[value.model]||value.model)+' × Higgsfield'],['请求规格',`${value.duration_seconds}s / ${value.resolution} / ${value.aspect_ratio}`],['预计消费',value.billing?.quoted_credits!=null?value.billing.quoted_credits+' Credits':'未记录'],['实际扣费','待对账'],['实际尺寸',value.media?.width?value.media.width+' × '+value.media.height:'尚无结果']];
         shell(value.title||'视频任务',labels[value.status]||value.runtime_stage||value.status, `<section class="hf-panel"><h2>生成结果</h2>${value.status==='succeeded'?'<video id="hf-video" controls playsinline preload="metadata"></video><div class="hf-actions"><button class="button primary" id="hf-download">下载视频</button></div>':`<p>${value.runtime_stage==='submission_unknown'?'供应商提交状态待确认，请恢复原任务；不会自动重新生成。':value.status==='failed'?'本次生成未完成，任务和费用记录已保留。':value.runtime_stage==='collecting'?'供应商已完成，正在归档结果。':'任务正在排队或生成，可以离开页面后再回来。'}</p><button class="button" id="hf-result">查询原任务</button>`}</section><section class="hf-panel"><h2>提示词</h2><p class="hf-prompt">${esc(value.prompt)}</p></section><section class="hf-panel"><h2>参考素材</h2>${value.references?.length?value.references.map(r=>`<p>${esc(r.filename||'素材暂不可用')} · ${esc(({identity:'人物外观',scene:'场景',motion:'动作',camera:'镜头',style:'风格'})[r.purpose]||r.purpose)}</p>`).join(''):'<p class="hf-muted">无参考素材</p>'}</section><section class="hf-panel"><h2>生成与费用</h2><dl class="hf-facts">${facts.map(([k,v])=>`<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl><details><summary>任务与归档信息</summary><p>${esc(id)}</p><p>${esc(value.media?.sha256||'尚无固定结果摘要')}</p></details></section>`);
-        message(value.status==='failed'?'任务失败。'+(errors[value.error]||'可保留原任务信息供排查，不会自动重提。'):'任务状态已更新。',value.status==='failed');
+        const failure = value.error?.code === 'media_contract_mismatch' ? '供应商输出未达到请求规格，任务和费用记录已保留。' : errors[value.error?.code] || '可保留原任务信息供排查，不会自动重提。';
+        message(value.status==='failed'?'任务失败。'+failure:'任务状态已更新。',value.status==='failed');
         if($('video')){if(oldURL)$('video').src=oldURL;else await media('tasks/'+id+'/content',$('video'),generation);
           $('download').onclick=()=>{if(!$('video').src){message('视频正在读取，请稍后下载。');return;}const link=document.createElement('a');link.href=$('video').src;link.download=(value.title||'video')+'.mp4';link.click();};
         }
