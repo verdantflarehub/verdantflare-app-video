@@ -68,6 +68,10 @@ class CLI:
             data = out.read(4 * 1024 * 1024 + 1)
             if len(data) > 4 * 1024 * 1024:
                 raise ProviderError("provider_output_exceeded")
+            # CLI 1.1.26 ignores --json for an unset workspace. This is the
+            # official personal subscription context, not a failed login.
+            if args == ["workspace", "status"] and data.strip() == b"No workspace selected.":
+                return {"context": "personal", "workspace_id": None}
             try:
                 return json.loads(data)
             except (ValueError, UnicodeDecodeError):

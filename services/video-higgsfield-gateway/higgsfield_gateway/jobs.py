@@ -92,6 +92,10 @@ class Gateway:
             raise GatewayError("authorization_required", 503) from None
         # Verify the CLI actually selected the bound workspace, not just our metadata.
         value = self.cli.run(["workspace", "status"])
+        if self.workspace == "personal":
+            if value != {"context": "personal", "workspace_id": None}:
+                raise GatewayError("workspace_binding_mismatch", 503)
+            return
         def matches(item):
             if not isinstance(item, dict):
                 return False

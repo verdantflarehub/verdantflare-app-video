@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 env:
   SERVICE: video-higgsfield-gateway
-  VERSION: 0.1.0
+  VERSION: 0.1.1
 jobs:
   build:
     runs-on: ubuntu-latest

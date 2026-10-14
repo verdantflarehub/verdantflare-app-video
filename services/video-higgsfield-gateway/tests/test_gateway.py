@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import sys
 import tempfile
 import unittest
@@ -155,6 +156,28 @@ class GatewayTest(unittest.TestCase):
         self.assertNotIn("HIGGSFIELD_API_URL", env)
         with self.assertRaisesRegex(ValueError, "dmit_proxy_required"):
             CLI(Path("hf"), self.root, proxy="http://wrong")
+
+    def test_official_personal_workspace_text_requires_exact_output(self):
+        for output, valid in ((b"No workspace selected.\n", True), (b"Other workspace selected.\n", False)):
+            def process(*args, **kwargs):
+                kwargs["stdout"].write(output)
+                kwargs["stdout"].flush()
+                return SimpleNamespace(returncode=0, poll=lambda: 0, wait=lambda: 0)
+            with patch("higgsfield_gateway.cli.subprocess.Popen", side_effect=process):
+                if valid:
+                    self.assertEqual(CLI(Path("hf"), self.root).run(["workspace", "status"]),
+                                     {"context": "personal", "workspace_id": None})
+                else:
+                    with self.assertRaisesRegex(ProviderError, "provider_protocol_error"):
+                        CLI(Path("hf"), self.root).run(["workspace", "status"])
+
+    def test_personal_binding_rejects_switch_to_workspace(self):
+        (self.cli.state / "binding.json").write_text('{"workspace_id":"personal"}')
+        gateway = Gateway(self.root / "personal-journal", self.cli, binding="team", organization=ORG, workspace="personal")
+        with patch.object(self.cli, "run", return_value={"context": "personal", "workspace_id": None}):
+            gateway.check_binding()
+        with self.assertRaisesRegex(GatewayError, "workspace_binding_mismatch"):
+            gateway.check_binding()
 
     def test_token_command_is_not_available(self):
         with self.assertRaisesRegex(ProviderError, "command_denied"):
