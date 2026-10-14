@@ -45,7 +45,7 @@ def create_app(upstream_url: str, inbound_token: str, runtime_token: str,
             if owns_client:
                 await backend.aclose()
 
-    app = FastAPI(title="VerdantFlare MiniMax H3 API", version="0.5.0", lifespan=lifespan,
+    app = FastAPI(title="VerdantFlare MiniMax H3 API", version="0.5.1", lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.middleware("http")

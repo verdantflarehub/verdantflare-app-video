@@ -345,7 +345,7 @@ def create_app(settings: Settings, client=None):
         if client is None:
             await backend.aclose()
 
-    app = FastAPI(title='Huobao H3 bridge', version='0.5.0', lifespan=lifespan,
+    app = FastAPI(title='Huobao H3 bridge', version='0.5.1', lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.state.ledger = ledger
 
@@ -421,19 +421,19 @@ def create_app(settings: Settings, client=None):
         ledger.update(task, status='succeeded')
         expires = int(time.time()) + 900
         return {'task_id': task, 'status': 'succeeded',
-                'content': {'url': f'{settings.public_origin}/v2/content/{task}.mp4?expires={expires}&signature={signature(task, expires)}'},
+                'content': {'url': f'{settings.public_origin}/v2/content/{task}.mp4?expires={expires}&access_token={signature(task, expires)}'},
                 'vf': {'project_id': settings.project_id, 'task_id': row['native'],
                        'artifact_id': result['artifact_id'], 'media': result.get('media'),
                        'route': result.get('runtime_route'), 'runtime_version': result.get('runtime_version')}}
 
     @app.get('/v2/content/{filename}')
-    async def content(filename: str, expires: int = 0, signature: str = ''):
+    async def content(filename: str, expires: int = 0, access_token: str = ''):
         task = filename.removesuffix('.mp4')
         if filename != task + '.mp4' or not ID.fullmatch(task):
             raise HTTPException(404, 'task_not_found')
         now = int(time.time())
         expected = hmac.new(settings.signing_key.encode(), f'{task}:{expires}'.encode(), hashlib.sha256).hexdigest()
-        if not now < expires <= now + 900 or not hmac.compare_digest(signature, expected):
+        if not now < expires <= now + 900 or not hmac.compare_digest(access_token, expected):
             raise HTTPException(403, 'invalid_download_signature')
         await studio.authorize()
         row = ledger.get(task)
