@@ -115,7 +115,7 @@ def normalize(body):
     if body.get('resolution', '768P') != '768P':
         raise HTTPException(400, 'only_768P_supported')
     ratio = body.get('ratio', 'adaptive')
-    if ratio not in {'21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive'}:
+    if not isinstance(ratio, str) or ratio not in {'21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive'}:
         raise HTTPException(400, 'unsupported_ratio')
     items = body.get('content')
     if not isinstance(items, list) or not 2 <= len(items) <= 13:
@@ -127,7 +127,7 @@ def normalize(body):
         kind = item.get('type')
         if kind == 'text' and set(item) == {'type', 'text'} and isinstance(item['text'], str):
             prompt.append(item['text'])
-        elif kind in KINDS and set(item) <= {'type', kind, 'role'}:
+        elif isinstance(kind, str) and kind in KINDS and set(item) <= {'type', kind, 'role'}:
             expected = {'image_url': 'reference_image', 'video_url': 'reference_video', 'audio_url': 'reference_audio'}[kind]
             if item.get('role', expected) != expected:
                 raise HTTPException(400, 'first_last_frame_not_supported_use_reference_image')
@@ -164,7 +164,10 @@ def source_info(source, kind, settings):
         if not 0 < len(content) <= MAX_MEDIA:
             raise HTTPException(413, 'media_too_large_or_empty')
         return FORMATS[mime], content, None
-    parsed = urlsplit(source)
+    try:
+        parsed = urlsplit(source)
+    except ValueError:
+        raise HTTPException(400, 'invalid_media_url') from None
     origin = f'{parsed.scheme}://{parsed.netloc}'
     if origin not in {settings.media_origin, settings.media_internal_origin} or parsed.query or parsed.fragment:
         raise HTTPException(400, 'only_huobao_static_media_allowed')
@@ -345,7 +348,7 @@ def create_app(settings: Settings, client=None):
         if client is None:
             await backend.aclose()
 
-    app = FastAPI(title='Huobao H3 bridge', version='0.5.1', lifespan=lifespan,
+    app = FastAPI(title='Huobao H3 bridge', version='0.5.2', lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.state.ledger = ledger
 
@@ -433,7 +436,7 @@ def create_app(settings: Settings, client=None):
             raise HTTPException(404, 'task_not_found')
         now = int(time.time())
         expected = hmac.new(settings.signing_key.encode(), f'{task}:{expires}'.encode(), hashlib.sha256).hexdigest()
-        if not now < expires <= now + 900 or not hmac.compare_digest(access_token, expected):
+        if not now < expires <= now + 900 or not hmac.compare_digest(access_token.encode(), expected.encode()):
             raise HTTPException(403, 'invalid_download_signature')
         await studio.authorize()
         row = ledger.get(task)

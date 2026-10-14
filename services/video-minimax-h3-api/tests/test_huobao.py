@@ -98,7 +98,7 @@ def test_roundtrip_idempotency_and_signed_download(tmp_path):
     'https://huobao-trial.verdantflarehub.com/static/uploads/a.png?token=x',
     'https://user@huobao-trial.verdantflarehub.com/static/uploads/a.png',
     'https://huobao-trial.verdantflarehub.com/static/uploads/../a.png',
-    'file:///tmp/a.png', 'data:image/png;base64,%%%'
+    'https://[invalid', 'file:///tmp/a.png', 'data:image/png;base64,%%%'
 ])
 def test_unsafe_sources(tmp_path, url):
     from fastapi import HTTPException
@@ -108,7 +108,7 @@ def test_unsafe_sources(tmp_path, url):
 
 def test_modes_and_spoofing_rejected():
     from fastapi import HTTPException
-    for change in ({'resolution': '2K'}, {'project_id': UUID}, {'model': 'MiniMax-H3-fast'}, {'duration': True}):
+    for change in ({'resolution': '2K'}, {'project_id': UUID}, {'model': 'MiniMax-H3-fast'}, {'duration': True}, {'ratio': []}, {'content': [{'type': []}, {'type': 'text', 'text': 'test'}]}):
         with pytest.raises(HTTPException):
             normalize({**body(), **change})
     b = body(); b['content'][1]['role'] = 'first_frame'
