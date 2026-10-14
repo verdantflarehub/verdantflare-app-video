@@ -53,7 +53,7 @@ def build(source, output, version):
     declaration = {"schemaVersion": 1, "appId": "higgsfield", "appVersion": version, "dashboard": {
         "entryRef": "dashboard/index.html", "artifactDigest": "sha256:" + hashlib.sha256(index).hexdigest(),
         "adapter": "wujie", "sdkMajor": 1, "minimumSdkVersion": "1.2.0",
-        "requiredCapabilities": ["app.request"], "optionalCapabilities": ["navigation.openApp"],
+        "requiredCapabilities": ["app.request", "navigation.request"], "optionalCapabilities": ["navigation.openApp"],
         "appApiPolicyRef": "higgsfield-management-v1", "keepAlive": True}}
     output.mkdir(parents=True, exist_ok=True)
     for name, data in files.items():
