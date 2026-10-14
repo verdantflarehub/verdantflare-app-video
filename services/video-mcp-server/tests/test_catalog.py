@@ -132,6 +132,33 @@ class CatalogTest(unittest.TestCase):
             elif mutation=='duplicate-entry': data['models'].append(copy.deepcopy(m))
             self.assertEqual(self.load([self.write(data)])['state'],'error',mutation)
 
+    def test_supplier_only_identity_and_tier_labels_do_not_invent_api_mapping(self):
+        data = channel('higgsfield')
+        model = data['models'][0]
+        model['upstream_model_id'] = None
+        profile = model['team_profiles'].pop()
+        profile.update(mode='video_generation', resolutions=['1080p', '2K', '4K'], max_resolution='4K')
+        model['supplier_profiles'] = [profile]
+        value = self.load([self.write(data)])
+        self.assertEqual(value['state'], 'ready')
+        self.assertIsNone(value['channels'][0]['models'][0]['upstream_model_id'])
+        model['identity_review'] = 'approved'
+        self.assertEqual(self.load([self.write(data)])['state'], 'error')
+        model['identity_review'] = 'pending'
+        profile['max_resolution'] = '1080p'
+        self.assertEqual(self.load([self.write(data)])['state'], 'error')
+
+    def test_pending_shared_identity_does_not_override_channel_order(self):
+        local, hf = channel('local'), channel('higgsfield')
+        local['channel']['sort_order'], hf['channel']['sort_order'] = 100, 200
+        hf['models'][0]['sort_order'] = 200
+        first = copy.deepcopy(hf['models'][0])
+        first.update(id='seedance', model_id='seedance', display_name='Seedance', sort_order=100)
+        hf['models'].insert(0, first)
+        value = self.load([self.write(local), self.write(hf)])
+        self.assertEqual([group['id'] for group in value['groups']],
+                         ['entry:local:h3', 'entry:higgsfield:seedance', 'entry:higgsfield:h3'])
+
 
 if __name__ == '__main__':
     unittest.main()

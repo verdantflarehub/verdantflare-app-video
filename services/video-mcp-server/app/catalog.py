@@ -50,6 +50,15 @@ def unique(values):
         raise CatalogError("duplicate identity")
 
 
+def resolution_rank(value):
+    # Supplier tier labels are ordered without inventing exact pixel dimensions.
+    if value in {"2K", "4K"}:
+        return {"2K": 2000, "4K": 4000}[value]
+    if isinstance(value, str) and re.fullmatch(r"[1-9][0-9]*p", value):
+        return int(value[:-1])
+    raise CatalogError("invalid resolution label")
+
+
 def validate_semantics(data):
     sources = [s["id"] for s in data["sources"]]
     unique(sources)
@@ -59,6 +68,8 @@ def validate_semantics(data):
             raise CatalogError("unknown evidence reference")
     for model in data["models"]:
         refs(model)
+        if model["identity_review"] == "approved" and model["upstream_model_id"] is None:
+            raise CatalogError("approved identity requires upstream ID")
         for key in ("supplier_profiles", "team_profiles"):
             unique([p["id"] for p in model[key]])
             for profile in model[key]:
@@ -66,10 +77,12 @@ def validate_semantics(data):
                 duration = profile["duration_seconds"]
                 if duration and (duration["maximum"] < duration["minimum"] or profile["duration_choices_seconds"]):
                     raise CatalogError("invalid duration")
+                for resolution in profile["resolutions"]:
+                    resolution_rank(resolution)
                 maximum = profile["max_resolution"]
                 resolutions = profile["resolutions"]
                 if maximum is not None and (maximum not in resolutions or
-                        int(maximum[:-1]) != max(int(r[:-1]) for r in resolutions)):
+                        resolution_rank(maximum) != max(resolution_rank(r) for r in resolutions)):
                     raise CatalogError("invalid resolution")
 
 
@@ -105,6 +118,8 @@ def group_entries(channels):
             if model["identity_review"] != "approved" or conflicting:
                 groups.append({"id": f"entry:{channel_id}:{model['id']}",
                                "entries": [{"channel_id": channel_id, "entry_id": model["id"]}]})
+    position = {(c["id"], m["id"]): (ci, mi) for ci, c in enumerate(channels) for mi, m in enumerate(c["models"])}
+    groups.sort(key=lambda group: min(position[(e["channel_id"], e["entry_id"])] for e in group["entries"]))
     return groups, conflicts
 
 
