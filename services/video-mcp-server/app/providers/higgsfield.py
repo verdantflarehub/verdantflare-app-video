@@ -15,7 +15,7 @@ import httpx
 
 from ..tasks import TaskConflict
 
-MODELS = {"grok_video_v15_lite": (2, 15), "seedance_2_5": (4, 15), "wan3_0": (2, 30)}
+MODELS = {"grok_video_v15_lite": (2, 15), "seedance_2_5": (4, 15), "wan3_0": (2, 15)}
 RATIOS = {"16:9", "9:16", "4:3", "3:4", "1:1"}
 
 

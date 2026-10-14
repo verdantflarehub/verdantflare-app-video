@@ -48,7 +48,7 @@ VIDEO_TOOLS_SCHEMA = [
                 "duration_seconds": {"type": "integer", "minimum": 1, "maximum": 15, "default": 5},
                 "route": {"type": "string", "description": "Execution channel; omitted uses the host default from video.capabilities"},
                 "quality_profile": {"type": "string", "description": "H3 only; omit for Grok"},
-                "mode": {"type": "string", "enum": ["text_to_video", "image_to_video"]},
+                "mode": {"type": "string", "enum": ["text_to_video", "image_to_video", "reference_to_video"]},
                 "resolution": {"type": "string", "enum": ["480p", "720p"]},
                 "references": {"type": "object", "description": "Reference assets mapping"},
                 "project_id": {"type": "string", "description": "Project ID"},

@@ -339,6 +339,16 @@ class HiggsfieldTest(unittest.TestCase):
         self.assertFalse(any(r.url.path == "/v1/jobs" for r in self.calls))
         self.executor.higgsfield.client.close()
 
+    def test_wan_capability_modes_are_registered_in_mcp_schema(self):
+        from app.server import VIDEO_TOOLS_SCHEMA
+        from jsonschema import Draft202012Validator
+        schema = next(t["inputSchema"] for t in VIDEO_TOOLS_SCHEMA if t["name"] == "video.create")
+        caps = next(c for c in self.executor.higgsfield.capabilities() if c["model"] == "wan3_0")
+        validator = Draft202012Validator(schema["properties"]["mode"])
+        for mode in caps["modes"]:
+            self.assertEqual(list(validator.iter_errors(mode)), [])
+        self.assertEqual(caps["duration_seconds"]["maximum"], 15)
+
     def test_wan_rejects_foreign_and_tampered_references_before_upload(self):
         asset = self.executor.artifacts.create_from_chunks(project_id=PROJECT, operation="import",
             filename="a.png", media_type="image/png", chunks=[b"original"])
