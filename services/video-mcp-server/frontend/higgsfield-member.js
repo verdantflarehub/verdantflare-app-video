@@ -8,7 +8,7 @@
   document.querySelector('.market-page').append(root);
   let capabilities = [], projects = [], assets = [], selected = new Map(), quote = null, inputRevision = 0;
   let epoch = 0, poll, quoteTimer, pending = null, busy = false, page = '', task = null, restored = false;
-  let draft = {}, filter = { q:'', status:'all' }, urls = new Map();
+  let draft = {}, filter = { q:'', status:'all', project:'' }, urls = new Map();
   const $ = id => root.querySelector('#hf-' + id);
   const active = () => /^#(?:create|higgsfield(?:-task-[a-zA-Z0-9_-]+)?)$/.test(location.hash);
   const uuid = () => crypto.randomUUID();
@@ -183,12 +183,16 @@
   }
   async function listPage(generation) {
     shell('Higgsfield 任务', '查看有权访问的项目视频，恢复原任务或下载结果', `<section class="hf-panel"><div class="hf-fields"><label>搜索名称或提示词<input id="hf-search" type="search"></label><label>任务状态<select id="hf-status">${options(['all','queued','running','succeeded','failed'],{all:'全部状态',queued:'排队中',running:'处理中',succeeded:'已完成',failed:'失败'})}</select></label></div></section><div id="hf-cards" class="hf-cards"></div>`);
-    $('search').value=filter.q;$('status').value=filter.status;let snapshot=[];
-    const render=()=>{ releaseMedia();const tasks=snapshot.filter(t=>(filter.status==='all'||t.status===filter.status)&&`${t.title} ${t.prompt}`.toLowerCase().includes(filter.q.toLowerCase()));
+    const projectLabel=document.createElement('label');projectLabel.textContent='项目';
+    const projectSelect=document.createElement('select');projectSelect.id='hf-filter-project';projectSelect.add(new Option('全部项目',''));projectLabel.append(projectSelect);$('search').closest('.hf-fields').append(projectLabel);
+    const channelLabel=document.createElement('label');channelLabel.textContent='渠道';const channelSelect=document.createElement('select');channelSelect.disabled=true;channelSelect.add(new Option('Higgsfield'));channelLabel.append(channelSelect);projectLabel.after(channelLabel);
+    let projectCursor='';do { const result=await request('projects'+(projectCursor?'?cursor='+encodeURIComponent(projectCursor):''));if(epoch!==generation)return;for(const p of result.items)projectSelect.add(new Option(p.name,p.project_id));projectCursor=result.next_cursor; } while(projectCursor);
+    $('search').value=filter.q;$('status').value=filter.status;projectSelect.value=filter.project||'';let snapshot=[];
+    const render=()=>{ releaseMedia();const tasks=snapshot.filter(t=>(!filter.project||t.project_id===filter.project)&&(filter.status==='all'||t.status===filter.status)&&`${t.title} ${t.prompt}`.toLowerCase().includes(filter.q.toLowerCase()));
       $('cards').innerHTML=tasks.length?tasks.map(t=>`<a class="hf-card" href="#higgsfield-task-${esc(t.video_task_id)}">${t.status==='succeeded'?`<img data-task-preview="${esc(t.video_task_id)}" alt="视频预览">`:''}<p>${esc(labels[t.status]||t.runtime_stage||t.status)}</p><h3>${esc(t.title||'视频任务')}</h3>${taskIdentity(t)}<p>${esc(t.resolution||'')} · ${esc(t.duration_seconds)}s · ${esc(t.aspect_ratio||'')}</p>${generationBadge(t)}</a>`).join(''):'<p class="hf-muted">暂无匹配任务。可以创建视频或调整筛选条件。</p>';
       root.querySelectorAll('[data-task-preview]').forEach(el=>media('tasks/'+el.dataset.taskPreview+'/thumbnail',el,generation));save();
     };
-    $('search').oninput=()=>{filter.q=$('search').value;render();};$('status').onchange=()=>{filter.status=$('status').value;render();};
+    $('search').oninput=()=>{filter.q=$('search').value;render();};$('status').onchange=()=>{filter.status=$('status').value;render();};projectSelect.onchange=()=>{filter.project=projectSelect.value;render();};
     const refresh=async()=>{if(epoch!==generation||document.hidden)return;try{const value=await request('tasks');if(epoch!==generation)return;snapshot=value.tasks;render();message('任务状态已更新。');}catch(e){if(epoch===generation)message(e.message+' 当前保留上次快照。',true);}finally{if(epoch===generation)poll=setTimeout(refresh,8000);}};
     await refresh();
   }
@@ -197,15 +201,15 @@
     const refresh=async()=>{if(epoch!==generation||document.hidden)return;
       try{const value=await request('tasks/'+id);if(epoch!==generation)return;task=value;
         const existingVideo=$('video');const oldURL=existingVideo?.src;
-        const facts=[['模型与渠道',(names[value.model]||value.model)+' × Higgsfield'],['请求规格',`${value.duration_seconds}s / ${value.resolution} / ${value.aspect_ratio}`],['预计消费',value.billing?.quoted_credits!=null?value.billing.quoted_credits+' Credits':'未记录'],['实际扣费','待对账'],['实际尺寸',value.media?.width?value.media.width+' × '+value.media.height:'尚无结果']];
+        const facts=[['模型与渠道',(names[value.model]||value.model)+' × Higgsfield'],['请求规格',`${value.duration_seconds}s / ${value.resolution} / ${value.aspect_ratio}`],['预计消费',value.billing?.quoted_credits!=null?value.billing.quoted_credits+' Credits':'未记录'],['实际扣费','待对账'],['实际尺寸',value.media?.width?value.media.width+' × '+value.media.height:'尚无结果'],['实际时长',value.media?.duration_ms!=null?value.media.duration_ms/1000+' 秒':'尚无结果'],['帧率',value.media?.frame_rate!=null?value.media.frame_rate+' FPS':'尚无结果']];
         shell(value.title||'视频任务',labels[value.status]||value.runtime_stage||value.status, `<section class="hf-panel"><h2>生成结果</h2>${value.status==='succeeded'?'<video id="hf-video" controls playsinline preload="metadata"></video><div class="hf-actions"><button class="button primary" id="hf-download">下载视频</button></div>':`<p>${value.runtime_stage==='submission_unknown'?'供应商提交状态待确认，请恢复原任务；不会自动重新生成。':value.status==='failed'?'本次生成未完成，任务和费用记录已保留。':value.runtime_stage==='collecting'?'供应商已完成，正在归档结果。':'任务正在排队或生成，可以离开页面后再回来。'}</p><button class="button" id="hf-result">查询原任务</button>`}</section><section class="hf-panel"><h2>提示词</h2><p class="hf-prompt">${esc(value.prompt)}</p></section><section class="hf-panel"><h2>参考素材</h2>${value.references?.length?value.references.map(r=>`<p>${esc(r.filename||'素材暂不可用')} · ${esc(({identity:'人物外观',scene:'场景',motion:'动作',camera:'镜头',style:'风格'})[r.purpose]||r.purpose)}</p>`).join(''):'<p class="hf-muted">无参考素材</p>'}</section><section class="hf-panel"><h2>生成与费用</h2><dl class="hf-facts">${facts.map(([k,v])=>`<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl><details><summary>任务与归档信息</summary><p>${esc(id)}</p><p>${esc(value.media?.sha256||'尚无固定结果摘要')}</p></details></section>`);
         const failure = value.error?.code === 'media_contract_mismatch' ? '供应商输出未达到请求规格，任务和费用记录已保留。' : errors[value.error?.code] || '可保留原任务信息供排查，不会自动重提。';
         message(value.status==='failed'?'任务失败。'+failure:'任务状态已更新。',value.status==='failed');
         if($('video')){if(oldURL)$('video').src=oldURL;else await media('tasks/'+id+'/content',$('video'),generation);
-          $('download').onclick=()=>{if(!$('video').src){message('视频正在读取，请稍后下载。');return;}const link=document.createElement('a');link.href=$('video').src;link.download=(value.title||'video')+'.mp4';link.click();};
+          $('download').onclick=async()=>{if(busy)return;busy=true;try{const blob=await request('tasks/'+id+'/content',undefined,true);if(epoch!==generation)return;const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download=(value.title||'video')+'.mp4';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}catch(e){if(epoch===generation){if([401,403,404].includes(e.status)){releaseMedia();$('video')?.remove();$('download')?.remove();}message(e.message,true);}}finally{busy=false;}};
         }
         if($('result'))$('result').onclick=async()=>{if(busy)return;busy=true;try{await request('tasks/'+id+'/result',{});await refresh();}catch(e){message(e.message,true);}finally{busy=false;}};
-      }catch(e){if(epoch===generation)message(e.message,true);}
+      }catch(e){if(epoch===generation){if([401,403,404].includes(e.status)){releaseMedia();shell('视频任务','当前任务不可访问','');task=null;}message(e.message,true);}}
       finally{clearTimeout(poll);if(epoch===generation&&task&&!['succeeded','failed','cancelled'].includes(task.status))poll=setTimeout(refresh,8000);}
     };await refresh();
   }
