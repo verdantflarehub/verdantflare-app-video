@@ -10,6 +10,7 @@ import json
 import logging
 import os
 
+from pydantic import StrictInt
 from mcp import types
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
@@ -20,7 +21,7 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 
 from .artifacts import ArtifactError, ArtifactNotFound, ArtifactStore, require_project_id
-from . import __version__
+from . import __version__, titles
 from .executor import ExecutionError, VideoExecutor
 from .dashboard import Dashboard
 from .registry import EtcdRegistry
@@ -196,28 +197,31 @@ def video_h3_latent_generate(source_video_task_id: str, project_id: str | None =
     adapter = executor.processing["h3-latent-upscale"]
     record = adapter.generate(source_video_task_id, project_id=project_id, idempotency_key=idempotency_key,
                               profile_id=profile_id, target_width=target_width, target_height=target_height, seed=seed)
-    return _result(adapter.public_status(record))
+    return _result({**adapter.public_status(record), **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.h3.latent.upscale.status")
 @_latent_errors
 def video_h3_latent_status(video_task_id: str) -> types.CallToolResult:
     adapter = executor.processing["h3-latent-upscale"]
-    return _result(adapter.public_status(adapter.status(video_task_id)))
+    record = adapter.status(video_task_id)
+    return _result({**adapter.public_status(record), **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.h3.latent.upscale.result")
 @_latent_errors
 def video_h3_latent_result(video_task_id: str) -> types.CallToolResult:
     adapter = executor.processing["h3-latent-upscale"]
-    return _result(adapter.public_result(adapter.result(video_task_id)))
+    record = adapter.result(video_task_id)
+    return _result({**adapter.public_result(record), **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.h3.latent.upscale.preview")
 @_latent_errors
 def video_h3_latent_preview(video_task_id: str) -> types.CallToolResult:
     adapter = executor.processing["h3-latent-upscale"]
-    return _result(adapter.public_result(adapter.result(video_task_id), preview=True))
+    record = adapter.result(video_task_id)
+    return _result({**adapter.public_result(record, preview=True), **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.depth.generate")
@@ -226,23 +230,26 @@ def video_depth_generate(project_id: str, idempotency_key: str, source_artifact_
     """Queue temporal RGB-to-depth conversion of a registered project video."""
     record = executor.depth.generate(project_id=project_id, idempotency_key=idempotency_key,
                                     source_artifact_id=source_artifact_id, model=model, output_format=output_format)
-    return _result(executor.depth.public_status(record))
+    return _result({**executor.depth.public_status(record), **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.depth.status")
 def video_depth_status(video_task_id: str) -> types.CallToolResult:
-    return _result(executor.depth.public_status(executor.depth.status(video_task_id)))
+    record = executor.depth.status(video_task_id)
+    return _result({**executor.depth.public_status(record), **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.depth.result")
 def video_depth_result(video_task_id: str) -> types.CallToolResult:
-    return _result(executor.depth.public_result(executor.depth.result(video_task_id)))
+    record = executor.depth.result(video_task_id)
+    return _result({**executor.depth.public_result(record), **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.depth.preview")
 def video_depth_preview(video_task_id: str) -> types.CallToolResult:
     """Get an immutable side-by-side source RGB / grayscale depth MP4."""
-    return _result(executor.depth.public_result(executor.depth.result(video_task_id), preview=True))
+    record = executor.depth.result(video_task_id)
+    return _result({**executor.depth.public_result(record, preview=True), **titles.project(executor.tasks, record)})
 
 
 
@@ -255,7 +262,7 @@ def video_sr_generate(project_id: str, idempotency_key: str, source_artifact_id:
     record = adapter.generate(project_id=project_id, idempotency_key=idempotency_key,
         source_artifact_id=source_artifact_id, target_width=target_width, target_height=target_height,
         quality_mode=quality_mode, backend=backend, seed=seed)
-    return _result(adapter.public_status(record))
+    return _result({**adapter.public_status(record), **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.interpolate.generate")
@@ -268,46 +275,52 @@ def video_interpolate_generate(project_id: str, idempotency_key: str, source_art
     record = adapter.generate(project_id=project_id, idempotency_key=idempotency_key,
         source_artifact_id=source_artifact_id, target_fps_num=target_fps_num,
         target_fps_den=target_fps_den, backend=backend)
-    return _result(adapter.public_status(record))
+    return _result({**adapter.public_status(record), **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.sr.status")
 def video_sr_status(video_task_id: str) -> types.CallToolResult:
     adapter = executor.processing["sr"]
-    return _result(adapter.public_status(adapter.status(video_task_id)))
+    record = adapter.status(video_task_id)
+    return _result({**adapter.public_status(record), **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.sr.result")
 def video_sr_result(video_task_id: str) -> types.CallToolResult:
     adapter = executor.processing["sr"]
-    return _result(adapter.public_result(adapter.result(video_task_id)))
+    record = adapter.result(video_task_id)
+    return _result({**adapter.public_result(record), **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.sr.preview")
 def video_sr_preview(video_task_id: str) -> types.CallToolResult:
     adapter = executor.processing["sr"]
-    return _result(adapter.public_result(adapter.result(video_task_id), preview=True))
+    record = adapter.result(video_task_id)
+    return _result({**adapter.public_result(record, preview=True), **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.interpolate.status")
 def video_interpolate_status(video_task_id: str) -> types.CallToolResult:
     authorize(executor.client, tasks.get(video_task_id).project_id)
     adapter = executor.processing["interpolate"]
-    return _result(adapter.public_status(adapter.status(video_task_id)))
+    record = adapter.status(video_task_id)
+    return _result({**adapter.public_status(record), **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.interpolate.result")
 def video_interpolate_result(video_task_id: str) -> types.CallToolResult:
     authorize(executor.client, tasks.get(video_task_id).project_id)
     adapter = executor.processing["interpolate"]
-    return _result(adapter.public_result(adapter.result(video_task_id)))
+    record = adapter.result(video_task_id)
+    return _result({**adapter.public_result(record), **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.interpolate.preview")
 def video_interpolate_preview(video_task_id: str) -> types.CallToolResult:
     authorize(executor.client, tasks.get(video_task_id).project_id)
     adapter = executor.processing["interpolate"]
-    return _result(adapter.public_result(adapter.result(video_task_id), preview=True))
+    record = adapter.result(video_task_id)
+    return _result({**adapter.public_result(record, preview=True), **titles.project(executor.tasks, record)})
 
 
 def _result(value: dict[str, object]) -> types.CallToolResult:
@@ -424,13 +437,13 @@ def video_create(prompt: str,
                  references: dict[str, list[dict[str, str]]] | None = None,
                  route: str | None = None,
                  quality_profile: str | None = None, mode: str | None = None,
-                  resolution: str | None = None, postprocess: dict | None = None) -> types.CallToolResult:
+                  resolution: str | None = None, postprocess: dict | None = None, title: object = None) -> types.CallToolResult:
     """Create an asynchronous video generation task."""
-    record = executor.generate(project_id=project_id, idempotency_key=idempotency_key, model=model,
+    record, naming = titles.create(executor, title=title, project_id=project_id, idempotency_key=idempotency_key, model=model,
                                prompt=prompt, duration_seconds=duration_seconds,
                                aspect_ratio=aspect_ratio, references=references or {}, route=route,
                                quality_profile=quality_profile, mode=mode, resolution=resolution, postprocess=postprocess)
-    return _result({"task_id": record.video_task_id, "video_task_id": record.video_task_id,
+    return _result({**naming, "task_id": record.video_task_id, "video_task_id": record.video_task_id,
                     "status": record.status, "created_at": record.created_at, "error": record.error, "delivery": record.delivery,
                     "resolved_output": record.request.get("resolved_output"),
                     "reference_mapping": record.request.get("reference_mapping")})
@@ -441,7 +454,7 @@ def video_generate(project_id: str, idempotency_key: str, model: str, prompt: st
                    duration_seconds: int, aspect_ratio: str,
                    references: dict[str, list[dict[str, str]]], route: str,
                    quality_profile: str | None = None, mode: str | None = None,
-                  resolution: str | None = None, postprocess: dict | None = None) -> types.CallToolResult:
+                  resolution: str | None = None, postprocess: dict | None = None, title: object = None) -> types.CallToolResult:
     """Generate with a business model and an explicitly selected runtime route.
 
     `route` selects a configured channel such as h3-sol, h3-vdn, or fal.
@@ -449,11 +462,11 @@ def video_generate(project_id: str, idempotency_key: str, model: str, prompt: st
     References must be registered project artifacts.
     Routes never fall back; retain the returned task id.
     """
-    record = executor.generate(project_id=project_id, idempotency_key=idempotency_key, model=model,
+    record, naming = titles.create(executor, title=title, project_id=project_id, idempotency_key=idempotency_key, model=model,
                                prompt=prompt, duration_seconds=duration_seconds,
                                aspect_ratio=aspect_ratio, references=references, route=route,
                                quality_profile=quality_profile, mode=mode, resolution=resolution, postprocess=postprocess)
-    return _result({"task_id": record.video_task_id, "video_task_id": record.video_task_id,
+    return _result({**naming, "task_id": record.video_task_id, "video_task_id": record.video_task_id,
                     "status": record.status, "created_at": record.created_at, "error": record.error, "delivery": record.delivery})
 
 
@@ -468,7 +481,7 @@ def video_status(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
     if existing.service == 'interpolate' or existing.request.get('postprocess'):
         authorize(executor.client, existing.project_id)
     record = executor.status(tid)
-    return _result({"task_id": record.video_task_id, "video_task_id": record.video_task_id, "status": record.status,
+    return _result({**titles.project(executor.tasks, record), "task_id": record.video_task_id, "video_task_id": record.video_task_id, "status": record.status,
                     "created_at": record.created_at, "updated_at": record.updated_at, "error": record.error,
                     "timing": record.timing, "runtime_metrics": record.runtime_metrics, "delivery": record.delivery,
                     "service": record.service, "runtime_route": record.runtime_route,
@@ -489,22 +502,22 @@ def video_result(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
         authorize(executor.client, existing.project_id)
     record = executor.result(tid)
     if record.service == 'higgsfield':
-        return _result(executor.higgsfield.public_result(record))
+        return _result({**executor.higgsfield.public_result(record), **titles.project(executor.tasks, record)})
     if record.service in executor.processing:
         res = executor.processing[record.service].public_result(record)
         res["task_id"] = record.video_task_id
-        return _result(res)
+        return _result({**res, **titles.project(executor.tasks, record)})
     if record.service == "depth":
         res = executor.depth.public_result(record)
         res["task_id"] = record.video_task_id
-        return _result(res)
+        return _result({**res, **titles.project(executor.tasks, record)})
     artifact = artifacts.get(record.artifact_id, record.project_id)
     value = {"task_id": record.video_task_id, "video_task_id": record.video_task_id, "artifact_id": artifact.artifact_id,
              "model": record.request["model"], "runtime_version": record.runtime_version or executor.runtime_version,
              "runtime_route": record.runtime_route, "service": record.service,
              "input_digest": record.input_digest, "media": record.media, "delivery": record.delivery,
              "download_path": artifacts.download_path(artifact.artifact_id)}
-    return _result(value)
+    return _result({**value, **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.depth")
@@ -516,7 +529,7 @@ def video_depth(source_artifact_id: str, project_id: str, idempotency_key: str =
                                      source_artifact_id=source_artifact_id, model=model, output_format=output_format)
     res = executor.depth.public_status(record)
     res["task_id"] = record.video_task_id
-    return _result(res)
+    return _result({**res, **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.sr")
@@ -531,7 +544,7 @@ def video_sr(source_artifact_id: str, target_width: int, target_height: int,
         quality_mode=quality_mode, backend=backend, seed=seed)
     res = adapter.public_status(record)
     res["task_id"] = record.video_task_id
-    return _result(res)
+    return _result({**res, **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.interpolate")
@@ -545,7 +558,22 @@ def video_interpolate(source_artifact_id: str, project_id: str, idempotency_key:
         target_fps_den=target_fps_den, backend=backend)
     res = adapter.public_status(record)
     res["task_id"] = record.video_task_id
-    return _result(res)
+    return _result({**res, **titles.project(executor.tasks, record)})
+
+
+@mcp.tool(name="video.title_update")
+def video_title_update(video_task_id: str, title: str, expected_title_revision: StrictInt) -> types.CallToolResult:
+    """Rename an authorized project task with optimistic concurrency; never resubmit generation."""
+    try:
+        naming = titles.rename(executor, video_task_id, title, expected_title_revision)
+        return _result({'video_task_id': video_task_id, **naming})
+    except titles.TitleConflict:
+        return types.CallToolResult(isError=True, content=[types.TextContent(type='text', text='title_conflict: read the latest task before editing')])
+
+
+_registered_title = mcp._tool_manager.get_tool('video.title_update')
+VIDEO_TOOLS_SCHEMA.append({'name': 'video.title_update', 'description': _registered_title.description,
+                           'inputSchema': _registered_title.parameters})
 
 
 for _entry in VIDEO_TOOLS_SCHEMA:
@@ -564,7 +592,8 @@ def transport_security_from_environment() -> TransportSecuritySettings:
 
 async def health(request: Request) -> JSONResponse:
     artifacts.ensure_ready(); tasks.ensure_ready()
-    return JSONResponse({"status": "ok", "contract_version": "v1", "version": __version__})
+    return JSONResponse({"status": "ok", "contract_version": "v1", "version": __version__,
+                         "channels": {"higgsfield": executor.higgsfield.channel_health()}})
 
 
 async def artifact_content(request: Request) -> Response:

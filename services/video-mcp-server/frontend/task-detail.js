@@ -1,6 +1,10 @@
 "use strict";
 let detailRendered = false, resultArtifact = null, resultLoading = false;
+let currentTitleTask = null, titleEditRevision = 0;
 function clearTaskDetail() {
+  currentTitleTask = null;
+  if ($("titleForm")) $("titleForm").hidden = true;
+  if ($("editTitle")) $("editTitle").hidden = true;
   setTaskName("任务不可用");
   detailRendered = false;
   resultArtifact = null;
@@ -19,9 +23,7 @@ function clearTaskDetail() {
   $("imagePreviewImage").removeAttribute("src");
 }
 function taskDisplayName(task) {
-  const key = typeof task.idempotency_key === "string" ? task.idempotency_key.trim() : "";
-  const project = typeof task.project_id === "string" ? task.project_id.trim() : "";
-  return key ? (project ? `${project} / ${key}` : key) : "未命名任务";
+  return typeof task.title === "string" && task.title.trim() ? task.title.trim() : "视频任务";
 }
 function setTaskName(name) {
   $("detailTitle").textContent = name;
@@ -174,18 +176,29 @@ async function refreshTaskDetail(id, version) {
   try { task = await api(`/api/tasks/${encodeURIComponent(id)}`); }
   catch (error) { if (version === revision) { clearTaskDetail(); setTaskName(error.status === 404 ? "未找到任务" : "任务不可用"); $("detailMessage").textContent = error.message; } return; }
   if (version !== revision || !authorized) return;
+  currentTitleTask = task;
+  $("editTitle").hidden = false;
   setTaskName(taskDisplayName(task));
   modalTask = id;
   $("detailMessage").textContent = "";
   $("detailContent").hidden = false;
-  $("detailSubtitle").textContent = `${task.project_id} / ${task.idempotency_key}`;
+  $("detailSubtitle").textContent = `${date(task.created_at)} · ${taskOperation(task)}`;
   $("detailStatus").className = `detail-status ${task.status}`;
   $("detailStatus").textContent = labels[task.status] || task.status;
   $("outputCount").textContent = task.artifact || task.content_ref ? "1 个视频" : "0 / 1 个视频";
-  const rows = [["任务 ID", task.video_task_id], ["模型", taskModel(task)], ["渠道", taskRoute(task)], ["生成类型", task.presentation?.generation_code ? `${task.presentation.generation_code} · ${task.presentation.generation_label}` : "未记录"], ["执行后端", task.route || task.service || "未记录"], ["执行实例", task.execution_instance_id || "未上报"], ["开始时间", date(task.created_at)], ["排队时间", seconds(task.timing?.queue_seconds)], ["运行时间", seconds(task.timing?.processing_seconds ?? task.timing?.processing_elapsed_seconds)], ["总耗时", seconds(task.timing?.total_seconds)], ["时长 / 画幅", `${task.duration_seconds}s · ${task.aspect_ratio}`], ["Seed", task.seed], ["Runtime 版本", task.runtime_version], ["输入摘要", task.input_digest]];
+  const rows = [["任务 ID", task.video_task_id], ["项目 ID", task.project_id], ["幂等键", task.idempotency_key], ["模型", taskModel(task)], ["渠道", taskRoute(task)], ["生成类型", task.presentation?.generation_code ? `${task.presentation.generation_code} · ${task.presentation.generation_label}` : "未记录"], ["执行后端", task.route || task.service || "未记录"], ["执行实例", task.execution_instance_id || "未上报"], ["开始时间", date(task.created_at)], ["排队时间", seconds(task.timing?.queue_seconds)], ["运行时间", seconds(task.timing?.processing_seconds ?? task.timing?.processing_elapsed_seconds)], ["总耗时", seconds(task.timing?.total_seconds)], ["时长 / 画幅", `${task.duration_seconds}s · ${task.aspect_ratio}`], ["Seed", task.seed], ["Runtime 版本", task.runtime_version], ["输入摘要", task.input_digest]];
   if (task.runtime_stage) rows.push(["任务阶段", task.runtime_stage === "submission_unknown" ? "提交待确认，请勿重复生成" : task.runtime_stage]);
   if (task.error) rows.push(["异常信息", typeof task.error === "string" ? task.error : JSON.stringify(task.error)]);
   $("taskParameters").innerHTML = rows.map(([label,value]) => `<dt>${escapeHTML(label)}</dt><dd>${escapeHTML(value ?? "—")}</dd>`).join("");
+  const copy = document.createElement("button"); copy.className = "button"; copy.textContent = "复制任务 ID";
+  copy.onclick = async () => {
+    try {
+      if (navigator.clipboard && !window.studioEmbedded) await navigator.clipboard.writeText(task.video_task_id);
+      else { const input = document.createElement('textarea'); input.value = task.video_task_id; document.body.append(input); input.select(); const copied = document.execCommand('copy'); input.remove(); if (!copied) throw new Error('copy'); }
+      copy.textContent = "已复制";
+    } catch { copy.textContent = "复制不可用，请选中任务 ID"; }
+  };
+  $("taskParameters").querySelector('dd')?.append(copy);
   if (!detailRendered) {
     renderReferences(task, version);
     promptReferences(task.prompt || "");
@@ -208,6 +221,32 @@ window.addEventListener("pagehide", clearMedia);
 window.addEventListener("DOMContentLoaded", () => {
   businessView();
   if (detailTaskId && !authorized) $("detailMessage").textContent = "请连接 MCP 以查看任务。";
+  $("editTitle").onclick = () => {
+    if (!currentTitleTask) return;
+    titleEditRevision = currentTitleTask.title_revision;
+    $("titleInput").value = currentTitleTask.title;
+    $("titleMessage").textContent = ""; $("titleForm").hidden = false;
+    $("titleInput").focus();
+  };
+  $("cancelTitle").onclick = () => { $("titleForm").hidden = true; $("editTitle").focus(); };
+  $("titleForm").onsubmit = async (event) => {
+    event.preventDefault(); const version = revision, id = currentTitleTask?.video_task_id;
+    if (!id || !authorized) return;
+    const name = $("titleInput").value.trim();
+    if (![...name].length || [...name].length > 64 || /[<>\p{C}\u2028\u2029]/u.test(name)) {
+      $("titleMessage").textContent = "名称须为 1–64 字的单行纯文本。"; return;
+    }
+    $("saveTitle").disabled = true;
+    try {
+      await api(`/api/tasks/${encodeURIComponent(id)}/title`, { method: 'POST', body: JSON.stringify({title: name, expected_title_revision: titleEditRevision}) });
+      if (version !== revision || !authorized || currentTitleTask?.video_task_id !== id) return;
+      await refreshTaskDetail(id, version); $("titleForm").hidden = true; $("editTitle").focus();
+    } catch (error) {
+      if (version !== revision || !authorized) return;
+      if (error.status === 409) { await refreshTaskDetail(id, version); titleEditRevision = currentTitleTask?.title_revision; }
+      $("titleMessage").textContent = error.message;
+    } finally { $("saveTitle").disabled = false; }
+  };
   $("closeImagePreview").onclick = () => $("imagePreview").close();
   $("imagePreview").addEventListener("close", () => $("imagePreviewImage").removeAttribute("src"));
 });

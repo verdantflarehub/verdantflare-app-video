@@ -139,6 +139,8 @@ class TaskStore:
                             runtime_version=runtime_version, runtime_route=runtime_route,
                             created_at=now, updated_at=now)
         self._write(record)
+        from .titles import initialize
+        initialize(self, record)
         db = getattr(self._local, 'connection', None)
         if db is not None:
             db.execute('INSERT INTO identities(project,key,task) VALUES(?,?,?)',

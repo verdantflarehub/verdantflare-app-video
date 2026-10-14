@@ -47,7 +47,7 @@
 
 <p class="business-muted">平均处理耗时（包含排队）：<span id="metricLatency">—</span> · 数量按项目、模型和关键词汇总。</p>
 <div class="market-toolbar">
-<label class="market-search"><span>PROMPT / TASK ID 快速查找</span><input id="searchInput" placeholder="搜索任务编号、提示词或项目…" type="search"/></label>
+<label class="market-search"><span>任务名称 / 提示词</span><input id="searchInput" placeholder="搜索名称、提示词或任务编号…" type="search"/></label>
 <div class="market-selects">
 <label><span>推理服务</span><select id="filterEngine">
 <option value="all">全部服务</option>
@@ -73,10 +73,8 @@
 <table>
 <thead>
 <tr>
-<th>项目 / 镜头</th>
-<th>任务 ID</th>
+<th>任务名称</th>
 <th>推理服务</th>
-<th>执行实例</th>
 <th>Prompt</th>
 <th>时长 / 规格</th>
 <th>处理耗时</th>
@@ -91,7 +89,7 @@
 <button class="button" id="prevPage">上一页</button><span id="pageLabel">0 个任务</span><button class="button" id="nextPage">下一页</button>
 </div>
 </section>
-<section hidden="" id="taskDetail"><div class="detail-heading"><div><p class="market-kicker">H3 REF2VA / TASK DETAIL</p><h1 id="detailTitle">加载中</h1><p id="detailSubtitle"></p></div><span id="detailStatus"></span></div><div id="detailMessage" role="status"></div><div hidden="" id="detailContent"><section class="output-pane"><h2>生成结果 <small id="outputCount"></small></h2><div class="result-stage" id="videoArea"></div><div id="resultActions"></div><p id="resultMessage" role="status"></p></section><section><h2>提示词</h2><div class="prompt-sheet" id="taskPrompt"></div></section><section><h2>参考素材</h2><div id="referenceGroups"></div></section><details><summary>任务信息与生成参数</summary><dl id="taskParameters"></dl></details></div></section></main></div>
+<section hidden="" id="taskDetail"><div class="detail-heading"><div><p class="market-kicker">H3 REF2VA / TASK DETAIL</p><h1 id="detailTitle">加载中</h1><p id="detailSubtitle"></p><button class="button" id="editTitle" hidden="" type="button">编辑名称</button><form id="titleForm" class="title-form" hidden=""><label for="titleInput">任务名称</label><input id="titleInput" name="title" required="" maxlength="128" autocomplete="off"/><div class="actions"><button class="button primary" id="saveTitle" type="submit">保存名称</button><button class="button" id="cancelTitle" type="button">取消</button></div><p id="titleMessage" role="status"></p></form></div><span id="detailStatus"></span></div><div id="detailMessage" role="status"></div><div hidden="" id="detailContent"><section class="output-pane"><h2>生成结果 <small id="outputCount"></small></h2><div class="result-stage" id="videoArea"></div><div id="resultActions"></div><p id="resultMessage" role="status"></p></section><section><h2>提示词</h2><div class="prompt-sheet" id="taskPrompt"></div></section><section><h2>参考素材</h2><div id="referenceGroups"></div></section><details><summary>技术信息与生成参数</summary><dl id="taskParameters"></dl></details></div></section></main></div>
 <div aria-labelledby="tokenTitle" aria-modal="true" class="modal-backdrop" hidden="" id="tokenModal" role="dialog">
 <div class="modal-window">
 <div class="modal-head">
@@ -122,7 +120,7 @@
 <option disabled="" value="h3-sol">h3-sol · 检查中</option>
 <option disabled="" selected="" value="h3-vdn">h3-vdn · 检查中</option>
 <option value="fal">fal</option>
-</select></label><label class="full">镜头 / Attempt 幂等键<input id="attemptInput" maxlength="128" name="idempotency_key" required=""/></label><label class="full">动态运镜 Prompt<textarea maxlength="16000" name="prompt" placeholder="描述已确认的镜头、人物动作和连续运镜…" required="" rows="4"></textarea></label><label>时长（秒）<input max="15" min="5" name="duration_seconds" required="" step="1" type="number" value="5"/></label><label>画幅<select name="aspect_ratio">
+</select></label><label class="full">镜头 / Attempt 幂等键<input id="attemptInput" maxlength="128" name="idempotency_key" required=""/></label><label class="full">任务名称（选填）<input name="title" maxlength="128" placeholder="如：湖面漂流的纸船"/></label><label class="full">动态运镜 Prompt<textarea maxlength="16000" name="prompt" placeholder="描述已确认的镜头、人物动作和连续运镜…" required="" rows="4"></textarea></label><label>时长（秒）<input max="15" min="5" name="duration_seconds" required="" step="1" type="number" value="5"/></label><label>画幅<select name="aspect_ratio">
 <option value="9:16">9:16 · 竖屏</option>
 <option hidden="" value="adaptive">自适应</option>
 <option hidden="" value="21:9">21:9 · 超宽屏</option>

@@ -1135,3 +1135,9 @@ html[data-page="task"] [data-action="dispatch"] { display: none !important; }
 .video-breadcrumb a { color: inherit; text-decoration: none; }
 .video-breadcrumb a:hover { text-decoration: underline; }
 .detail-heading h1 { overflow-wrap: anywhere; }
+
+.title-form { margin-top:16px; max-width:560px; }
+.title-form input { display:block; box-sizing:border-box; width:100%; padding:10px; margin:8px 0; background:var(--subtle); color:var(--ink); border:1px solid var(--line); border-radius:8px; }
+.title-form[hidden] { display:none; }
+#taskParameters dd { overflow-wrap:anywhere; }
+#taskParameters dd .button { margin-left:12px; }

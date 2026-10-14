@@ -197,9 +197,10 @@ async function api(path, options = {}) {
       401: window.studioEmbedded
         ? "Studio 会话已过期，请重新登录。"
         : "Token 无效或已过期，请重新设置。",
-      400: "请检查参数、参考素材类型及项目归属。",
+      400: path.endsWith("/title") ? "名称须为 1–64 字的单行纯文本。" : "请检查参数、参考素材类型及项目归属。",
+      403: "没有此项目的编辑权限。",
       404: "任务或素材不存在。",
-      409: "幂等键冲突或所选服务尚未接入。",
+      409: path.endsWith("/title") ? "名称已被修改，请核对最新名称后重试。" : "幂等键冲突或所选服务尚未接入。",
       413: "请求内容过大。",
       502: "推理或素材服务暂时不可用。提交结果不确定时请先查询原任务，不要更换幂等键重发。",
       503: "服务尚未配置访问 Token。",
@@ -339,7 +340,7 @@ function render(data) {
   $("filterProject").innerHTML =
     '<option value="all">全部项目</option>' +
     data.projects
-      .map((v) => `<option value="${escapeHTML(v)}">${escapeHTML(v)}</option>`)
+      .map((v) => `<option value="${escapeHTML(v)}">未命名项目</option>`)
       .join("");
   $("filterProject").value = data.projects.includes(project) ? project : "all";
   $("emptyState").hidden = data.tasks.length > 0;
@@ -351,14 +352,14 @@ function render(data) {
   const galleryHTML = data.tasks
     .map(
       (t) =>
-        `<article class="model-card" tabindex="0" role="button" data-task="${escapeHTML(t.video_task_id)}" aria-label="查看 ${escapeHTML(t.idempotency_key)}"><div class="card-thumb-wrap"><span>${t.status === "succeeded" ? "▶" : t.status === "running" ? "◌" : "◇"}</span>${taskIdentity(t)}<div class="card-badges">${badge(t)}</div><div class="card-times"><span title="开始时间">${date(t.created_at)}</span><span title="排队 / 运行">${elapsed(t)}</span></div></div><div class="card-body"><div><div class="card-title-row"><span title="${escapeHTML(t.video_task_id)} · ${escapeHTML(t.project_id)} / ${escapeHTML(t.idempotency_key)}">${escapeHTML(taskDisplayName(t))}</span></div><p class="card-prompt">${escapeHTML(taskPrompt(t))}</p></div><div class="card-footer"><div class="model-tags">${taskTags(t)}</div><span class="card-footer-action">查看详情 →</span></div></div></article>`,
+        `<article class="model-card" tabindex="0" role="button" data-task="${escapeHTML(t.video_task_id)}" aria-label="查看 ${escapeHTML(taskDisplayName(t))}"><div class="card-thumb-wrap"><span>${t.status === "succeeded" ? "▶" : t.status === "running" ? "◌" : "◇"}</span>${taskIdentity(t)}<div class="card-badges">${badge(t)}</div><div class="card-times"><span title="开始时间">${date(t.created_at)}</span><span title="排队 / 运行">${elapsed(t)}</span></div></div><div class="card-body"><div><div class="card-title-row"><span title="${escapeHTML(taskDisplayName(t))}">${escapeHTML(taskDisplayName(t))}</span></div><p class="card-prompt">${escapeHTML(taskPrompt(t))}</p></div><div class="card-footer"><div class="model-tags">${taskTags(t)}</div><span class="card-footer-action">查看详情 →</span></div></div></article>`,
     )
     .join("");
   reconcileGallery(galleryHTML, data.tasks);
   const tableHTML = data.tasks
     .map(
       (t) =>
-        `<tr><td>${escapeHTML(t.project_id)}<br>${escapeHTML(t.idempotency_key)}</td><td>${escapeHTML(t.video_task_id)}</td><td>${taskTableIdentity(t)}</td><td>${escapeHTML(t.execution_instance_id || (t.status === "queued" ? "尚未分配" : "未知"))}</td><td>${escapeHTML(t.prompt.slice(0, 100))}</td><td>${escapeHTML(t.duration_seconds)}s · ${escapeHTML(t.aspect_ratio)}</td><td>${elapsed(t)}</td><td>${badge(t)}</td><td><button class="button" data-task="${escapeHTML(t.video_task_id)}">${t.status === "succeeded" ? "回放" : "详情"}</button></td></tr>`,
+        `<tr><td title="${escapeHTML(taskDisplayName(t))}">${escapeHTML(taskDisplayName(t))}</td><td>${taskTableIdentity(t)}</td><td>${escapeHTML(t.prompt.slice(0, 100))}</td><td>${escapeHTML(t.duration_seconds)}s · ${escapeHTML(t.aspect_ratio)}</td><td>${elapsed(t)}</td><td>${badge(t)}</td><td><button class="button" data-task="${escapeHTML(t.video_task_id)}">${t.status === "succeeded" ? "回放" : "详情"}</button></td></tr>`,
     )
     .join("");
   if ($("taskRows").innerHTML !== tableHTML)
@@ -606,7 +607,7 @@ $("dispatchForm").addEventListener("submit", async (event) => {
       method: "POST",
       body: JSON.stringify(body),
     });
-    $("dispatchMessage").textContent = `已提交：${task.video_task_id}`;
+    $("dispatchMessage").textContent = `已提交：${taskDisplayName(task)}`;
     closeModal("dispatchModal");
     $("attemptInput").value = "";
     page = 1;

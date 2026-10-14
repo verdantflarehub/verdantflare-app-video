@@ -19,6 +19,7 @@ from .artifacts import ArtifactError, ArtifactNotFound
 from .executor import ExecutionError
 from .resources import Resources
 from .tasks import TaskConflict, TaskNotFound, TaskRecord, TaskStore
+from . import titles
 
 _PACKAGE_FRONTEND = Path(__file__).parent.parent / "frontend"
 _WORKSPACE_FRONTEND = Path.cwd() / "services" / "video-mcp-server" / "frontend"
@@ -43,6 +44,7 @@ class Submission(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     project_id: str = Field(min_length=1, max_length=64)
     idempotency_key: str = Field(min_length=1, max_length=128)
+    title: object = None
     model: str | None = None
     route: str = Field(min_length=1, max_length=64)
     prompt: str = Field(min_length=1, max_length=16000)
@@ -59,6 +61,12 @@ class ImportRequest(BaseModel):
     source_url: str = Field(max_length=4096)
     filename: str = Field(max_length=128)
     expected_sha256: str = Field(min_length=64, max_length=64)
+
+
+class TitleUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    title: str
+    expected_title_revision: int = Field(ge=0)
 
 
 def task_presentation(record):
@@ -88,7 +96,7 @@ def task_presentation(record):
             "generation_code": code, "generation_label": explanation}
 
 
-def public_task(record):
+def public_task(record, store=None):
     record = TaskStore.with_timing(record)
     model = record.request.get("model")
     if not model:
@@ -98,7 +106,8 @@ def public_task(record):
             "depth": "video-depth-anything",
             "h3-latent-upscale": "h3-latent-upscaler",
         }.get(record.service)
-    return {"video_task_id": record.video_task_id, "project_id": record.project_id,
+    naming = titles.project(store, record) if store is not None else {'title': titles.fallback(record), 'title_source': 'fallback', 'title_revision': 0, 'title_updated_at': None}
+    return {**naming, "video_task_id": record.video_task_id, "project_id": record.project_id,
             "idempotency_key": record.idempotency_key, "service": record.service, "route": record.runtime_route or record.request.get("route"),
             "model": model, "presentation": task_presentation(record),
             "mode": record.request.get("mode"), "resolution": record.request.get("resolution"),
@@ -190,7 +199,7 @@ class Dashboard:
             visible.append(record)
         records = visible
         projects = sorted({r.project_id for r in records})
-        rows = [public_task(r) for r in records]
+        rows = [public_task(r, self.executor.tasks) for r in records]
         for key in ("project_id", "service"):
             value = query.get(key, "all")
             if value != "all":
@@ -198,7 +207,7 @@ class Dashboard:
         search = query.get("q", "").casefold()
         if search:
             rows = [r for r in rows if search in " ".join(str(r[k]) for k in (
-                "prompt", "project_id", "idempotency_key", "video_task_id")).casefold()]
+                "title", "prompt", "project_id", "idempotency_key", "video_task_id")).casefold()]
         counts = {s: sum(r["status"] == s for r in rows) for s in (
             "queued", "running", "succeeded", "failed", "cancelled")}
         status_filter = query.get("status", "all")
@@ -217,7 +226,7 @@ class Dashboard:
         record = self.executor.tasks.get(task_id)
         if record.service == "higgsfield":
             self.executor.higgsfield.authorize_record(record)
-        value = public_task(record)
+        value = public_task(record, self.executor.tasks)
         value["runtime_version"] = record.runtime_version or self.executor.runtime_version
         value["references"] = []
         for kind, items in record.request.get("references", {}).items():
@@ -295,7 +304,11 @@ class Dashboard:
                     body.extend(chunk)
                     if len(body) > 65536:
                         return JSONResponse({"error": "request_too_large"}, status_code=413)
-                if action == "/api/artifacts/import":
+                if action.endswith('/title'):
+                    inputs = TitleUpdate.model_validate_json(body)
+                    naming = await run_in_threadpool(titles.rename, self.executor, request.path_params['task_id'], **inputs.model_dump())
+                    value = {'video_task_id': request.path_params['task_id'], **naming}
+                elif action == "/api/artifacts/import":
                     inputs = ImportRequest.model_validate_json(body)
                     artifact = await run_in_threadpool(self.executor.import_asset, **inputs.model_dump())
                     value = artifact.model_dump()
@@ -317,13 +330,15 @@ class Dashboard:
                     if service == "h3-singularity" and not self.executor.singularity_token:
                         return JSONResponse({"error": "service_not_connected"}, status_code=409)
                     kwargs = inputs.model_dump(exclude={"model"})
-                    record = await run_in_threadpool(self.executor.generate, model=inputs.model, **kwargs)
-                    value = public_task(record)
+                    record, naming = await run_in_threadpool(titles.create, self.executor, model=inputs.model, **kwargs)
+                    value = {**public_task(record, self.executor.tasks), **naming}
             return JSONResponse(value, headers={"Cache-Control": "no-store"})
         except (TaskNotFound, ArtifactNotFound):
             return JSONResponse({"error": "not_found"}, status_code=404)
         except PermissionError:
             return JSONResponse({"error": "permission_denied"}, status_code=403)
+        except titles.TitleConflict:
+            return JSONResponse({"error": "title_conflict"}, status_code=409)
         except TaskConflict:
             return JSONResponse({"error": "idempotency_conflict"}, status_code=409)
         except (ValidationError, ValueError, KeyError, TypeError):
@@ -366,4 +381,5 @@ class Dashboard:
                 Route("/api/tasks/{task_id:str}/thumbnail", self.endpoint),
                 Route("/api/tasks/{task_id:str}/content", self.endpoint),
                 Route("/api/tasks/{task_id:str}/result", self.endpoint, methods=["POST"]),
+                Route("/api/tasks/{task_id:str}/title", self.endpoint, methods=["POST"]),
                 Route("/api/artifacts/import", self.endpoint, methods=["POST"])]
