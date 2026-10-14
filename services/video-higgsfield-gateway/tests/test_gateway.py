@@ -159,6 +159,25 @@ class GatewayTest(unittest.TestCase):
     def test_account_response_does_not_include_email(self):
         self.assertNotIn("email", self.gateway.account())
 
+    def test_auth_failure_before_submit_creates_no_job_or_reservation(self):
+        with patch.object(self.cli, "run", side_effect=ProviderError("authorization_required")):
+            with self.assertRaisesRegex(ProviderError, "authorization_required"):
+                self.gateway.submit(request())
+        with self.gateway.db() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 0)
+        self.assertEqual(self.creates(), 0)
+
+    def test_auth_failure_during_poll_keeps_original_task_for_recovery(self):
+        original = self.gateway.submit(request())
+        before = self.gateway.load(original["request_id"])
+        with patch.object(self.cli, "run", side_effect=ProviderError("authorization_required")):
+            with self.assertRaisesRegex(ProviderError, "authorization_required"):
+                self.gateway.status(original["request_id"])
+        self.assertEqual(self.gateway.load(original["request_id"]), before)
+        recovered = self.make_gateway().status(original["request_id"])
+        self.assertEqual(recovered["remote_id"], original["remote_id"])
+        self.assertEqual(self.creates(), 1)
+
     def test_zero_limits_disable_generation(self):
         with self.assertRaisesRegex(GatewayError, "account_budget_exceeded"):
             self.make_gateway(credit_limit=0, submission_limit=0).submit(request())
@@ -200,6 +219,26 @@ class GatewayTest(unittest.TestCase):
     def test_token_command_is_not_available(self):
         with self.assertRaisesRegex(ProviderError, "command_denied"):
             CLI(Path("hf"), self.root).run(["auth", "token"])
+
+    def test_official_login_hint_is_mapped_without_private_diagnostic(self):
+        cases = [
+            (2, b"Error: private diagnostic\nHint: Run: hf auth login\n", "authorization_required"),
+            (2, b"Error: network unavailable\n", "provider_call_failed"),
+            (1, b"Hint: Run: hf auth login\n", "provider_call_failed"),
+            (2, b"Error: echoed text: Hint: Run: hf auth login\n", "provider_call_failed"),
+            (2, b"private" * 600000, "provider_output_exceeded"),
+        ]
+        for code, diagnostic, expected in cases:
+            with self.subTest(code=code, expected=expected):
+                def process(*args, **kwargs):
+                    kwargs["stderr"].write(diagnostic)
+                    kwargs["stderr"].flush()
+                    return SimpleNamespace(returncode=code, poll=lambda: code, wait=lambda: code)
+                with patch("higgsfield_gateway.cli.subprocess.Popen", side_effect=process):
+                    with self.assertRaises(ProviderError) as caught:
+                        CLI(Path("hf"), self.root).run(["account", "status"])
+                self.assertEqual(caught.exception.code, expected)
+                self.assertEqual(str(caught.exception), expected)
 
     def test_invalid_parameters_cannot_be_passed_as_cli_flags(self):
         with self.assertRaises(ValueError):

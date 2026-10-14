@@ -10,6 +10,7 @@ import time
 
 DMIT_PROXY = "http://openclash.openclash.svc.cluster.local:1081"
 CLI_VERSION = "1.1.26"
+MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 
 
 class ProviderError(RuntimeError):
@@ -55,14 +56,23 @@ class CLI:
                 while process.poll() is None:
                     if time.monotonic() >= deadline:
                         raise ProviderError("provider_timeout")
-                    if os.fstat(out.fileno()).st_size + os.fstat(err.fileno()).st_size > 4 * 1024 * 1024:
+                    if os.fstat(out.fileno()).st_size + os.fstat(err.fileno()).st_size > MAX_OUTPUT_BYTES:
                         raise ProviderError("provider_output_exceeded")
                     time.sleep(0.05)
             finally:
                 if process.poll() is None:
                     process.kill()
                 process.wait()
+            # Fast-exiting commands must obey the same bound as running ones.
+            if os.fstat(out.fileno()).st_size + os.fstat(err.fileno()).st_size > MAX_OUTPUT_BYTES:
+                raise ProviderError("provider_output_exceeded")
             if process.returncode:
+                err.seek(0)
+                diagnostic = err.read(MAX_OUTPUT_BYTES)
+                # Fixed CLI 1.1.26's observed login-required diagnostic. Neither
+                # exit code 2 alone nor arbitrary provider text proves auth loss.
+                if process.returncode == 2 and b"Hint: Run: hf auth login" in diagnostic.splitlines():
+                    raise ProviderError("authorization_required")
                 raise ProviderError("provider_call_failed")
             out.seek(0)
             data = out.read(4 * 1024 * 1024 + 1)
