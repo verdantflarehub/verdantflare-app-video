@@ -86,7 +86,7 @@ async function loadUsage() {
     for (const item of value.items) {
       const row = document.createElement('article'); row.className = 'hf-task-row';
       const label = document.createElement('div'), title = document.createElement('strong'), detail = document.createElement('p');
-      title.textContent = ({grok_video_v15_lite: 'Grok Imagine Video 1.5 Lite', seedance_2_5: 'Seedance 2.5', wan3_0: 'Wan 3.0'})[item.model] || item.model;
+      title.textContent = ({grok_video_v15_lite: 'Grok Imagine Video 1.5 Lite', seedance_2_5: 'Seedance 2.5', seedance_2_5_draft: 'Seedance 2.5 Draft', wan3_0: 'Wan 3.0'})[item.model] || item.model;
       detail.textContent = `Higgsfield · 报价预留 ${item.quoted_credits} Credits · ${time(item.created_at)}`;
       label.append(title, detail);
       const status = document.createElement('span'); status.className = 'hf-tag';

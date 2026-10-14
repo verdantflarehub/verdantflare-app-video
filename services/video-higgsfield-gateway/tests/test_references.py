@@ -23,6 +23,39 @@ class ReferenceTests(unittest.TestCase):
     tearDown = helpers.GatewayTest.tearDown
     make_gateway = helpers.GatewayTest.make_gateway
     creates = helpers.GatewayTest.creates
+
+    def test_draft_mixed_references_preserve_provider_mode_and_recovery(self):
+        _, image = self.image("red")
+        video = ReferenceMedia(project_id=PROJECT, sha256="a" * 64, size=100, kind="video", format="mp4")
+        gen = Generation(model="seedance_2_5_draft", prompt="dance", duration_seconds=4,
+                         resolution="480p", mode="reference_to_video", references=[image, video])
+        quote = gen.arguments("cost", media_ids=[REMOTE, REMOTE])
+        create = gen.arguments("create", media_ids=[REMOTE, REMOTE])
+        self.assertEqual(quote[2:], create[2:])
+        self.assertEqual(create[2], "seedance_2_5")
+        self.assertEqual(create[create.index("--mode") + 1], "omni_reference")
+        self.assertEqual(create[create.index("--draft") + 1], "true")
+        self.assertEqual(create[-4:], ["--image-references", REMOTE, "--video-references", REMOTE])
+        for flag in ("--start-image", "--end-image", "t2v"):
+            self.assertNotIn(flag, create)
+        with patch.object(self.gateway.inputs, "upload", return_value=REMOTE):
+            task = request(generation=gen.model_dump())
+            self.gateway.submit(task)
+            restored = self.make_gateway()
+            restored.submit(task)
+        self.assertEqual(self.creates(), 1)
+        original = self.cli.run
+        def run(args, timeout=60):
+            if args[:2] == ["generate", "get"]:
+                return {"id": REMOTE, "job_type": "seedance_2_5", "status": "running"}
+            return original(args, timeout)
+        self.cli.run = run
+        self.assertEqual(restored.status(task.request_id)["stage"], "remote_pending")
+        for changes in ({"mode": "text_to_video", "references": []}, {"resolution": "720p"},
+                        {"duration_seconds": 3}, {"duration_seconds": 16}, {"references": [image] * 5}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                Generation.model_validate({**gen.model_dump(), **changes})
+
     def image(self, color):
         output = io.BytesIO()
         Image.new("RGB", (32, 48), color).save(output, format="PNG")

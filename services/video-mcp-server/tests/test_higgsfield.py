@@ -25,6 +25,28 @@ REMOTE = "11111111-1111-4111-8111-111111111111"
 
 
 class HiggsfieldTest(unittest.TestCase):
+    def test_draft_requires_r2v_and_advertises_only_480p(self):
+        cap = next(c for c in self.executor.higgsfield.capabilities() if c["model"] == "seedance_2_5_draft")
+        self.assertEqual(cap["modes"], ["reference_to_video"])
+        self.assertEqual(cap["resolutions"], ["480p"])
+        with self.assertRaisesRegex(ValueError, "reference_to_video_required"):
+            self.create(model="seedance_2_5_draft", duration_seconds=4)
+        refs = {"images": [], "videos": []}
+        for group, mime, name in (("images", "image/png", "identity.png"), ("videos", "video/mp4", "motion.mp4")):
+            asset = self.executor.artifacts.create_from_chunks(project_id=PROJECT, operation="import",
+                filename=name, media_type=mime, chunks=[b"synthetic-media"])
+            refs[group].append({"artifact_id": asset.artifact_id, "purpose": "reference"})
+        record = self.create(model="seedance_2_5_draft", duration_seconds=4, references=refs)
+        self.assertEqual(record.request["mode"], "reference_to_video")
+        self.assertEqual(record.request["resolution"], "480p")
+        self.assertEqual([v["kind"] for v in record.request["sources"]], ["image", "video"])
+        for changes in ({"mode": "image_to_video"}, {"resolution": "720p"}):
+            with self.assertRaises(ValueError):
+                self.create(model="seedance_2_5_draft", duration_seconds=4, references=refs, **changes)
+        refs["images"][0]["purpose"] = "first_frame"
+        with self.assertRaisesRegex(ValueError, "invalid_reference"):
+            self.create(model="seedance_2_5_draft", duration_seconds=4, references=refs)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

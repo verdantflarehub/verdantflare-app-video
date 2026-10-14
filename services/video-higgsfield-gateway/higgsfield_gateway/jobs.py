@@ -17,7 +17,7 @@ import uuid
 from PIL import Image
 
 from .cli import ProviderError
-from .models import Generation, JobRequest, LimitUpdate, MODELS
+from .models import Generation, JobRequest, LimitUpdate, MODELS, provider_model
 from .inputs import Inputs
 
 
@@ -303,7 +303,7 @@ class Gateway:
                 return self.public(record)
             self.check_binding()
             data = self.cli.run(["generate", "get", record["remote_id"]])
-            if not isinstance(data, dict) or data.get("id") != record["remote_id"] or data.get("job_type") != record["generation"]["model"]:
+            if not isinstance(data, dict) or data.get("id") != record["remote_id"] or data.get("job_type") != provider_model(record["generation"]["model"]):
                 raise ProviderError("provider_protocol_error")
             status = data.get("status")
             if status == "completed":

@@ -7,6 +7,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 MODELS = {
+    "seedance_2_5_draft": {"minimum_duration": 4, "maximum_duration": 15,
+                         "ratios": ["16:9", "9:16", "4:3", "3:4", "1:1", "21:9"], "first_frame": False},
     "wan3_0": {"minimum_duration": 2, "maximum_duration": 30,
                "ratios": ["16:9", "9:16", "4:3", "3:4", "1:1"], "first_frame": False},
     "grok_video_v15_lite": {"minimum_duration": 2, "maximum_duration": 15,
@@ -14,6 +16,10 @@ MODELS = {
     "seedance_2_5": {"minimum_duration": 4, "maximum_duration": 15,
                      "ratios": ["16:9", "9:16", "4:3", "3:4", "1:1", "21:9"], "first_frame": False},
 }
+
+
+def provider_model(model: str) -> str:
+    return "seedance_2_5" if model == "seedance_2_5_draft" else model
 
 
 class LimitUpdate(BaseModel):
@@ -55,7 +61,7 @@ class ReferenceMedia(BaseModel):
 
 class Generation(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    model: Literal["grok_video_v15_lite", "seedance_2_5", "wan3_0"]
+    model: Literal["grok_video_v15_lite", "seedance_2_5", "seedance_2_5_draft", "wan3_0"]
     prompt: str = Field(min_length=1, max_length=10000)
     duration_seconds: int
     aspect_ratio: str = "16:9"
@@ -80,6 +86,11 @@ class Generation(BaseModel):
             raise ValueError("unsupported_aspect_ratio")
         if self.model == "seedance_2_5" and self.resolution != "720p":
             raise ValueError("unsupported_resolution")
+        if self.model == "seedance_2_5_draft":
+            if self.resolution != "480p":
+                raise ValueError("unsupported_resolution")
+            if self.mode != "reference_to_video":
+                raise ValueError("reference_to_video_required")
         if (self.source is not None) != (self.mode == "image_to_video"):
             raise ValueError("mode_reference_mismatch")
         if self.source and not model["first_frame"]:
@@ -87,7 +98,7 @@ class Generation(BaseModel):
         if bool(self.references) != (self.mode == "reference_to_video"):
             raise ValueError("mode_reference_mismatch")
         if self.references:
-            if self.model != "wan3_0" or self.source:
+            if self.model not in {"wan3_0", "seedance_2_5_draft"} or self.source:
                 raise ValueError("unsupported_references")
             if sum(r.kind == "image" for r in self.references) > 4 or sum(r.kind == "video" for r in self.references) > 1:
                 raise ValueError("unsupported_references")
@@ -96,11 +107,13 @@ class Generation(BaseModel):
         return self
 
     def arguments(self, operation: str, source_path=None, media_ids=None):
-        result = ["generate", operation, self.model, "--prompt", self.prompt,
+        result = ["generate", operation, provider_model(self.model), "--prompt", self.prompt,
                   "--duration", str(self.duration_seconds), "--resolution", self.resolution,
                   "--aspect_ratio", self.aspect_ratio]
         if self.model == "seedance_2_5":
             result.extend(["--mode", "t2v"])
+        elif self.model == "seedance_2_5_draft":
+            result.extend(["--mode", "omni_reference", "--draft", "true"])
         if source_path is not None:
             result.extend(["--start-image", str(source_path)])
         if self.references:

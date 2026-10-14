@@ -16,6 +16,7 @@ class TaskPresentationTest(unittest.TestCase):
             ("wan3_0", "Wan 3.0", "reference_to_video", "R2V"),
             ("grok_video_v15_lite", "Grok Imagine 1.5 Lite", "image_to_video", "I2V"),
             ("seedance_2_5", "Seedance 2.5", "text_to_video", "T2V"),
+            ("seedance_2_5_draft", "Seedance 2.5 Draft", "reference_to_video", "R2V"),
         ]:
             p = self.present("higgsfield", model, mode)
             self.assertTrue(p["is_generation"])
