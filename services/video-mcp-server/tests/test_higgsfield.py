@@ -256,6 +256,43 @@ class HiggsfieldTest(unittest.TestCase):
                 self.assertNotEqual(self.executor.tasks.get(record.video_task_id).status, "succeeded")
                 self.clear_artifact_fixture()
 
+    def test_content_reauthorizes_fixed_version_and_detects_tampered_cache(self):
+        record, media, observed, reply = self.artifact_case()
+        with self.artifact_clients(reply):
+            ready = collect(self.executor.higgsfield, record, media)
+        version = dict(ready.provider_state["content_ref"], source=source(ready),
+                       sha256=ready.media["sha256"], size=ready.media["size"], organization_id=ORG, mime="video/mp4")
+        metadata_calls = []
+        denied = False
+        def metadata(req):
+            if req.url.host == "project.internal":
+                return self.respond(req)
+            metadata_calls.append(req)
+            self.assertEqual(req.url.path, "/v2/artifacts/" + version["version_id"])
+            self.assertEqual(req.headers["X-User-Id"], USER)
+            self.assertEqual(req.headers["X-Organization-Id"], ORG)
+            self.assertEqual(req.url.params["artifact_id"], version["artifact_id"])
+            return httpx.Response(403 if denied else 200, json=version)
+        with self.artifact_clients(metadata):
+            path = self.executor.higgsfield.content_path(ready)
+            self.assertTrue(path.is_file())
+            denied = True
+            with self.assertRaises(PermissionError):
+                self.executor.higgsfield.content_path(ready)
+            denied = False
+            version["source"] = dict(source(ready), project_id=uuid7())
+            with self.assertRaisesRegex(ValueError, "artifact_receipt_mismatch"):
+                self.executor.higgsfield.content_path(ready)
+            version["source"] = source(ready)
+            path.write_bytes(b"x" * path.stat().st_size)
+            with self.assertRaisesRegex(ValueError, "media_integrity_failed"):
+                self.executor.higgsfield.content_path(ready)
+            self.deny_project = True
+            count = len(metadata_calls)
+            with self.assertRaises(PermissionError):
+                self.executor.higgsfield.content_path(ready)
+            self.assertEqual(len(metadata_calls), count)
+
     def test_dashboard_never_discloses_higgsfield_task_to_foreign_identity(self):
         from types import SimpleNamespace
         record = self.create()

@@ -217,8 +217,14 @@ class Gateway:
                 record.update(stage="collecting", updated_at=now())
                 with self.db() as db:
                     self.save(db, record)
-                result = self.media.collect(request_id, data.get("result_url"), record["generation"])
-                record.update(status="completed", stage="completed", media=result, error=None)
+                try:
+                    result = self.media.collect(request_id, data.get("result_url"), record["generation"])
+                except ProviderError as error:
+                    if error.code != "media_contract_mismatch":
+                        raise
+                    record.update(status="failed", stage="media_rejected", error=error.code)
+                else:
+                    record.update(status="completed", stage="completed", media=result, error=None)
             elif status in {"failed", "cancelled", "canceled", "error"}:
                 record.update(status="failed", stage="failed", error="provider_generation_failed")
             elif status in {"pending", "queued", "running", "processing", "in_progress", "created"}:

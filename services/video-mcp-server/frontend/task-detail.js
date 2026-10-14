@@ -122,7 +122,12 @@ async function loadTaskResult(task, version, retrieve = false) {
   try {
     if (retrieve) task = await api(`/api/tasks/${encodeURIComponent(task.video_task_id)}/result`, { method: "POST" });
     if (version !== revision || !authorized) return;
-    const url = await mediaURL(task.artifact.artifact_id, task.video_task_id);
+    let url;
+    if (task.content_ref) {
+      const blob = await api(`/api/tasks/${encodeURIComponent(task.video_task_id)}/content`, { blob: true });
+      if (modalTask !== task.video_task_id) throw new Error("详情已关闭");
+      url = URL.createObjectURL(blob); modalUrls.push(url);
+    } else url = await mediaURL(task.artifact.artifact_id, task.video_task_id);
     if (version !== revision || !authorized) return;
     const video = document.createElement("video");
     video.controls = true; video.playsInline = true; video.preload = "metadata"; video.src = url;
@@ -130,10 +135,10 @@ async function loadTaskResult(task, version, retrieve = false) {
     video.addEventListener("error", () => { $("resultMessage").textContent = "浏览器无法播放该编码，可下载原视频。"; });
     $("videoArea").replaceChildren(video);
     const link = document.createElement("a"); link.className = "button primary"; link.href = url;
-    link.download = task.artifact.filename; link.textContent = "下载视频 ↓";
+    link.download = task.artifact?.filename || `${task.video_task_id}.mp4`; link.textContent = "下载视频 ↓";
     $("resultActions").replaceChildren(link);
     $("resultMessage").textContent = `${task.media?.width || "—"} × ${task.media?.height || "—"} · ${task.media?.frame_rate || "—"} FPS`;
-    resultArtifact = task.artifact.artifact_id;
+    resultArtifact = task.content_ref?.version_id || task.artifact.artifact_id;
   } catch (error) {
     if (version === revision && authorized) {
       $("resultMessage").textContent = error.message;
@@ -155,7 +160,7 @@ async function refreshTaskDetail(id, version) {
   $("detailSubtitle").textContent = `${task.project_id} / ${task.idempotency_key}`;
   $("detailStatus").className = `detail-status ${task.status}`;
   $("detailStatus").textContent = labels[task.status] || task.status;
-  $("outputCount").textContent = task.artifact ? "1 个视频" : "0 / 1 个视频";
+  $("outputCount").textContent = task.artifact || task.content_ref ? "1 个视频" : "0 / 1 个视频";
   const rows = [["任务 ID", task.video_task_id], ["模型", taskModel(task)], ["渠道", taskRoute(task)], ["执行实例", task.execution_instance_id || "未上报"], ["开始时间", date(task.created_at)], ["排队时间", seconds(task.timing?.queue_seconds)], ["运行时间", seconds(task.timing?.processing_seconds ?? task.timing?.processing_elapsed_seconds)], ["总耗时", seconds(task.timing?.total_seconds)], ["时长 / 画幅", `${task.duration_seconds}s · ${task.aspect_ratio}`], ["Seed", task.seed], ["Runtime 版本", task.runtime_version], ["输入摘要", task.input_digest]];
   if (task.runtime_stage) rows.push(["任务阶段", task.runtime_stage === "submission_unknown" ? "提交待确认，请勿重复生成" : task.runtime_stage]);
   if (task.error) rows.push(["异常信息", typeof task.error === "string" ? task.error : JSON.stringify(task.error)]);
@@ -166,8 +171,8 @@ async function refreshTaskDetail(id, version) {
     detailRendered = true;
   }
   if (task.status === "succeeded") {
-    if (task.artifact && !resultArtifact) await loadTaskResult(task, version);
-    else if (!task.artifact && !resultLoading && !$("resultActions").children.length) {
+    if ((task.artifact || task.content_ref) && !resultArtifact) await loadTaskResult(task, version);
+    else if (!task.artifact && !task.content_ref && !resultLoading && !$("resultActions").children.length) {
       $("videoArea").textContent = "任务已完成，等待获取视频结果。";
       const button = document.createElement("button"); button.className = "button primary"; button.textContent = "获取视频结果";
       button.onclick = async () => { button.disabled = true; await loadTaskResult(task, version, true); button.disabled = false; };

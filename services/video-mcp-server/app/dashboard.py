@@ -208,21 +208,28 @@ class Dashboard:
 
     def thumbnail(self, task_id):
         record = self.executor.tasks.get(task_id)
+        native = record.service == "higgsfield" and record.status == "succeeded"
         if record.service == "higgsfield":
             self.executor.higgsfield.authorize_record(record)
         reference = record.request.get("references", {}).get("images", [])
         artifact_id = record.artifact_id or (reference[0]["artifact_id"] if reference else None)
-        if not artifact_id:
+        if not artifact_id and not native:
             return JSONResponse({"error": "preview_unavailable"}, status_code=404)
-        artifact = self.executor.artifacts.get(artifact_id, record.project_id)
+        if native:
+            source_path = self.executor.higgsfield.content_path(record)
+            digest = record.media["sha256"]
+        else:
+            artifact = self.executor.artifacts.get(artifact_id, record.project_id)
+            source_path = self.executor.artifacts.content_path(artifact)
+            digest = artifact.sha256
         directory = self.executor.artifacts.root / "previews"
         directory.mkdir(exist_ok=True)
-        output = directory / f"{artifact.sha256}.jpg"
+        output = directory / f"{digest}.jpg"
         with self.result_lock:
             if not output.exists():
                 with tempfile.NamedTemporaryFile(suffix=".jpg", dir=directory) as temporary:
                     subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-y", "-i",
-                                    str(self.executor.artifacts.content_path(artifact)),
+                                    str(source_path),
                                     "-frames:v", "1", "-vf", "scale=480:320:force_original_aspect_ratio=decrease",
                                     temporary.name], check=True, capture_output=True, timeout=30)
                     output.write_bytes(Path(temporary.name).read_bytes())
@@ -237,6 +244,13 @@ class Dashboard:
                 value = await run_in_threadpool(self.snapshot, request)
             elif action.endswith("/thumbnail"):
                 return await run_in_threadpool(self.thumbnail, request.path_params["task_id"])
+            elif action.endswith("/content"):
+                record = self.executor.tasks.get(request.path_params["task_id"])
+                if record.service != "higgsfield":
+                    return JSONResponse({"error": "not_found"}, status_code=404)
+                path = await run_in_threadpool(self.executor.higgsfield.content_path, record)
+                return FileResponse(path, media_type="video/mp4", filename=record.video_task_id + ".mp4",
+                                    headers={"Cache-Control": "private, no-store"})
             elif request.method == "GET":
                 value = await run_in_threadpool(self.detail, request.path_params["task_id"])
             elif action.endswith("/result"):
@@ -323,5 +337,6 @@ class Dashboard:
                 Route("/api/dashboard", self.endpoint), Route("/api/capabilities", self.endpoint), Route("/api/tasks", self.endpoint, methods=["POST"]),
                 Route("/api/tasks/{task_id:str}", self.endpoint),
                 Route("/api/tasks/{task_id:str}/thumbnail", self.endpoint),
+                Route("/api/tasks/{task_id:str}/content", self.endpoint),
                 Route("/api/tasks/{task_id:str}/result", self.endpoint, methods=["POST"]),
                 Route("/api/artifacts/import", self.endpoint, methods=["POST"])]

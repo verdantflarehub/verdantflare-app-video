@@ -83,6 +83,24 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(one["remote_id"], two["remote_id"])
         self.assertEqual(self.creates(), 1)
 
+    def test_rejected_media_is_terminal_without_retry_or_new_charge(self):
+        self.gateway.submit(request())
+        self.cli.result = "completed"
+        calls = []
+        def reject(*args):
+            calls.append(args)
+            raise ProviderError("media_contract_mismatch")
+        self.gateway.media = SimpleNamespace(collect=reject)
+        result = self.gateway.status(request().request_id)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["error"], "media_contract_mismatch")
+        self.assertEqual(result["remote_id"], REMOTE)
+        restored = self.make_gateway()
+        self.assertEqual(restored.status(request().request_id), result)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(self.creates(), 1)
+        self.assertEqual(restored.load(request().request_id)["quoted_credits"], 2)
+
     def test_changed_request_is_rejected(self):
         self.gateway.submit(request())
         new = request()

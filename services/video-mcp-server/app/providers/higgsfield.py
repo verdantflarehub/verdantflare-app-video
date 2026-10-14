@@ -196,8 +196,8 @@ class HiggsfieldAdapter:
                 dispatched_at=data.get("created_at") if identity else None,
                 error={"code": "submission_unknown", "message": "submission_unknown"} if data["stage"] == "submission_unknown" else None)
             if data["status"] == "failed":
-                return self.executor.tasks.update(record, status="failed",
-                    error={"code": "provider_generation_failed", "message": "provider_generation_failed"})
+                code = "media_contract_mismatch" if data.get("error") == "media_contract_mismatch" else "provider_generation_failed"
+                return self.executor.tasks.update(record, status="failed", error={"code": code, "message": code})
             if data["status"] == "completed":
                 from .higgsfield_artifact import collect
                 return collect(self, record, data["media"])
@@ -218,3 +218,42 @@ class HiggsfieldAdapter:
                 "model": record.request["model"], "runtime_route": "higgsfield", "media": record.media,
                 "content_ref": state["content_ref"], "download_path": state["download_path"],
                 "quoted_credits": state.get("quoted_credits"), "input_digest": record.input_digest}
+
+    def content_path(self, record):
+        """Authorize the fixed central version before serving its verified cache."""
+        from .higgsfield_artifact import source, uuid7
+        actor = self.authorize_record(record)
+        if record.status != "succeeded":
+            raise ValueError("higgsfield_result_not_ready")
+        ref = (record.provider_state or {}).get("content_ref", {})
+        if set(ref) != {"store_id", "artifact_id", "version_id"} or any(
+                str(uuid.UUID(v)) != v or uuid.UUID(v).version != 7 for v in ref.values()):
+            raise ValueError("invalid_content_ref")
+        endpoint = os.getenv("VIDEO_ARTIFACT_SERVICE_URL", "").rstrip("/")
+        token = os.getenv("VIDEO_ARTIFACT_SERVICE_TOKEN", "")
+        if not endpoint or len(token) < 32:
+            raise ValueError("native_artifact_not_configured")
+        trust = ssl.create_default_context()
+        if os.getenv("VIDEO_ARTIFACT_CA_FILE"):
+            trust.load_verify_locations(os.environ["VIDEO_ARTIFACT_CA_FILE"])
+        with httpx.Client(trust_env=False, follow_redirects=False, timeout=15, verify=trust) as client:
+            response = client.get(endpoint + "/v2/artifacts/" + ref["version_id"],
+                params={"store_id": ref["store_id"], "artifact_id": ref["artifact_id"]},
+                headers={"Authorization": "Bearer " + token, "X-User-Id": actor["user_id"],
+                         "X-Organization-Id": actor["organization_id"], "X-Request-Id": uuid7()})
+            if response.status_code in {401, 403, 404}:
+                raise PermissionError("artifact_access_denied")
+            response.raise_for_status()
+            version = response.json()
+        media = record.media or {}
+        if (any(version.get(k) != v for k, v in ref.items()) or version.get("source") != source(record) or
+                version.get("sha256") != media.get("sha256") or version.get("size") != media.get("size") or
+                version.get("organization_id") != actor["organization_id"] or version.get("mime") != "video/mp4"):
+            raise ValueError("artifact_receipt_mismatch")
+        path = self.executor.tasks.root / (record.video_task_id + ".higgsfield.mp4")
+        if path.is_symlink() or not path.is_file() or path.stat().st_size != media["size"]:
+            raise ValueError("media_integrity_failed")
+        with path.open("rb") as stream:
+            if hashlib.file_digest(stream, "sha256").hexdigest() != media["sha256"]:
+                raise ValueError("media_integrity_failed")
+        return path
