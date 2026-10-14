@@ -5,6 +5,9 @@ import os
 import re
 import tempfile
 import uuid
+import sqlite3
+import threading
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -46,11 +49,36 @@ class TaskRecord(BaseModel):
     media: dict[str, object] | None = None
     error: dict[str, str] | None = None
     provider_state: dict[str, object] | None = None
+    delivery: dict[str, object] | None = None
+    authority: dict[str, str] | None = None
+    runtime_endpoint: str | None = None
 
 
 class TaskStore:
     def __init__(self, root: Path) -> None:
         self.root = root.resolve() / "tasks"
+        self._mutex = threading.RLock()
+        self._local = threading.local()
+
+    @contextmanager
+    def exclusive(self):
+        # File records remain backwards compatible. SQLite provides a shared
+        # process lock and a unique identity index; nested executor calls reuse it.
+        with self._mutex:
+            if getattr(self._local, 'connection', None) is not None:
+                yield
+                return
+            self.ensure_ready()
+            db = sqlite3.connect(self.root / 'coordination.sqlite3', timeout=120)
+            try:
+                db.execute('CREATE TABLE IF NOT EXISTS identities (project TEXT, key TEXT, task TEXT, PRIMARY KEY(project,key))')
+                db.execute('BEGIN IMMEDIATE')
+                self._local.connection = db
+                yield
+                db.commit()
+            finally:
+                self._local.connection = None
+                db.close()
 
     @classmethod
     def from_environment(cls) -> "TaskStore":
@@ -83,7 +111,9 @@ class TaskStore:
 
     def create(self, *, project_id: str, idempotency_key: str, input_digest: str,
                request: dict[str, object], runtime_task_id: str | None, status: str,
-               error: dict[str, str] | None = None) -> TaskRecord:
+               error: dict[str, str] | None = None, authority: dict[str, str] | None = None,
+               runtime_endpoint: str | None = None, runtime_version: str | None = None,
+               runtime_route: str | None = None) -> TaskRecord:
         existing = self.find_idempotency(project_id, idempotency_key)
         if existing:
             if existing.input_digest != input_digest:
@@ -105,8 +135,14 @@ class TaskStore:
                             idempotency_key=idempotency_key, input_digest=input_digest,
                             request=request, runtime_task_id=task_id if runtime_task_id is None else runtime_task_id,
                             status=status, error=error,
+                            authority=authority, runtime_endpoint=runtime_endpoint,
+                            runtime_version=runtime_version, runtime_route=runtime_route,
                             created_at=now, updated_at=now)
         self._write(record)
+        db = getattr(self._local, 'connection', None)
+        if db is not None:
+            db.execute('INSERT INTO identities(project,key,task) VALUES(?,?,?)',
+                       (project_id, idempotency_key, task_id))
         return record
 
     def get(self, video_task_id: str) -> TaskRecord:

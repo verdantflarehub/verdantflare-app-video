@@ -25,6 +25,7 @@ from .executor import ExecutionError, VideoExecutor
 from .dashboard import Dashboard
 from .registry import EtcdRegistry
 from .tasks import TaskConflict, TaskNotFound, TaskStore
+from .delivery import CALLER, normalize as normalize_postprocess, authorize
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
@@ -262,6 +263,7 @@ def video_interpolate_generate(project_id: str, idempotency_key: str, source_art
                                target_fps_num: int = 48, target_fps_den: int = 1,
                                backend: str = "rife") -> types.CallToolResult:
     """Double a project video's CFR frame rate with RIFE, preserving duration and dimensions."""
+    authorize(executor.client, project_id)
     adapter = executor.processing["interpolate"]
     record = adapter.generate(project_id=project_id, idempotency_key=idempotency_key,
         source_artifact_id=source_artifact_id, target_fps_num=target_fps_num,
@@ -289,18 +291,21 @@ def video_sr_preview(video_task_id: str) -> types.CallToolResult:
 
 @mcp.tool(name="video.interpolate.status")
 def video_interpolate_status(video_task_id: str) -> types.CallToolResult:
+    authorize(executor.client, tasks.get(video_task_id).project_id)
     adapter = executor.processing["interpolate"]
     return _result(adapter.public_status(adapter.status(video_task_id)))
 
 
 @mcp.tool(name="video.interpolate.result")
 def video_interpolate_result(video_task_id: str) -> types.CallToolResult:
+    authorize(executor.client, tasks.get(video_task_id).project_id)
     adapter = executor.processing["interpolate"]
     return _result(adapter.public_result(adapter.result(video_task_id)))
 
 
 @mcp.tool(name="video.interpolate.preview")
 def video_interpolate_preview(video_task_id: str) -> types.CallToolResult:
+    authorize(executor.client, tasks.get(video_task_id).project_id)
     adapter = executor.processing["interpolate"]
     return _result(adapter.public_result(adapter.result(video_task_id), preview=True))
 
@@ -360,9 +365,10 @@ def video_preflight(project_id: str, prompt: str, references: dict[str, list[dic
                     duration_seconds: int = 5, aspect_ratio: str | None = None,
                     model: str | None = None, route: str | None = None,
                     quality_profile: str | None = None, mode: str | None = None,
-                  resolution: str | None = None) -> types.CallToolResult:
+                  resolution: str | None = None, postprocess: dict | None = None) -> types.CallToolResult:
     """Validate Singularity media and reveal native output and reference labels without creating a task."""
     selected = route or executor.runtime_route
+    normalize_postprocess(postprocess, selected)
     if selected == "grok":
         request, digest = executor.grok.normalize(project_id=require_project_id(project_id),
             prompt=prompt, model=model, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
@@ -375,7 +381,12 @@ def video_preflight(project_id: str, prompt: str, references: dict[str, list[dic
     executor.runtime(selected)
     request, digest = executor._normalize(require_project_id(project_id), model or "minimax-h3-ref2va", prompt,
         duration_seconds, aspect_ratio or "16:9", references, selected, quality_profile or "du-0")
+    if postprocess is not None:
+        authorize(executor.client, project_id)
+    request, digest = executor.delivery.prepare(request, digest, postprocess)
+    delivery_output = {**request["resolved_output"], "fps": 48, "frames": request["resolved_output"]["frames"] * 2} if postprocess else None
     return _result({"status": "validated", "gpu_verified": False, "input_digest": digest,
+                    "delivery_output": delivery_output, "postprocess": postprocess,
                     "resolved_output": request["resolved_output"], "reference_mapping": request["reference_mapping"],
                     "reference_media": request["reference_media"], "prompt": request["prompt"]})
 
@@ -404,14 +415,14 @@ def video_create(prompt: str,
                  references: dict[str, list[dict[str, str]]] | None = None,
                  route: str | None = None,
                  quality_profile: str | None = None, mode: str | None = None,
-                  resolution: str | None = None) -> types.CallToolResult:
+                  resolution: str | None = None, postprocess: dict | None = None) -> types.CallToolResult:
     """Create an asynchronous video generation task."""
     record = executor.generate(project_id=project_id, idempotency_key=idempotency_key, model=model,
                                prompt=prompt, duration_seconds=duration_seconds,
                                aspect_ratio=aspect_ratio, references=references or {}, route=route,
-                               quality_profile=quality_profile, mode=mode, resolution=resolution)
+                               quality_profile=quality_profile, mode=mode, resolution=resolution, postprocess=postprocess)
     return _result({"task_id": record.video_task_id, "video_task_id": record.video_task_id,
-                    "status": record.status, "created_at": record.created_at, "error": record.error,
+                    "status": record.status, "created_at": record.created_at, "error": record.error, "delivery": record.delivery,
                     "resolved_output": record.request.get("resolved_output"),
                     "reference_mapping": record.request.get("reference_mapping")})
 
@@ -421,7 +432,7 @@ def video_generate(project_id: str, idempotency_key: str, model: str, prompt: st
                    duration_seconds: int, aspect_ratio: str,
                    references: dict[str, list[dict[str, str]]], route: str,
                    quality_profile: str | None = None, mode: str | None = None,
-                  resolution: str | None = None) -> types.CallToolResult:
+                  resolution: str | None = None, postprocess: dict | None = None) -> types.CallToolResult:
     """Generate with a business model and an explicitly selected runtime route.
 
     `route` selects a configured channel such as h3-sol, h3-vdn, or fal.
@@ -432,9 +443,9 @@ def video_generate(project_id: str, idempotency_key: str, model: str, prompt: st
     record = executor.generate(project_id=project_id, idempotency_key=idempotency_key, model=model,
                                prompt=prompt, duration_seconds=duration_seconds,
                                aspect_ratio=aspect_ratio, references=references, route=route,
-                               quality_profile=quality_profile, mode=mode, resolution=resolution)
+                               quality_profile=quality_profile, mode=mode, resolution=resolution, postprocess=postprocess)
     return _result({"task_id": record.video_task_id, "video_task_id": record.video_task_id,
-                    "status": record.status, "created_at": record.created_at, "error": record.error})
+                    "status": record.status, "created_at": record.created_at, "error": record.error, "delivery": record.delivery})
 
 
 @mcp.tool(name="video.status")
@@ -442,10 +453,13 @@ def video_status(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
     tid = video_task_id or task_id
     if not tid:
         return _result({"error": "task_id is required"})
+    existing = executor.tasks.get(tid)
+    if existing.service == 'interpolate' or existing.request.get('postprocess'):
+        authorize(executor.client, existing.project_id)
     record = executor.status(tid)
     return _result({"task_id": record.video_task_id, "video_task_id": record.video_task_id, "status": record.status,
                     "created_at": record.created_at, "updated_at": record.updated_at, "error": record.error,
-                    "timing": record.timing, "runtime_metrics": record.runtime_metrics,
+                    "timing": record.timing, "runtime_metrics": record.runtime_metrics, "delivery": record.delivery,
                     "service": record.service, "runtime_route": record.runtime_route,
                     "execution_instance_id": record.execution_instance_id, "stage": record.runtime_stage,
                     "needs_attention": record.runtime_stage == "submission_unknown",
@@ -457,6 +471,9 @@ def video_result(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
     tid = video_task_id or task_id
     if not tid:
         return _result({"error": "task_id is required"})
+    existing = executor.tasks.get(tid)
+    if existing.service == 'interpolate' or existing.request.get('postprocess'):
+        authorize(executor.client, existing.project_id)
     record = executor.result(tid)
     if record.service in executor.processing:
         res = executor.processing[record.service].public_result(record)
@@ -470,7 +487,7 @@ def video_result(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
     value = {"task_id": record.video_task_id, "video_task_id": record.video_task_id, "artifact_id": artifact.artifact_id,
              "model": record.request["model"], "runtime_version": record.runtime_version or executor.runtime_version,
              "runtime_route": record.runtime_route, "service": record.service,
-             "input_digest": record.input_digest, "media": record.media,
+             "input_digest": record.input_digest, "media": record.media, "delivery": record.delivery,
              "download_path": artifacts.download_path(artifact.artifact_id)}
     return _result(value)
 
@@ -503,18 +520,23 @@ def video_sr(source_artifact_id: str, target_width: int, target_height: int,
 
 
 @mcp.tool(name="video.interpolate")
-def video_interpolate(source_artifact_id: str, project_id: str, idempotency_key: str = "",
+def video_interpolate(source_artifact_id: str, project_id: str, idempotency_key: str,
                       target_fps_num: int = 48, target_fps_den: int = 1,
                       backend: str = "rife") -> types.CallToolResult:
-    import uuid
-    actual_idem = idempotency_key or f"idem_{uuid.uuid4().hex[:12]}"
+    authorize(executor.client, project_id)
     adapter = executor.processing["interpolate"]
-    record = adapter.generate(project_id=project_id, idempotency_key=actual_idem,
+    record = adapter.generate(project_id=project_id, idempotency_key=idempotency_key,
         source_artifact_id=source_artifact_id, target_fps_num=target_fps_num,
         target_fps_den=target_fps_den, backend=backend)
     res = adapter.public_status(record)
     res["task_id"] = record.video_task_id
     return _result(res)
+
+
+for _entry in VIDEO_TOOLS_SCHEMA:
+    if _entry['name'] in {'video.create', 'video.interpolate'}:
+        _registered = mcp._tool_manager.get_tool(_entry['name'])
+        _entry['inputSchema'] = _registered.parameters
 
 
 def transport_security_from_environment() -> TransportSecuritySettings:
@@ -553,7 +575,13 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             return JSONResponse({"error": "authentication_not_configured"}, status_code=503)
         if token and not hmac.compare_digest(request.headers.get("authorization", ""), f"Bearer {token}"):
             return JSONResponse({"error": "unauthorized"}, status_code=401)
-        response = await call_next(request)
+        caller = {'user_id': request.headers.get('X-User-Id', ''),
+                  'organization_id': request.headers.get('X-Organization-Id', '')}
+        context_token = CALLER.set(caller if token else None)
+        try:
+            response = await call_next(request)
+        finally:
+            CALLER.reset(context_token)
         if request.url.path in {"/mcp", "/api/tasks", "/api/artifacts/import"} or request.url.path.endswith("/result"):
             dashboard.resources.record_request(response.status_code >= 400)
         return response
@@ -563,9 +591,16 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 async def lifespan(app: Starlette):
     artifacts.ensure_ready(); tasks.ensure_ready()
     await registry.start()
+    async def delivery_poll():
+        while True:
+            try:
+                await asyncio.to_thread(executor.delivery.sync)
+            except Exception:
+                logging.getLogger(__name__).warning("Delivery reconciliation deferred")
+            await asyncio.sleep(2)
     async with mcp.session_manager.run():
         dashboard.recover_incomplete_submissions()
-        pollers = [asyncio.create_task(coro) for coro in (dashboard.poll(), dashboard.resources.poll(), dashboard.resources.poll_protocol())]
+        pollers = [asyncio.create_task(coro) for coro in (dashboard.poll(), dashboard.resources.poll(), dashboard.resources.poll_protocol(), delivery_poll())]
         try:
             yield
         finally:

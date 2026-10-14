@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import threading
 import uuid
+import ssl
 from datetime import UTC, datetime
 from functools import wraps
 from pathlib import Path
@@ -45,7 +46,7 @@ def _check_media(command, **kwargs):
 def serialized(method):
     @wraps(method)
     def invoke(self, *args, **kwargs):
-        with self._lock:
+        with self._lock, self.tasks.exclusive():
             return method(self, *args, **kwargs)
     return invoke
 
@@ -77,7 +78,10 @@ class VideoExecutor:
                 parsed = urlsplit(value)
                 if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
                     raise ValueError("invalid import rewrite prefix")
-        self.client = client or httpx.Client(timeout=httpx.Timeout(connect=10, read=3600, write=600, pool=10), follow_redirects=False)
+        trust = ssl.create_default_context()
+        if os.environ.get('VIDEO_PROJECT_CA_FILE'):
+            trust.load_verify_locations(os.environ['VIDEO_PROJECT_CA_FILE'])
+        self.client = client or httpx.Client(timeout=httpx.Timeout(connect=10, read=3600, write=600, pool=10), follow_redirects=False, verify=trust)
         from .depth import DepthExecutor
         self.depth = DepthExecutor(self)
         from .processing import ProcessingExecutor
@@ -88,6 +92,8 @@ class VideoExecutor:
         self.fal = FalAdapter(self)
         from .providers.grok import GrokVideoAdapter
         self.grok = GrokVideoAdapter(self)
+        from .delivery import Delivery
+        self.delivery = Delivery(self)
 
     def _load_routes(self) -> dict[str, dict[str, object]]:
         raw = os.environ.get("H3_RUNTIME_ROUTES", "")
@@ -189,6 +195,7 @@ class VideoExecutor:
                 "models": [{"model": "minimax-h3-ref2va"}, {"model": self.grok.model, "routes": ["grok"]}],
                 "model_specification": {"aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
                                         "omni_adaptive": True},
+                "postprocess": {"interpolate": self.delivery.capability()},
                 "routes": routes, "inline_image_max_bytes": MAX_INLINE_IMAGE_BYTES,
                 "chunk_import": {"max_chunk_bytes": 512 * 1024, "max_file_bytes": MAX_ARTIFACT_BYTES,
                                  "formats": ["PNG", "JPEG", "WebP", "MP4/H.264", "MP4/H.265", "WAV/PCM", "MP3"],
@@ -364,11 +371,13 @@ class VideoExecutor:
                  duration_seconds: int, aspect_ratio: str,
                  references: dict[str, list[dict[str, str]]], route: str | None = None,
                  quality_profile: str | None = None, mode: str | None = None,
-                 resolution: str | None = None) -> TaskRecord:
+                 resolution: str | None = None, postprocess: dict | None = None) -> TaskRecord:
         project_id = require_project_id(project_id)
         if not idempotency_key.strip() or len(idempotency_key) > 128:
             raise ValueError("idempotency_key is invalid")
         route = route or self.runtime_route
+        from .delivery import normalize, authorize
+        normalize(postprocess, route)
         if route == "grok":
             return self.grok.generate(project_id=project_id, idempotency_key=idempotency_key,
                 model=model, prompt=prompt, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
@@ -384,12 +393,16 @@ class VideoExecutor:
                                      aspect_ratio=aspect_ratio, references=references)
         request, digest = self._normalize(project_id, model, prompt, duration_seconds, aspect_ratio,
                                           references, route, quality_profile)
+        request, digest = self.delivery.prepare(request, digest, postprocess, check=False)
         service = self._service_for_route(route)
+        authority = authorize(self.client, project_id) if postprocess is not None else None
         existing = self.tasks.find_idempotency(project_id, idempotency_key)
         if existing:
             if existing.input_digest != digest:
                 raise TaskConflict("idempotency key already exists with different input")
             return existing
+        if postprocess is not None:
+            self.delivery.prepare(request, digest, postprocess)
         runtime_url, runtime_headers, runtime_version, runtime_route = self.runtime(route)
         conditions = []
         material_tags = []
@@ -417,8 +430,12 @@ class VideoExecutor:
         # Persist the attempt before calling the runtime. An ambiguous network
         # failure must not permit a duplicate GPU request under the same key.
         reserved = self.tasks.create(project_id=project_id, idempotency_key=idempotency_key,
-                                     input_digest=digest, request=request, runtime_task_id="", status="queued")
-        reserved = self.tasks.update(reserved, service=service, runtime_version=runtime_version, runtime_route=runtime_route)
+                                     input_digest=digest, request=request, runtime_task_id="", status="queued",
+                                     authority=authority, runtime_endpoint=runtime_url,
+                                     runtime_version=runtime_version, runtime_route=runtime_route)
+        reserved = self.tasks.update(reserved, service=service, runtime_version=runtime_version, runtime_route=runtime_route,
+                                     runtime_endpoint=runtime_url, authority=authority,
+                                     delivery=self.delivery.initial(reserved) if postprocess is not None else None)
         if service in {"h3-vdn", "h3-singularity"}:
             try:
                 health = self.client.get(f"{runtime_url}/health", headers=runtime_headers, timeout=10)
@@ -471,12 +488,35 @@ class VideoExecutor:
         if (record.service == "h3-singularity" and not record.runtime_task_id
             and (record.status in {"queued", "running"} or (record.error or {}).get("code") == "submission_unconfirmed")):
             url, headers, _, _ = self.runtime(self._record_route(record))
+            url = record.runtime_endpoint or url
             try:
                 response = self.client.get(f"{url}/v1/videos/by-idempotency/{record.video_task_id}", headers=headers, timeout=10)
                 if response.status_code == 404:
+                    if record.request.get('postprocess'):
+                        # The opted-in workflow owns a durable dispatch intent.
+                        # Reusing the exact runtime key closes a crash before POST
+                        # as well as a lost response, without duplicate inference.
+                        from .delivery import authorize
+                        authorize(self.client, record.project_id, record.authority)
+                        req = record.request
+                        conditions = []
+                        for kind, singular in (('images', 'image'), ('videos', 'video'), ('audios', 'audio')):
+                            for ref in req['references'][kind]:
+                                asset = self.artifacts.get(ref['artifact_id'], record.project_id)
+                                conditions.append({'type': singular, 'role': 'reference', 'size': asset.size,
+                                    'sha256': asset.sha256,
+                                    'uri': f'{self.runtime_artifact_url}/runtime-artifacts/{asset.artifact_id}/content'})
+                        payload = {'idempotency_key': record.video_task_id, 'model': 'MiniMaxAI/MiniMax-H3',
+                            'task': 'ref2va', 'prompt': req['prompt'], 'seconds': req['duration_seconds'],
+                            'conditions': conditions, 'target': {'short_edge': 768, 'aspect_ratio': req['aspect_ratio'],
+                                'duration_seconds': float(req['duration_seconds'])},
+                            'num_outputs_per_prompt': 1, 'num_inference_steps': 4, 'flow_shift': 12.0,
+                            'audio_flow_shift': 3.0, 'seed': 7, 'quality_profile': req['quality_profile']}
+                        response = self.client.post(f'{url}/v1/videos', headers=headers, json=payload, timeout=30)
+                    else:
                     # A delayed submission can still arrive; absence is not
                     # permission to change keys or dispatch another GPU job.
-                    return self.tasks.update(record, status="queued")
+                        return self.tasks.update(record, status="queued")
                 response.raise_for_status()
                 recovered = response.json()
                 identity = recovered.get("id")
@@ -498,6 +538,7 @@ class VideoExecutor:
         if record.status in {"succeeded", "failed", "cancelled"}:
             return record
         runtime_url, runtime_headers, _, _ = self.runtime(self._record_route(record))
+        runtime_url = record.runtime_endpoint or runtime_url
         try:
             response = self.client.get(f"{runtime_url}/v1/videos/{record.runtime_task_id}", timeout=10, headers=runtime_headers)
             if response.status_code == 404:
@@ -551,6 +592,7 @@ class VideoExecutor:
         if record.artifact_id:
             return record
         runtime_url, runtime_headers, _, _ = self.runtime(self._record_route(record))
+        runtime_url = record.runtime_endpoint or runtime_url
         try:
             response = self.client.get(f"{runtime_url}/v1/videos/{record.runtime_task_id}/content", headers=runtime_headers)
             response.raise_for_status()

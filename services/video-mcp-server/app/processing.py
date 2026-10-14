@@ -70,8 +70,9 @@ class ProcessingExecutor:
                 raise TaskConflict('idempotency key already exists with different input')
             return existing
         record = self.tasks.create(project_id=project_id, idempotency_key=idempotency_key, input_digest=digest,
-                                   request=request, runtime_task_id='', status='queued')
-        record = self.tasks.update(record, service=self.service, runtime_version=self.runtime_version, runtime_task_id=record.video_task_id,
+                                   request=request, runtime_task_id='', status='queued',
+                                   runtime_endpoint=self.url, runtime_version=self.runtime_version)
+        record = self.tasks.update(record, service=self.service, runtime_version=self.runtime_version, runtime_task_id=record.video_task_id, runtime_endpoint=self.url,
             error={'code': 'submission_unconfirmed', 'message': 'Submission is pending confirmation'})
         return self._submit(record)
 
@@ -79,7 +80,7 @@ class ProcessingExecutor:
         payload = {k: v for k, v in record.request.items() if k != 'service'}
         payload['idempotency_key'] = record.video_task_id
         try:
-            response = self.client.post(f'{self.url}/v1/{self.service}', json=payload, timeout=30)
+            response = self.client.post(f'{record.runtime_endpoint or self.url}/v1/{self.service}', json=payload, timeout=30)
             if response.status_code in {400, 404, 409, 422, 429}:
                 return self.tasks.update(record, status='failed', error={
                     'code': f'{self.service}_request_rejected', 'message': 'Video processing runtime rejected the source, parameters or queue capacity'})
@@ -109,7 +110,7 @@ class ProcessingExecutor:
         if record.status in {'succeeded', 'failed'}:
             return record
         try:
-            response = self.client.get(f'{self.url}/v1/{self.service}/{record.video_task_id}', timeout=10)
+            response = self.client.get(f'{record.runtime_endpoint or self.url}/v1/{self.service}/{record.video_task_id}', timeout=10)
             if response.status_code == 404:
                 # The deterministic ID is also the runtime's durable idempotency key.
                 # A retry after an ambiguous POST cannot enqueue duplicate inference.
@@ -126,7 +127,7 @@ class ProcessingExecutor:
         if not isinstance(expected_sha256, str) or not re.fullmatch(r'[0-9a-f]{64}', expected_sha256):
             raise ExecutionError('Video processing result digest missing')
         try:
-            with self.client.stream('GET', f'{self.url}/v1/{self.service}/{record.video_task_id}/{endpoint}', timeout=120) as response:
+            with self.client.stream('GET', f'{record.runtime_endpoint or self.url}/v1/{self.service}/{record.video_task_id}/{endpoint}', timeout=120) as response:
                 response.raise_for_status()
                 return self.artifacts.create_from_chunks(project_id=record.project_id,
                     operation=f'video.{self.service}.{endpoint}', filename=f'{record.video_task_id}-{endpoint}.mp4',
@@ -142,7 +143,7 @@ class ProcessingExecutor:
         if record.artifact_id and record.media and record.media.get('preview_artifact_id'):
             return record
         try:
-            response = self.client.get(f'{self.url}/v1/{self.service}/{record.video_task_id}', timeout=10)
+            response = self.client.get(f'{record.runtime_endpoint or self.url}/v1/{self.service}/{record.video_task_id}', timeout=10)
             response.raise_for_status()
             payload = response.json()
             if payload['video_task_id'] != record.video_task_id or payload['status'] != 'succeeded':
