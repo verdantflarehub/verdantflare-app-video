@@ -110,7 +110,7 @@ class Gateway:
             value.update(submitted_count=len(jobs), reserved_credits=str(reserved),
                          active_count=len(active),
                          active_reserved_credits=str(sum((Decimal(str(job["quoted_credits"])) for job in active), Decimal(0))),
-                         budget_available=(len(jobs) < value["submission_limit"] and
+                         budget_available=(Decimal(value["credit_limit"]) > 0 and len(jobs) < value["submission_limit"] and
                                            reserved <= Decimal(value["credit_limit"])))
             return value
 
@@ -174,6 +174,30 @@ class Gateway:
             raise ProviderError("provider_protocol_error")
         return {"credits": data["credits"], "plan": str(data.get("subscription_plan_type", "unknown")),
                 "binding_id": self.binding, "authorized": True}
+
+    def transactions(self):
+        """Recent account snapshot, never an inferred task-level charge."""
+        with self._lock:
+            self.check_binding()
+            data = self.cli.run(["account", "transactions", "--size", "20"])
+            if not isinstance(data, dict) or not isinstance(data.get("items"), list) or len(data["items"]) > 20:
+                raise ProviderError("provider_protocol_error")
+            items = []
+            for item in data["items"]:
+                try:
+                    if (not isinstance(item, dict) or type(item.get("credits")) not in (int, float)
+                            or not math.isfinite(item["credits"]) or abs(item["credits"]) > 10**12
+                            or not isinstance(item.get("created_at"), str) or len(item["created_at"]) > 64):
+                        raise ValueError
+                    created = datetime.fromisoformat(item["created_at"])
+                    if created.tzinfo is None:
+                        raise ValueError
+                    items.append({"action": item.get("action") if item.get("action") in ("grant", "spend") else "other",
+                                  "created_at": created.astimezone(UTC).isoformat(),
+                                  "credits": str(Decimal(str(item["credits"])))})
+                except (ValueError, TypeError, OverflowError):
+                    raise ProviderError("provider_protocol_error") from None
+            return items
 
     @contextmanager
     def source(self, generation):
@@ -242,7 +266,7 @@ class Gateway:
                     if any(job["stage"] == "submission_unknown" for job in jobs):
                         raise GatewayError("account_reconciliation_required")
                     limits = self._limits(db)
-                    if (len(jobs) >= limits["submission_limit"] or
+                    if (Decimal(limits["credit_limit"]) == 0 or len(jobs) >= limits["submission_limit"] or
                             sum((Decimal(str(job["quoted_credits"])) for job in jobs), Decimal(0)) + Decimal(str(cost)) > Decimal(limits["credit_limit"])):
                         raise GatewayError("account_budget_exceeded")
                     active = [job for job in jobs if job["status"] not in {"completed", "failed"}]

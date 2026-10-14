@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN" data-embedded="true">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Higgsfield 会员渠道管理</title><link rel="stylesheet" href="./dashboard.css"></head>
+<body data-embedded="true"><main id="dashboard" class="hf-workspace">
+<nav class="hf-tabs" aria-label="Higgsfield 应用导航">
+  <button data-route="overview">概览</button><button data-route="authorization">会员授权</button>
+  <button data-route="usage">订阅用量</button><button data-route="limits">团队限额</button>
+</nav>
+<div id="message" class="hf-notice" role="status">正在读取渠道状态…</div>
+<button id="reload" class="hf-button">重新读取</button>
+<div id="business" hidden>
+<section data-page="overview">
+  <div class="hf-title-row"><div><h2>渠道概览</h2><p class="hf-muted">管理团队的 Higgsfield 会员连接与订阅使用。</p></div><button class="hf-button primary" data-route="authorization">会员授权</button></div>
+  <div class="hf-notice"><strong id="generationState">正在核对新增生成状态</strong><p>已有任务由 Video 查询和交付。</p></div>
+  <div class="hf-metrics">
+    <article class="hf-panel"><p class="hf-muted">会员连接</p><strong class="hf-number" id="authState">待检查</strong><p class="hf-caption">本地登录 · 服务器维护刷新</p></article>
+    <article class="hf-panel"><p class="hf-muted">订阅余额</p><strong class="hf-number" id="balance">待检查</strong><p class="hf-caption" id="balanceTime"></p></article>
+    <article class="hf-panel"><p class="hf-muted">累计报价预留</p><strong class="hf-number" id="reserved">—</strong><p class="hf-caption">实扣金额须按供应商流水对账</p></article>
+  </div>
+  <div class="hf-columns"><article class="hf-panel"><h3>会员与共享</h3><dl class="hf-facts"><div><dt>渠道</dt><dd>Higgsfield</dd></div><div><dt>共享范围</dt><dd>组织内有项目权限的成员</dd></div><div><dt>授权维护</dt><dd>服务器托管</dd></div><div><dt>最近检查</dt><dd id="observed">待检查</dd></div></dl><button class="hf-button" data-route="authorization">管理会员授权</button></article>
+  <article class="hf-panel"><h3>视频能力由 Video 使用</h3><p class="hf-muted">通过 Higgsfield 渠道选择 Grok Lite、Seedance 等具体模型。当前可用组合以 Video 为准。</p><p class="hf-caption">视频创建、任务进度和结果交付在 Video 完成。</p><button class="hf-button" data-video>前往 Video</button></article></div>
+</section>
+<section data-page="authorization" hidden>
+  <div class="hf-title-row"><div><h2>会员授权</h2><p class="hf-muted">连接你已有的会员，让团队使用订阅额度。</p></div><span class="hf-tag" id="authorizationBadge">待检查</span></div>
+  <article class="hf-panel hf-auth-overview"><div class="hf-auth-description"><h3 id="authorizationHeading">检查服务器会员连接</h3><p>成员使用自己的 Studio 身份，服务器负责维护会员授权。</p><dl class="hf-facts"><div><dt>工作区</dt><dd id="workspaceState">等待校验原绑定</dd></div><div><dt>最近刷新</dt><dd id="refreshState">尚无可核验的刷新时间</dd></div></dl></div><button class="hf-button primary" id="connect" aria-expanded="false" aria-controls="authorizationFlow">连接或重新授权</button></article>
+  <section id="authorizationFlow" class="hf-panel hf-spacing" hidden><h3 tabindex="-1" id="flowTitle">在本机完成会员授权</h3><ol class="hf-auth-flow">
+    <li><span class="hf-step-number">1</span><div><h4>本地登录 Higgsfield</h4><p>将下面的请求交给本地自有 Skills，按官方浏览器页面完成登录。</p><label class="hf-field">给我的 Skills 的授权请求<textarea id="authorizationRequest" rows="4" readonly>请使用我的 verdantflare-video Skill，为当前团队的 Higgsfield 会员渠道完成本地登录与受控授权交接。先核对本地与服务器的 DMIT 出口一致，使用原绑定工作区；不要生成视频，不要显示或上传凭据到聊天，交接后检查服务器授权并保留现有停用和限额设置。</textarea></label><button id="copy" class="hf-button">复制授权请求</button><p id="copyState" role="status"></p></div></li>
+    <li><span class="hf-step-number">2</span><div><h4>受控交接给服务器</h4><p>Skills 校验账号、工作区与授权版本后交接，服务器成为唯一刷新方。本机停止使用已交接的授权。</p></div></li>
+    <li><span class="hf-step-number">3</span><div><h4>确认连接结果</h4><p>交接完成后点击下方检查。成功连接不会自动提高限额或开启新增生成。</p></div></li>
+  </ol></section>
+  <div class="hf-title-actions hf-spacing"><button class="hf-button" id="check">检查授权与用量</button><span id="checkState" class="hf-caption" role="status"></span></div>
+</section>
+<section data-page="usage" hidden><h2>订阅用量</h2><p class="hf-muted">任务报价预留与供应商实扣分别核对。</p><div id="usage" class="hf-panel hf-spacing"></div><div class="hf-title-actions hf-spacing"><button id="usageFirst" class="hf-button">首页</button><button id="usageNext" class="hf-button" disabled>下一页</button></div></section>
+<section data-page="limits" hidden><h2>团队使用限额</h2><p class="hf-muted">按当前绑定累计；修改不会重置历史任务与用量。</p>
+  <form id="limitsForm" class="hf-panel hf-spacing"><div class="hf-form-grid"><label class="hf-field">累计消费上限 / Credits<input id="credits" inputmode="decimal" required pattern="(0|[1-9][0-9]{0,11})(\.[0-9]{1,6})?"></label><label class="hf-field">累计提交条数上限<input id="submissions" type="number" min="0" max="2147483647" step="1" required></label></div>
+  <dl class="hf-inline-facts"><div><dt>历史已提交</dt><dd id="submitted">—</dd></div><div><dt>历史报价预留</dt><dd id="limitsReserved">—</dd></div><div><dt>限额版本</dt><dd id="revision">—</dd></div></dl>
+  <div class="hf-notice">设为 0 即暂停新增，已有任务仍可读取。保存正数上限后仍需满足 Video 渠道开关与授权状态。</div><button id="save" class="hf-button primary" type="submit">保存设置</button><p id="saveState" role="status"></p></form>
+</section></div></main><script type="module" src="./dashboard.mjs"></script></body></html>

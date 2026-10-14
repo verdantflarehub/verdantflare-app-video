@@ -38,6 +38,9 @@ class FakeCLI:
             return {"workspace_id": "workspace_test"}
         if args[:2] == ["account", "status"]:
             return {"credits": 100, "email": "private@example.invalid", "subscription_plan_type": "plus"}
+        if args[:2] == ["account", "transactions"]:
+            return {"items": [{"action": "spend", "created_at": "2026-10-14T09:00:00Z", "credits": 2,
+                               "display_name": "private prompt", "email": "private@example.invalid"}]}
         if args[:2] == ["generate", "cost"]:
             return {"credits": self.cost}
         if args[:2] == ["generate", "create"]:

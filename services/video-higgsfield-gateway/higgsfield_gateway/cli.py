@@ -37,7 +37,7 @@ class CLI:
         return env
 
     def run(self, args: list[str], timeout: int = 60):
-        allowed = {("account", "status"), ("model", "get"), ("workspace", "status"),
+        allowed = {("account", "status"), ("account", "transactions"), ("model", "get"), ("workspace", "status"),
                    ("upload", "create"),
                    ("generate", "cost"), ("generate", "create"), ("generate", "get")}
         if tuple(args[:2]) not in allowed:

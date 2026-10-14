@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 import hmac
 import json
 import logging
@@ -24,24 +24,31 @@ from .models import Generation, JobRequest, ReferenceMedia
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
+@contextmanager
+def gateway_owner():
+    """One credential owner for all listeners and their background checks."""
+    os.umask(0o077)
+    root = Path(os.environ.get("HIGGSFIELD_STATE_DIR", "/data/higgsfield"))
+    with lifetime_lock(root):
+        cli = CLI(Path(os.environ.get("HIGGSFIELD_CLI", "/usr/local/bin/hf")), root / "auth")
+        yield Gateway(root, cli,
+            binding=os.environ["HIGGSFIELD_BINDING_ID"], organization=os.environ["HIGGSFIELD_ORGANIZATION_ID"],
+            workspace=os.environ["HIGGSFIELD_WORKSPACE_ID"],
+            credit_limit=int(os.getenv("HIGGSFIELD_CREDIT_LIMIT", "0")),
+            submission_limit=int(os.getenv("HIGGSFIELD_SUBMISSION_LIMIT", "0")),
+            max_concurrent=int(os.getenv("HIGGSFIELD_MAX_CONCURRENT", "1")),
+            max_job_credits=int(os.getenv("HIGGSFIELD_MAX_JOB_CREDITS", "70")),
+            media=Media(root / "media"))
+
+
 def create_app(gateway=None, token=None):
     @asynccontextmanager
     async def lifespan(app):
         if gateway is not None:
             yield
             return
-        os.umask(0o077)
-        root = Path(os.environ.get("HIGGSFIELD_STATE_DIR", "/data/higgsfield"))
-        with lifetime_lock(root):
-            cli = CLI(Path(os.environ.get("HIGGSFIELD_CLI", "/usr/local/bin/hf")), root / "auth")
-            app.state.gateway = Gateway(root, cli,
-                binding=os.environ["HIGGSFIELD_BINDING_ID"], organization=os.environ["HIGGSFIELD_ORGANIZATION_ID"],
-                workspace=os.environ["HIGGSFIELD_WORKSPACE_ID"],
-                credit_limit=int(os.getenv("HIGGSFIELD_CREDIT_LIMIT", "0")),
-                submission_limit=int(os.getenv("HIGGSFIELD_SUBMISSION_LIMIT", "0")),
-                max_concurrent=int(os.getenv("HIGGSFIELD_MAX_CONCURRENT", "1")),
-                max_job_credits=int(os.getenv("HIGGSFIELD_MAX_JOB_CREDITS", "70")),
-                media=Media(root / "media"))
+        with gateway_owner() as owned:
+            app.state.gateway = owned
             yield
 
     async def health(request):
