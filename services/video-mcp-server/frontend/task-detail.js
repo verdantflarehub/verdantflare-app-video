@@ -229,7 +229,15 @@ window.addEventListener("DOMContentLoaded", () => {
     $("titleInput").focus();
   };
   $("cancelTitle").onclick = () => { $("titleForm").hidden = true; $("editTitle").focus(); };
-  $("titleForm").onsubmit = async (event) => {
+  // The Studio iframe deliberately omits allow-forms. Keep writes on its
+  // controlled request bridge, including keyboard activation.
+  $("titleForm").onsubmit = (event) => event.preventDefault();
+  $("titleInput").onkeydown = (event) => {
+    if (event.key === "Enter" && !event.isComposing) {
+      event.preventDefault(); $("saveTitle").click();
+    }
+  };
+  $("saveTitle").onclick = async (event) => {
     event.preventDefault(); const version = revision, id = currentTitleTask?.video_task_id;
     if (!id || !authorized) return;
     const name = $("titleInput").value.trim();
