@@ -4,6 +4,8 @@ from datetime import UTC, datetime
 import hashlib
 import json
 import os
+import secrets
+import time
 import uuid
 
 import httpx
@@ -12,6 +14,13 @@ from .executor import ExecutionError, serialized
 
 CALLER = ContextVar('video_verified_caller', default=None)
 OPTION = {'interpolate': {'profile': 'rife_2x'}}
+
+
+def request_id():
+    # Project's service principal contract requires UUIDv7, including requests.
+    value = ((time.time_ns() // 1_000_000) << 80) | (7 << 76)
+    value |= secrets.randbits(12) << 64 | (2 << 62) | secrets.randbits(62)
+    return str(uuid.UUID(int=value))
 
 
 def normalize(value, route):
@@ -33,7 +42,7 @@ def authorize(client, project_id, authority=None):
     try:
         response = client.post(url + '/internal/v1/project/open',
             headers={'Authorization': 'Bearer ' + token, 'X-User-Id': actor['user_id'],
-                     'X-Organization-Id': actor['organization_id'], 'X-Request-Id': str(uuid.uuid4())},
+                     'X-Organization-Id': actor['organization_id'], 'X-Request-Id': request_id()},
             json={'project_id': project_id, 'require_write': True}, timeout=15)
         if response.status_code in (401, 403, 404):
             raise PermissionError('project access denied')

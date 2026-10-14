@@ -132,7 +132,7 @@ class GenerationOptionTest(unittest.TestCase):
         from app import server
         args = {**self.f.kw, 'route': 'h3-singularity', 'postprocess': OPTION}
         args.pop('idempotency_key')
-        with patch.object(server, 'executor', self.e):
+        with patch.object(server, 'executor', self.e), patch.object(server, 'authorize', return_value={'user_id': 'user', 'organization_id': 'org'}):
             preview = server.video_preflight(**args).structured_content
         self.assertEqual(preview['delivery_output']['fps'], 48)
         self.assertEqual(preview['delivery_output']['frames'], preview['resolved_output']['frames'] * 2)
@@ -161,6 +161,17 @@ class GenerationOptionTest(unittest.TestCase):
 
 
 class AuthorityTest(unittest.TestCase):
+    def test_authorization_uses_project_uuid7_request_contract(self):
+        import uuid
+        from app.delivery import authorize
+        def respond(request):
+            identity = uuid.UUID(request.headers['X-Request-Id'])
+            self.assertEqual(identity.version, 7)
+            self.assertEqual(json.loads(request.content), {'project_id': 'p', 'require_write': True})
+            return httpx.Response(200, json={})
+        with httpx.Client(transport=httpx.MockTransport(respond)) as client, patch.dict(os.environ, {'VIDEO_PROJECT_SERVICE_URL': 'https://project', 'VIDEO_PROJECT_SERVICE_TOKEN': 'internal'}):
+            self.assertEqual(authorize(client, 'p', {'user_id': 'u', 'organization_id': 'o'})['user_id'], 'u')
+
     def test_authority_revalidation_denial_and_missing_identity(self):
         from app.delivery import authorize
         with httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(403))) as client:
