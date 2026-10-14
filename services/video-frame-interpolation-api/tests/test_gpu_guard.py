@@ -38,8 +38,16 @@ class GPUAllocationTest(unittest.TestCase):
     def test_original_environment_must_have_one_concrete_assignment(self):
         for raw in (b'NVIDIA_VISIBLE_DEVICES=all\0',
                     ('NVIDIA_VISIBLE_DEVICES='+GPU+'\0NVIDIA_VISIBLE_DEVICES='+GPU+'\0').encode()):
-            with self.subTest(raw=raw), patch('video_interpolation.gpu_guard.Path.read_bytes', return_value=raw), self.assertRaises(RuntimeError):
+            with self.subTest(raw=raw), patch('video_interpolation.gpu_guard.Path.read_bytes', return_value=raw), patch('video_interpolation.gpu_guard.subprocess.check_output', return_value=''), self.assertRaises(RuntimeError):
                 assigned_gpu()
+
+    def test_toolkit_consumed_assignment_requires_one_nvml_device_matching_cuda(self):
+        with patch('video_interpolation.gpu_guard.Path.read_bytes', return_value=b'NVIDIA_VISIBLE_DEVICES=void\0'):
+            with patch('video_interpolation.gpu_guard.subprocess.check_output', return_value=GPU+'\n'):
+                self.assertEqual(verify_gpu(self.torch, '', 'time-slicing'), GPU)
+            for output in ('', GPU+'\n'+GPU, 'GPU-00000000-0000-0000-0000-000000000000'):
+                with patch('video_interpolation.gpu_guard.subprocess.check_output', return_value=output), self.assertRaises(RuntimeError):
+                    verify_gpu(self.torch, '', 'time-slicing')
 
     def test_native_assignment_rejects_unbound_or_mismatched_devices(self):
         for visible in ('', 'all', '0', GPU + ',' + GPU, 'GPU-' + '0' * 36):

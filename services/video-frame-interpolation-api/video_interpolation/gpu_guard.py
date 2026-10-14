@@ -2,6 +2,7 @@
 import ctypes
 from pathlib import Path
 import re
+import subprocess
 import uuid
 
 
@@ -16,6 +17,16 @@ def assigned_gpu():
     except (OSError, UnicodeError) as exc:
         raise RuntimeError('native_gpu_assignment_unavailable') from exc
     concrete = [value for value in values if value not in ('all', 'void', 'none', '')]
+    if not concrete:
+        # NVIDIA Container Toolkit can consume the OCI assignment and replace
+        # this variable with "void" after injecting the assigned devices.
+        # NVML sees the injected set independently of CUDA_VISIBLE_DEVICES.
+        try:
+            concrete = subprocess.check_output(
+                ['nvidia-smi', '--query-gpu=uuid', '--format=csv,noheader'],
+                text=True, timeout=10, stderr=subprocess.DEVNULL).strip().splitlines()
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RuntimeError('native_gpu_assignment_unavailable') from exc
     if len(concrete) != 1 or not re.fullmatch(r'GPU-[0-9a-f-]{36}', concrete[0]):
         raise RuntimeError('native_single_gpu_allocation_required')
     return concrete[0]
