@@ -5,7 +5,6 @@ from unittest.mock import patch
 import unittest
 import test_sol_route
 from app.executor import ExecutionError, VideoExecutor
-from app.resources import Resources
 
 
 class VdnRouteTest(unittest.TestCase):
@@ -42,7 +41,6 @@ class VdnRouteTest(unittest.TestCase):
             executor = VideoExecutor(self.assets, self.tasks, self.http)
             with self.assertRaises(ExecutionError):
                 executor.generate(**self.kw, route='h3-vdn')
-            self.assertFalse(Resources.route_connected('h3-vdn'))
         with patch.dict(os.environ, {'H3_RUNTIME_ROUTES':'{}'}):
             executor = VideoExecutor(self.assets, self.tasks, self.http)
             with self.assertRaises(ExecutionError):

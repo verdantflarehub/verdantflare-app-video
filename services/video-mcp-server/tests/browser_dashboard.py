@@ -56,10 +56,6 @@ def main():
         executor.allowed_origins = frozenset({'https://assets.example.com'})
         dashboard = Dashboard(executor)
         dashboard.services['h3'] = 'ready'
-        from test_resources import Source
-        from app.resources import Resources
-        dashboard.resources = Resources(Source())
-        dashboard.resources.sync_inventory(); dashboard.resources.sync_metrics()
         async def content(request):
             artifact = artifacts.get(request.path_params['artifact_id'])
             return FileResponse(artifacts.content_path(artifact),media_type=artifact.media_type)

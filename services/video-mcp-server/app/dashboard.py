@@ -129,7 +129,6 @@ class Dashboard:
     def __init__(self, executor):
         self.executor = executor
         self.resources = Resources()
-        self.resources.task_provider = self.records
         self.result_lock = threading.Lock()
         self.services = {"h3": "unknown", "h3-sol": "not_connected", "fal": "not_connected", "mcp": "ready"}
         self.sync_errors = 0

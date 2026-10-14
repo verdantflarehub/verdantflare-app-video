@@ -644,7 +644,7 @@ async def lifespan(app: Starlette):
             await asyncio.sleep(2)
     async with mcp.session_manager.run():
         dashboard.recover_incomplete_submissions()
-        pollers = [asyncio.create_task(coro) for coro in (dashboard.poll(), dashboard.resources.poll(), dashboard.resources.poll_protocol(), delivery_poll())]
+        pollers = [asyncio.create_task(coro) for coro in (dashboard.poll(), dashboard.resources.poll_protocol(), delivery_poll())]
         try:
             yield
         finally:
