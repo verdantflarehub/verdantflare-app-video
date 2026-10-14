@@ -184,10 +184,16 @@ async function refreshTaskDetail(id, version) {
   $("detailContent").hidden = false;
   $("detailSubtitle").textContent = `${date(task.created_at)} · ${taskOperation(task)}`;
   $("detailStatus").className = `detail-status ${task.status}`;
-  $("detailStatus").textContent = labels[task.status] || task.status;
+  $("detailStatus").textContent = taskStatusLabel(task);
   $("outputCount").textContent = task.artifact || task.content_ref ? "1 个视频" : "0 / 1 个视频";
   const rows = [["任务 ID", task.video_task_id], ["项目 ID", task.project_id], ["幂等键", task.idempotency_key], ["模型", taskModel(task)], ["渠道", taskRoute(task)], ["生成类型", task.presentation?.generation_code ? `${task.presentation.generation_code} · ${task.presentation.generation_label}` : "未记录"], ["执行后端", task.route || task.service || "未记录"], ["执行实例", task.execution_instance_id || "未上报"], ["开始时间", date(task.created_at)], ["排队时间", seconds(task.timing?.queue_seconds)], ["运行时间", seconds(task.timing?.processing_seconds ?? task.timing?.processing_elapsed_seconds)], ["总耗时", seconds(task.timing?.total_seconds)], ["时长 / 画幅", `${task.duration_seconds}s · ${task.aspect_ratio}`], ["Seed", task.seed], ["Runtime 版本", task.runtime_version], ["输入摘要", task.input_digest]];
-  if (task.runtime_stage) rows.push(["任务阶段", task.runtime_stage === "submission_unknown" ? "提交待确认，请勿重复生成" : task.runtime_stage]);
+  if (task.service === "higgsfield") {
+    rows.splice(rows.findIndex(([label]) => label === "总耗时"), 1);
+    const runtime = rows.find(row => row[0] === "运行时间");
+    runtime[1] = elapsed(task);
+    rows.push(["渠道确认完成", date(task.timing?.generation_completed_at)], ["计时说明", generationTimeHint]);
+  }
+  if (task.runtime_stage) rows.push(["任务阶段", task.runtime_stage === "submission_unknown" ? "提交待确认，请勿重复生成" : task.service === "higgsfield" && task.runtime_stage === "collecting" ? "视频已生成" : task.runtime_stage]);
   if (task.error) rows.push(["异常信息", typeof task.error === "string" ? task.error : JSON.stringify(task.error)]);
   $("taskParameters").innerHTML = rows.map(([label,value]) => `<dt>${escapeHTML(label)}</dt><dd>${escapeHTML(value ?? "—")}</dd>`).join("");
   const copy = document.createElement("button"); copy.className = "button"; copy.textContent = "复制任务 ID";
@@ -213,7 +219,7 @@ async function refreshTaskDetail(id, version) {
       $("resultActions").replaceChildren(button);
     }
   } else {
-    $("videoArea").textContent = task.status === "failed" ? `生成失败：${task.error?.message || task.error?.code || "请查看任务信息"}` : task.status === "cancelled" ? "任务已取消" : `${labels[task.status] || task.status}，结果就绪后将在这里显示。`;
+    $("videoArea").textContent = task.status === "failed" ? `生成失败：${task.error?.message || task.error?.code || "请查看任务信息"}` : task.status === "cancelled" ? "任务已取消" : `${taskStatusLabel(task)}，结果就绪后将在这里显示。`;
   }
 }
 window.addEventListener("hashchange", businessView);

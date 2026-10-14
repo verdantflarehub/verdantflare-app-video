@@ -284,6 +284,11 @@ class HiggsfieldAdapter:
                 raise ValueError("gateway_identity_mismatch")
             state = dict(record.provider_state or {})
             state.update(next_poll_at=time.time() + 10, quoted_credits=data.get("quoted_credits"))
+            if data["status"] == "completed" and not state.get("generation_completed_at"):
+                # This is the gateway's durable completed-result observation,
+                # not the later Artifact commit or an invented provider timestamp.
+                state.update(generation_completed_at=data.get("updated_at"),
+                             generation_time_source="gateway_result_collected")
             identity = data.get("remote_id")
             if identity and str(uuid.UUID(identity)) != identity:
                 raise ValueError("gateway_identity_mismatch")

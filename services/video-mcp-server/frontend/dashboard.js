@@ -21,6 +21,8 @@ const labels = {
   failed: "失败",
   cancelled: "已取消",
 };
+const taskStatusLabel = (task) => task.service === "higgsfield" && task.status === "running" && (task.runtime_stage === "collecting" || task.timing?.generation_completed_at) ? "视频已生成" : labels[task.status] || task.status;
+const generationTimeHint = "按服务端确认 Higgsfield 完成的时间计算；官方 CLI 未提供精确完成时间。";
 // Display metadata is shared by the list and detail API; raw IDs stay in task records.
 const generationServices = new Set(["h3", "h3-sol", "h3-vdn", "h3-singularity", "fal", "grok", "higgsfield"]);
 const serviceDisplayNames = {
@@ -109,6 +111,10 @@ const seconds = (v) => {
   return n < 60 ? `${n}s` : `${Math.floor(n / 60)}m${n % 60}s`;
 };
 function elapsed(t) {
+  if (t.service === "higgsfield") {
+    if (t.timing?.processing_seconds != null) return `运行约 ${seconds(t.timing.processing_seconds)}`;
+    if (t.status === "succeeded" || t.runtime_stage === "collecting") return "运行时间未记录";
+  }
   if (t.timing) {
     const q = t.timing.queue_seconds;
     const r =
@@ -348,11 +354,11 @@ function render(data) {
     ? "此页没有任务，请返回上一页。"
     : "暂无符合条件的任务。可调整筛选，或新建运镜任务。";
   const badge = (t) =>
-    `<span class="badge-status ${t.status === "succeeded" ? "completed" : escapeHTML(t.status)}">${t.runtime_stage === "submission_unknown" ? "提交待确认" : t.runtime_stage === "collect_retry" ? "回收重试中" : labels[t.status] || escapeHTML(t.status)}</span>`;
+    `<span class="badge-status ${t.status === "succeeded" ? "completed" : escapeHTML(t.status)}">${t.runtime_stage === "submission_unknown" ? "提交待确认" : t.runtime_stage === "collect_retry" ? "回收重试中" : escapeHTML(taskStatusLabel(t))}</span>`;
   const galleryHTML = data.tasks
     .map(
       (t) =>
-        `<article class="model-card" tabindex="0" role="button" data-task="${escapeHTML(t.video_task_id)}" aria-label="查看 ${escapeHTML(taskDisplayName(t))}"><div class="card-thumb-wrap"><span>${t.status === "succeeded" ? "▶" : t.status === "running" ? "◌" : "◇"}</span>${taskIdentity(t)}<div class="card-badges">${badge(t)}</div><div class="card-times"><span title="开始时间">${date(t.created_at)}</span><span title="排队 / 运行">${elapsed(t)}</span></div></div><div class="card-body"><div><div class="card-title-row"><span title="${escapeHTML(taskDisplayName(t))}">${escapeHTML(taskDisplayName(t))}</span></div><p class="card-prompt">${escapeHTML(taskPrompt(t))}</p></div><div class="card-footer"><div class="model-tags">${taskTags(t)}</div><span class="card-footer-action">查看详情 →</span></div></div></article>`,
+        `<article class="model-card" tabindex="0" role="button" data-task="${escapeHTML(t.video_task_id)}" aria-label="查看 ${escapeHTML(taskDisplayName(t))}"><div class="card-thumb-wrap"><span>${t.status === "succeeded" ? "▶" : t.status === "running" ? "◌" : "◇"}</span>${taskIdentity(t)}<div class="card-badges">${badge(t)}</div><div class="card-times"><span title="开始时间">${date(t.created_at)}</span><span title="${t.service === "higgsfield" ? generationTimeHint : "排队 / 运行"}">${elapsed(t)}</span></div></div><div class="card-body"><div><div class="card-title-row"><span title="${escapeHTML(taskDisplayName(t))}">${escapeHTML(taskDisplayName(t))}</span></div><p class="card-prompt">${escapeHTML(taskPrompt(t))}</p></div><div class="card-footer"><div class="model-tags">${taskTags(t)}</div><span class="card-footer-action">查看详情 →</span></div></div></article>`,
     )
     .join("");
   reconcileGallery(galleryHTML, data.tasks);

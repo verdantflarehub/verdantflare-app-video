@@ -164,11 +164,27 @@ class TaskStore:
         dispatched = record.dispatched_at
         completed = record.completed_at
         now = datetime.now(UTC).isoformat()
+        generation_end = None
+        if record.service == "higgsfield":
+            state = record.provider_state or {}
+            candidate = state.get("generation_completed_at")
+            try:
+                stamp = datetime.fromisoformat(candidate)
+                start = datetime.fromisoformat(dispatched or record.created_at)
+                end = datetime.fromisoformat(completed or now)
+                if stamp.tzinfo and start <= stamp <= end:
+                    generation_end = candidate
+            except (ValueError, TypeError):
+                pass
+        processing_end = generation_end if record.service == "higgsfield" else completed
         timing = {"queue_seconds": seconds(record.created_at, dispatched),
                   "queue_elapsed_seconds": seconds(record.created_at, now) if not dispatched and not completed and record.status == "queued" else None,
-                  "processing_seconds": seconds(dispatched, completed),
-                  "processing_elapsed_seconds": seconds(dispatched, now) if dispatched and not completed else None,
+                  "processing_seconds": seconds(dispatched, processing_end),
+                  "processing_elapsed_seconds": seconds(dispatched, now) if dispatched and not completed and not processing_end else None,
                   "total_seconds": seconds(record.created_at, completed)}
+        if record.service == "higgsfield":
+            timing.update(generation_completed_at=generation_end,
+                          generation_time_source=(record.provider_state or {}).get("generation_time_source") if generation_end else None)
         return record.model_copy(update={"timing": timing})
 
     def update(self, record: TaskRecord, **values: object) -> TaskRecord:

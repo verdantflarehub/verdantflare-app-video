@@ -213,8 +213,9 @@ class Dashboard:
         status_filter = query.get("status", "all")
         if status_filter != "all":
             rows = [r for r in rows if r["status"] == status_filter]
-        elapsed = [(datetime.fromisoformat(r["completed_at"]) - datetime.fromisoformat(r["created_at"])).total_seconds()
+        elapsed = [r["timing"]["processing_seconds"] if r["service"] == "higgsfield" else r["timing"]["total_seconds"]
                    for r in rows if r["status"] == "succeeded"]
+        elapsed = [value for value in elapsed if value is not None]
         return {"tasks": rows[(page-1)*size:page*size], "total": len(rows), "page": page,
                 "page_size": size, "projects": projects, "counts": counts,
                 "completion_times": [r["completed_at"] for r in rows if r["status"] == "succeeded"],
