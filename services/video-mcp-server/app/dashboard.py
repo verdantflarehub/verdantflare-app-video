@@ -196,6 +196,11 @@ class Dashboard:
                     self.executor.higgsfield.authorize_record(record)
                 except (PermissionError, ValueError, httpx.HTTPError):
                     continue
+            if record.service == "fal":
+                try:
+                    self.executor.fal.authorize_record(record)
+                except (PermissionError, ValueError, httpx.HTTPError):
+                    continue
             visible.append(record)
         records = visible
         projects = sorted({r.project_id for r in records})
@@ -227,6 +232,8 @@ class Dashboard:
         record = self.executor.tasks.get(task_id)
         if record.service == "higgsfield":
             self.executor.higgsfield.authorize_record(record)
+        if record.service == "fal":
+            self.executor.fal.authorize_record(record)
         value = public_task(record, self.executor.tasks)
         value["runtime_version"] = record.runtime_version or self.executor.runtime_version
         value["references"] = []
@@ -248,6 +255,8 @@ class Dashboard:
         native = record.service == "higgsfield" and record.status == "succeeded"
         if record.service == "higgsfield":
             self.executor.higgsfield.authorize_record(record)
+        if record.service == "fal":
+            self.executor.fal.authorize_record(record)
         reference = record.request.get("references", {}).get("images", [])
         artifact_id = record.artifact_id or (reference[0]["artifact_id"] if reference else None)
         if not artifact_id and not native:
@@ -298,6 +307,8 @@ class Dashboard:
                         record = self.executor.tasks.get(request.path_params["task_id"])
                         if record.service == "higgsfield":
                             self.executor.higgsfield.authorize_record(record)
+                        if record.service == "fal":
+                            self.executor.fal.authorize_record(record)
                         self.executor.result(request.path_params["task_id"])
                         return self.detail(request.path_params["task_id"])
                 value = await run_in_threadpool(result)

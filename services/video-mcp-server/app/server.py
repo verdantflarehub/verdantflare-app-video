@@ -478,6 +478,8 @@ def video_status(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
     existing = executor.tasks.get(tid)
     if existing.service == 'higgsfield':
         executor.higgsfield.authorize_record(existing)
+    if existing.service == 'fal':
+        executor.fal.authorize_record(existing)
     if existing.service == 'interpolate' or existing.request.get('postprocess'):
         authorize(executor.client, existing.project_id)
     record = executor.status(tid)
@@ -498,6 +500,8 @@ def video_result(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
     existing = executor.tasks.get(tid)
     if existing.service == 'higgsfield':
         executor.higgsfield.authorize_record(existing)
+    if existing.service == 'fal':
+        executor.fal.authorize_record(existing)
     if existing.service == 'interpolate' or existing.request.get('postprocess'):
         authorize(executor.client, existing.project_id)
     record = executor.result(tid)

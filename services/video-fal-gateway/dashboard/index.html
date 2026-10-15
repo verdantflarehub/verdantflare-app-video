@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN" data-embedded="true">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>fal.ai 渠道管理</title><link rel="stylesheet" href="./dashboard.css"></head>
+<body data-embedded="true"><main id="app" class="fal-workspace">
+  <nav aria-label="fal 应用导航"><button data-route="overview">概览</button><button data-route="authorization">API 授权</button><button data-route="usage">用量与限制</button></nav>
+  <div id="message" class="fal-notice" role="status">正在读取 fal.ai 渠道状态…</div>
+  <div id="content" hidden>
+    <section data-page="overview"><div class="fal-heading"><div><p class="fal-eyebrow">VIDEO CHANNEL</p><h2>fal.ai</h2><p>组织级视频供应商渠道。任务与结果由 Video MCP 管理。</p></div><span id="statusBadge" class="fal-badge">待检查</span></div>
+      <div class="fal-grid"><article><span>授权状态</span><strong id="authStatus">—</strong></article><article><span>新任务</span><strong id="enabledState">—</strong></article><article><span>每日上限</span><strong id="dailyLimit">—</strong></article></div>
+      <div class="fal-panel"><h3>目前可执行范围</h3><p>首期仅 MiniMax H3 参考生视频具备代码适配。模型目录中的另外四项仍待适配与实测；授权成功不会自动开启生成。</p><button data-video>打开 Video 模型页</button></div>
+    </section>
+    <section data-page="authorization" hidden><h2>API 授权</h2><p class="fal-muted">在 fal 控制台创建 API 预设 Key。保存后服务端通过只读请求检查；Key 只在提交时经过此表单。</p>
+      <div class="fal-panel"><p>当前状态：<strong id="authorizationState">—</strong></p><p>最近检查：<span id="checkedAt">—</span></p><p>版本：<span id="keyVersion">—</span></p>
+        <form id="keyForm" autocomplete="off"><label>fal API Key<input id="apiKey" type="password" autocomplete="new-password" spellcheck="false" required minlength="16" maxlength="4096"></label><button type="submit">保存并检查</button></form>
+        <div class="fal-actions"><button id="recheck" type="button">重新检查</button><button id="revoke" type="button">撤销新提交</button></div>
+        <p class="fal-muted">撤销会停止新提交。已提交任务保留受控恢复记录；如同时撤销 fal 控制台的 Key，旧任务可能无法回读。</p></div>
+    </section>
+    <section data-page="usage" hidden><h2>用量与限制</h2><p class="fal-muted">本地提交数仅供运行管控，不能当作 fal 账单或余额。</p>
+      <div class="fal-grid"><article><span>本地已提交</span><strong id="submitted">—</strong></article><article><span>供应商账单</span><strong>暂不可核实</strong></article></div>
+      <form id="limitsForm" class="fal-panel"><label class="fal-switch"><input id="enabled" type="checkbox">允许新任务</label><label>每日提交上限<input id="limit" type="number" min="0" max="1000" step="1" required></label><p class="fal-muted">上限为 0 时始终停止新提交。已存在任务可继续回读。</p><button type="submit">保存限制</button></form>
+    </section>
+  </div>
+</main><script type="module" src="./dashboard.mjs"></script></body></html>

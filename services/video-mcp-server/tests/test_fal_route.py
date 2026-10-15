@@ -148,6 +148,43 @@ class FalRouteTest(unittest.TestCase):
         self.assertEqual([call.method for call in calls], ["POST", "GET", "GET", "GET"])
         client.close()
 
+    def test_gateway_new_tasks_keep_legacy_recovery_boundary(self) -> None:
+        calls = []
+        gateway_id = "11111111-1111-4111-8111-111111111111"
+
+        def handler(request):
+            calls.append(request)
+            if request.method == "POST":
+                self.assertEqual(request.url.host, "video-fal-gateway")
+                self.assertEqual(request.url.path, "/v1/submissions")
+                self.assertEqual(request.headers["X-Organization-Id"], "org-one")
+                self.assertEqual(request.headers["Authorization"], "Bearer " + "g" * 40)
+                self.assertEqual(json.loads(request.content)["model_id"], "minimax/h3/reference-to-video")
+                return httpx.Response(200, json={"id": gateway_id, "state": "queued"})
+            if request.url.path.endswith("/result"):
+                return httpx.Response(200, json={"video_url": "https://v3.fal.media/files/result.mp4"})
+            if request.url.host == "video-fal-gateway":
+                return httpx.Response(200, json={"state": "completed", "failed": False,
+                                                "metrics": {"inference_time": 9.5}})
+            return httpx.Response(200, content=b"video-bytes", headers={"content-type": "video/mp4"})
+
+        with mock.patch.dict(os.environ, {"FAL_GATEWAY_URL": "http://video-fal-gateway:8001",
+                                       "FAL_GATEWAY_TOKEN": "g" * 40, "FAL_KEY": ""}), \
+             mock.patch("app.delivery.authorize", return_value={"organization_id": "org-one"}):
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            executor = VideoExecutor(self.artifacts, self.tasks, client)
+            record = executor.generate(**self.inputs(idempotency_key="gateway-1"))
+            self.assertEqual(record.runtime_version, "video-fal-gateway-v0.1.0")
+            self.assertEqual(record.runtime_task_id, gateway_id)
+            self.assertEqual(record.request["organization_id"], "org-one")
+            self.assertEqual(executor.status(record.video_task_id).status, "succeeded")
+            probe = mock.Mock(stdout=json.dumps({"streams": [{"codec_type": "video", "codec_name": "h264",
+                "width": 768, "height": 1344, "r_frame_rate": "24/1"}], "format": {"duration": "5.0"}}))
+            with mock.patch("app.providers.fal.subprocess.run", return_value=probe):
+                self.assertIsNotNone(executor.result(record.video_task_id).artifact_id)
+            self.assertEqual([request.method for request in calls], ["POST", "GET", "GET", "GET"])
+            client.close()
+
     def test_missing_key_fails_closed_without_network_or_fallback(self) -> None:
         calls = []
         with mock.patch.dict(os.environ, {"FAL_KEY": ""}):
