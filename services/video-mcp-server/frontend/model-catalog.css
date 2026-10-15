@@ -9,6 +9,8 @@
 .catalog-channels { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px }
 .catalog-chip { border:1px solid var(--line); padding:4px 8px; border-radius:4px; font-size:12px }
 .catalog-card .catalog-spec { margin:8px 0 16px; color:var(--muted); font-size:13px }
+.catalog-card .catalog-execution { margin:0 0 8px; padding:8px 10px; border:1px solid var(--line); border-radius:6px; color:var(--paper,var(--ink)); font-size:12px; line-height:1.5 }
+.catalog-card .catalog-execution[data-execution-state="adapter_connected_unverified"] { border-color:var(--accent,var(--green)) }
 .catalog-detail { padding-top:12px; overflow-wrap:anywhere }
 .catalog-detail section+section { border-top:1px solid var(--line); padding-top:12px }
 .catalog-detail h4 { font-size:14px; margin:12px 0 }

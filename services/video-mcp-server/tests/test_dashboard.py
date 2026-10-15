@@ -27,6 +27,24 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual(self.client.post('/api/model-catalog',headers=self.headers).status_code,405)
         self.assertEqual(self.client.get('/api/dashboard',headers=self.headers).status_code,200)
 
+    def test_fal_catalog_execution_projection_keeps_snapshot_and_fail_closed_states(self):
+        catalog = {'state':'ready', 'snapshot_id':'approved-digest', 'channels':[
+            {'id':'fal', 'models':[
+                {'id':'h3-ref', 'upstream_model_id':'minimax/h3/reference-to-video'},
+                {'id':'h3-text', 'upstream_model_id':'minimax/h3/text-to-video'}]}],
+            'groups':[], 'conflicts':[]}
+        with mock.patch.object(self.executor.catalog, 'snapshot', return_value=catalog):
+            with mock.patch.object(self.executor.fal, 'connected', return_value=True):
+                response = self.client.get('/api/model-catalog',headers=self.headers)
+                self.assertEqual(response.status_code,200)
+                value = response.json()
+                self.assertEqual(value['snapshot_id'],'approved-digest')
+                self.assertEqual(value['execution']['fal']['h3-ref']['state'],'adapter_connected_unverified')
+                self.assertEqual(value['execution']['fal']['h3-text']['state'],'catalog_only')
+                self.assertNotIn('execution',catalog)
+            with mock.patch.object(self.executor.fal, 'connected', return_value=False):
+                self.assertEqual(self.executor.catalog_view()['execution']['fal']['h3-ref']['state'],'adapter_disconnected')
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)

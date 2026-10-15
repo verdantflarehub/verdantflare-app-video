@@ -56,17 +56,30 @@
     }
     set(data) {
       if (data.state === 'error') { this.data = null; this.failure(); return; }
-      if (this.data?.snapshot_id === data.snapshot_id) return;
+      if (this.data?.snapshot_id === data.snapshot_id &&
+          JSON.stringify(this.data.execution || {}) === JSON.stringify(data.execution || {})) return;
       this.data = data;
       const option = (value,label) => `<option value="${esc(value)}">${esc(label)}</option>`;
       this.root.innerHTML = `<div class="catalog-toolbar"><label>查看方式<select data-catalog-filter="view">${option('channels','按渠道查看')}${option('models','按模型查看')}</select></label><label class="catalog-search">搜索模型<input type="search" data-catalog-filter="query" placeholder="模型名称、用途或模型 ID" /></label><label>业务<select data-catalog-filter="business">${option('all','全部业务')}${Object.entries(business).map(([id,label])=>option(id,label)).join('')}</select></label><label>渠道<select data-catalog-filter="channel">${option('all','全部渠道')}${data.channels.map(c=>option(c.id,c.display_name)).join('')}</select></label></div><p class="business-muted" data-catalog-count></p><div data-catalog-results></div>`;
       for (const input of this.root.querySelectorAll('[data-catalog-filter]')) input.value = this.filters[input.dataset.catalogFilter];
       this.renderResults();
     }
+    executionStatus(entry) {
+      if (entry.channel.id !== 'fal') return '';
+      const capability = this.data.execution?.fal?.[entry.model.id];
+      const state = capability?.state;
+      const labels = {
+        adapter_connected_unverified:'执行适配已接入 · 组织授权、限额及生成待验证',
+        adapter_disconnected:'执行适配已接入 · 服务未连接，暂不可提交',
+        catalog_only:'仅目录收录 · 暂不可提交'
+      };
+      const label = labels[state] || '调用状态待核实 · 暂不可提交';
+      return `<p class="catalog-execution" data-execution-state="${esc(state || 'unknown')}">${esc(label)}</p>`;
+    }
     card(group, entries) {
       const model = entries[0].model;
       const channels = [...new Map(entries.map(e=>[e.channel.id,e.channel])).values()];
-      return `<article class="business-card catalog-card" data-catalog-card><span class="business-muted">${esc(business[model.business_type] || model.business_type)}</span><h3>${esc(model.display_name)}</h3><p>${esc(model.description)}</p><div class="catalog-channels">${channels.slice(0,3).map(c=>`<span class="catalog-chip">${esc(c.display_name)}</span>`).join('')}${channels.length>3?`<span class="catalog-chip">另有 ${channels.length-3} 个渠道</span>`:''}</div><p class="catalog-spec">${entries.slice(0,3).map(e=>`${esc(e.channel.display_name)} · ${esc(specs(e.model))}`).join('　')}</p><details data-catalog-entry="${esc(group.id)}" ${this.open.has(group.id)?'open':''}><summary>查看模型与渠道详情</summary><div class="catalog-detail">${entries.map(e=>`<section><h4>${esc(e.channel.display_name)} · ${esc(e.model.display_name)}</h4><p class="business-muted">${esc(review[e.model.identity_review])} · ${esc(e.model.billing_modes.map(b=>billing[b]).join(' / '))}</p><p>模型 ID：<code>${esc(e.model.upstream_model_id ?? "待核实")}</code></p>${profiles(e.model.team_profiles,'团队适配范围')}${profiles(e.model.supplier_profiles,'供应商声明范围')}</section>`).join('')}<p class="business-muted">目录收录不表示当前可调用，执行范围以现有生成入口为准。</p></div></details></article>`;
+      return `<article class="business-card catalog-card" data-catalog-card><span class="business-muted">${esc(business[model.business_type] || model.business_type)}</span><h3>${esc(model.display_name)}</h3><p>${esc(model.description)}</p><div class="catalog-channels">${channels.slice(0,3).map(c=>`<span class="catalog-chip">${esc(c.display_name)}</span>`).join('')}${channels.length>3?`<span class="catalog-chip">另有 ${channels.length-3} 个渠道</span>`:''}</div><p class="catalog-spec">${entries.slice(0,3).map(e=>`${esc(e.channel.display_name)} · ${esc(specs(e.model))}`).join('　')}</p>${entries.length===1?this.executionStatus(entries[0]):''}<details data-catalog-entry="${esc(group.id)}" ${this.open.has(group.id)?'open':''}><summary>查看模型与渠道详情</summary><div class="catalog-detail">${entries.map(e=>`<section><h4>${esc(e.channel.display_name)} · ${esc(e.model.display_name)}</h4>${this.executionStatus(e)}<p class="business-muted">${esc(review[e.model.identity_review])} · ${esc(e.model.billing_modes.map(b=>billing[b]).join(' / '))}</p><p>模型 ID：<code>${esc(e.model.upstream_model_id ?? "待核实")}</code></p>${profiles(e.model.team_profiles,'团队适配范围')}${profiles(e.model.supplier_profiles,'供应商声明范围')}</section>`).join('')}<p class="business-muted">目录收录不表示当前可调用，执行范围以现有生成入口为准。</p></div></details></article>`;
     }
     renderResults() {
       if (!this.data) return;

@@ -285,7 +285,7 @@ class Dashboard:
         try:
             action = request.url.path
             if action == "/api/model-catalog":
-                value = self.executor.catalog.snapshot()
+                value = self.executor.catalog_view()
             elif action == "/api/capabilities":
                 value = self.executor.capabilities()
             elif action == "/api/dashboard":

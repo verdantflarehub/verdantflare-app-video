@@ -154,6 +154,23 @@ class VideoExecutor:
         # Read old records created before route became the public selector.
         return self.sol_route if record.service == "h3-sol" else self.runtime_route
 
+    def catalog_view(self) -> dict[str, object]:
+        """Project adapter facts beside the immutable supplier catalog."""
+        from copy import deepcopy
+        from .providers.fal import FAL_MODEL_ID, FAL_PUBLIC_MODEL
+
+        catalog = deepcopy(self.catalog.snapshot())
+        fal_channel = next((channel for channel in catalog.get("channels", []) if channel["id"] == "fal"), None)
+        if fal_channel is not None:
+            connected = self.fal.connected()
+            catalog["execution"] = {"fal": {
+                model["id"]: ({"state": "adapter_connected_unverified" if connected else "adapter_disconnected",
+                               "route": "fal", "model": FAL_PUBLIC_MODEL}
+                              if model.get("upstream_model_id") == FAL_MODEL_ID
+                              else {"state": "catalog_only"})
+                for model in fal_channel["models"]}}
+        return catalog
+
     def capabilities(self) -> dict[str, object]:
         """Separate configured adapters, live readiness and unverified GPU combinations."""
         from .providers.fal import FAL_ASPECT_RATIOS
@@ -196,7 +213,7 @@ class VideoExecutor:
                         routes[-1]["readiness"] = "unreachable"
         routes.append(self.grok.capability())
         routes.extend(self.higgsfield.capabilities())
-        return {"catalog": self.catalog.snapshot(), "default_model": "minimax-h3-ref2va", "default_route": self.runtime_route,
+        return {"catalog": self.catalog_view(), "default_model": "minimax-h3-ref2va", "default_route": self.runtime_route,
                 "models": [{"model": "minimax-h3-ref2va"}, {"model": self.grok.model, "routes": ["grok"]},
                            *[{"model": item["model"], "routes": ["higgsfield"]} for item in self.higgsfield.capabilities()]],
                 "model_specification": {"aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],

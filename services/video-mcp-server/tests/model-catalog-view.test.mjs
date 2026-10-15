@@ -36,3 +36,26 @@ test('default channel view follows channel order and shows supplier tiers separa
   view.set({ ...view.data, snapshot_id: 'two' });
   assert.equal(view.filters.view, 'models');
 });
+
+test('fal cards distinguish the one adapted endpoint from catalog-only entries', () => {
+  const context = vm.createContext({});
+  vm.runInContext(readFileSync(new URL('../frontend/model-catalog.js', import.meta.url), 'utf8'), context);
+  const nodes = {};
+  const root = { innerHTML: '', addEventListener() {}, removeEventListener() {},
+    querySelectorAll: () => [], querySelector: selector => nodes[selector] ??= {} };
+  const view = new context.VideoCatalogView(root, async () => ({}));
+  const model = (id, name) => ({ id, display_name:name, business_type:'video_generation', description:'',
+    identity_review:'pending', billing_modes:[], upstream_model_id:id, supplier_profiles:[], team_profiles:[] });
+  const fal = { id:'fal', display_name:'fal.ai', models:[model('ref','H3 参考生'),model('text','H3 文生')] };
+  view.set({ state:'ready', snapshot_id:'fal-one', channels:[fal], conflicts:[],
+    execution:{ fal:{ ref:{ state:'adapter_connected_unverified' }, text:{ state:'catalog_only' } } },
+    groups:fal.models.map(item=>({id:item.id,entries:[{channel_id:'fal',entry_id:item.id}]})) });
+  const html = nodes['[data-catalog-results]'].innerHTML;
+  assert.match(html, /执行适配已接入 · 组织授权、限额及生成待验证/);
+  assert.match(html, /仅目录收录 · 暂不可提交/);
+  assert.doesNotMatch(html, /可生成/);
+  view.set({ ...view.data, execution:{ fal:{
+    ref:{ state:'adapter_disconnected' }, text:{ state:'catalog_only' }
+  } } });
+  assert.match(nodes['[data-catalog-results]'].innerHTML, /服务未连接，暂不可提交/);
+});
