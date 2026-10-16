@@ -68,3 +68,7 @@ H3-Sol 的直接依赖源为 `pyproject.toml`；`requirements.lock` 与 `require
 Depth Anything 的测试扩展使用 `python -m pip install "./services/video-depth-anything-api[test]"`；Video MCP 的浏览器扩展使用 `python -m pip install "./services/video-mcp-server[browser]"`。超分引擎测试的 `cpu-torch` 组使用 PyTorch CPU 索引安装，再安装 `engine-test` 组。
 
 H3-Sol 的清单版本对应现行 resident 服务；`Dockerfile.resident` 复制并安装该清单的元数据，运行依赖仍继承固定基础镜像。
+
+## 独立渠道仓库
+
+Higgsfield 渠道服务与页面迁至 [verdantflare-app-higgsfield](https://github.com/verdantflarehub/verdantflare-app-higgsfield)，fal.ai 渠道服务与页面迁至 [verdantflare-app-fal](https://github.com/verdantflarehub/verdantflare-app-fal)。Video 仅保留渠道消费者与任务／Artifact 集成；渠道独立发布，沿用现行内部接口。
