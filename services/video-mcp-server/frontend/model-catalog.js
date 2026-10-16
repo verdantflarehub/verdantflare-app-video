@@ -17,27 +17,6 @@
     higgsfield: '会员权益 / Credits 计费',
     fal: '供应商 API 按量计费 (FAL_KEY)'
   };
-  const modelPresets = {
-    'minimax-h3': { caps: [['R2V','参考生视频'],['I2V','图生视频']], quota: '最多 9张图 · 3个视频 · 3个音频', maxSize: '≤ 50MB', ratios: '9:16 / 16:9 / 1:1', audioDesc: '支持参考音轨驱动与有声视频输出', res: '768p', dur: '4S-15S', fps: '24FPS' },
-    'seedvr2': { caps: [['V2V','视频超分']], quota: '源视频流 1个（支持音轨透传）', maxSize: '≤ 50MB', ratios: '保持源视频画幅', audioDesc: '保留原视频音轨或无声输出', res: '1080p', dur: '源视频时长', fps: '60FPS' },
-    'rife': { caps: [['V2V','视频插帧']], quota: '源视频流 1个（2x / 3x / 4x 帧率倍增）', maxSize: '≤ 50MB', ratios: '保持源视频画幅', audioDesc: '保留原视频音轨或无声输出', res: '1080p', dur: '源视频时长', fps: '60FPS' },
-    'video-depth-anything': { caps: [['V2V','深度估计']], quota: '源视频流 1个（提取时序深度图）', maxSize: '≤ 50MB', ratios: '保持源视频画幅', audioDesc: '无声深度视频输出', res: '1080p', dur: '源视频时长', fps: '30FPS' },
-    'h3-latent-upscaler': { caps: [['V2V','潜空间超分']], quota: 'H3 潜空间任务 / 视频源 1个', maxSize: '≤ 50MB', ratios: '保持源视频画幅', audioDesc: '保留原视频音轨', res: '1080p', dur: '4S-15S', fps: '24FPS' },
-    'seedance-2-5': { caps: [['T2V','文生视频'],['I2V','图生视频'],['R2V','参考生视频']], quota: '最多 9张图 · 3个视频 · 1个音频', maxSize: '≤ 50MB', ratios: '16:9 / 9:16 / 1:1 / 4:3 / 3:4 / 21:9', audioDesc: '支持音频参考与有声视频输出', res: '720p', dur: '4S-15S', fps: '24FPS' },
-    'seedance-2-5-fast': { caps: [['T2V','文生视频'],['I2V','图生视频'],['R2V','参考生视频']], quota: '最多 9张图 · 3个视频 · 1个音频', maxSize: '≤ 50MB', ratios: '16:9 / 9:16 / 1:1 / 4:3 / 3:4 / 21:9', audioDesc: '支持音频参考与有声视频输出', res: '720p', dur: '4S-15S', fps: '24FPS' },
-    'seedance-2-5-draft': { caps: [['R2V','参考生视频']], quota: '最多 9张图 · 3个视频 · 1个音频', maxSize: '≤ 50MB', ratios: '16:9 / 9:16 / 1:1 / 4:3 / 3:4 / 21:9', audioDesc: '支持音频参考与有声预览输出', res: '480p', dur: '4S-15S', fps: '24FPS' },
-    'wan-3-0': { caps: [['T2V','文生视频'],['I2V','图生视频'],['F2V','首尾帧视频'],['R2V','参考生视频']], quota: '最多 4张图 · 1个视频 · 1个音频', maxSize: '≤ 50MB', ratios: '16:9 / 9:16 / 1:1 / 4:3 / 3:4', audioDesc: '支持原生音画同步与参考音轨', res: '720p', dur: '3S-15S', fps: '24FPS' },
-    'grok-imagine-1-5-lite': { caps: [['T2V','文生视频'],['I2V','图生视频']], quota: '最多 1张参考图 · 0个视频 · 0个音频', maxSize: '≤ 20MB', ratios: '16:9 / 9:16 / 1:1 / 4:3 / 3:4', audioDesc: '支持原生音效输出', res: '720p', dur: '2S-10S', fps: '24FPS' },
-    'genjutsu-1-0': { caps: [['T2V','文生视频'],['I2V','图生视频'],['R2V','参考生视频']], quota: '最多 4张图 · 1个视频 · 1个音频', maxSize: '≤ 50MB', ratios: '16:9 / 9:16 / 1:1', audioDesc: '支持原生有声视频输出', res: '1080p', dur: '5S-10S', fps: '24FPS' },
-    'kling-3-0': { caps: [['T2V','文生视频'],['I2V','图生视频'],['F2V','首尾帧视频']], quota: '首帧 + 尾帧 (最多 2张图 · 0个视频)', maxSize: '≤ 30MB', ratios: '16:9 / 9:16 / 1:1', audioDesc: '支持原生音效生成', res: '4K', dur: '5S-10S', fps: '30FPS' },
-    'kling-3-0-omni': { caps: [['T2V','文生视频'],['I2V','图生视频'],['F2V','首尾帧视频'],['R2V','参考生视频']], quota: '最多 7张图 · 1个视频 · 1个音频', maxSize: '≤ 50MB', ratios: '16:9 / 9:16 / 1:1', audioDesc: '支持多模态参考与有声输出', res: '4K', dur: '5S-10S', fps: '30FPS' },
-    'sora-2': { caps: [['T2V','文生视频'],['I2V','图生视频']], quota: '最多 1张首帧图 · 0个视频 · 0个音频', maxSize: '≤ 30MB', ratios: '16:9 / 9:16 / 1:1', audioDesc: '支持原生环境音输出', res: '1080p', dur: '5S-20S', fps: '24FPS' },
-    'veo-3-1': { caps: [['T2V','文生视频'],['I2V','图生视频'],['F2V','首尾帧视频'],['R2V','参考生视频']], quota: '最多 3张图 · 1个视频 · 1个音频', maxSize: '≤ 50MB', ratios: '16:9 / 9:16', audioDesc: '支持原生对白与环境音同步输出', res: '4K', dur: '4S-8S', fps: '24FPS' },
-    'h3-reference-to-video': { caps: [['R2V','参考生视频'],['I2V','图生视频']], quota: '最多 9张图 · 3个视频 · 3个音频 (合计 ≤ 12)', maxSize: '≤ 50MB', ratios: 'adaptive / 16:9 / 9:16 / 1:1 / 4:3 / 3:4 / 21:9', audioDesc: '支持参考音频输入与有声输出', res: '480p', dur: '5S-15S', fps: '24FPS' },
-    'h3-text-to-video': { caps: [['T2V','文生视频']], quota: '纯文本提示词驱动（0张图 · 0个视频 · 0个音频）', maxSize: '纯文本（无附件上限）', ratios: '16:9 / 9:16 / 1:1 / 4:3 / 3:4 / 21:9', audioDesc: '支持有声视频输出', res: '768p', dur: '5S-15S', fps: '24FPS' },
-    'h3-image-to-video': { caps: [['I2V','图生视频']], quota: '最多 1张首帧图 · 0个视频 · 0个音频', maxSize: '≤ 20MB', ratios: '继承首帧图 / 16:9 / 9:16 / 1:1', audioDesc: '支持有声视频输出', res: '768p', dur: '5S-15S', fps: '24FPS' },
-    'h3-fast-image-to-video': { caps: [['I2V','图生视频']], quota: '最多 1张首帧图 · 0个视频 · 0个音频', maxSize: '≤ 20MB', ratios: '继承首帧图 / 16:9 / 9:16 / 1:1', audioDesc: '支持快速图生预览', res: '512p', dur: '5S-10S', fps: '24FPS' }
-  };
   const modeToCap = {
     text_to_video: ['T2V','文生视频'],
     image_to_video: ['I2V','图生视频'],
@@ -50,48 +29,58 @@
     motion_control: ['V2V','动作控制'],
     video_processing: ['V2V','潜空间超分']
   };
-  const deriveSpecs = model => {
-    const preset = modelPresets[model.id] || modelPresets[model.model_id] || {};
-    const allProfiles = [...(model.team_profiles || []), ...(model.supplier_profiles || [])];
-    const primaryProfiles = (model.supplier_profiles?.some(p => p.max_resolution) ? model.supplier_profiles : model.team_profiles) || [];
-    const maxRes = [...new Set(primaryProfiles.map(p => p.max_resolution).filter(Boolean))].join(' / ') || preset.res || '768p';
-    let dur = preset.dur || '';
-    for (const p of allProfiles) {
-      if (p.duration_seconds) { dur = `${p.duration_seconds.minimum}S-${p.duration_seconds.maximum}S`; break; }
-      if (p.duration_choices_seconds?.length) {
-        const min = Math.min(...p.duration_choices_seconds), max = Math.max(...p.duration_choices_seconds);
-        dur = min === max ? `${min}S` : `${min}S-${max}S`;
-        break;
+  const profileFor = entry => {
+    const model = entry.model;
+    const team = (model.team_profiles || []).find(p => p.max_resolution || p.duration_seconds || p.duration_choices_seconds?.length || p.input_limits || p.aspect_ratios?.length);
+    const supplier = (model.supplier_profiles || [])[0];
+    return entry.channel.id === 'fal' ? team || supplier || null : supplier || team || null;
+  };
+  const modeFor = entry => profileFor(entry)?.mode || entry.model.team_profiles?.[0]?.mode || entry.model.supplier_profiles?.[0]?.mode;
+  const familyOf = entry => {
+    const {model, channel} = entry;
+    const match = String(model.upstream_model_id || '').match(/^(.*)\/(text-to-video|image-to-video|reference-to-video)$/);
+    const mode = { 'text-to-video':'text_to_video', 'image-to-video':'image_to_video', 'reference-to-video':'reference_to_video' }[match?.[2]];
+    const base = String(model.display_name || '').split(' · ');
+    if (!match || base.length !== 2 || modeFor(entry) !== mode || base[1] !== modes[mode]) return null;
+    return `${channel.id}:${match[1]}:${base[0]}`;
+  };
+  const displayRows = rows => {
+    const counts = new Map();
+    for (const row of rows) if (row.entries.length === 1) {
+      const key = familyOf(row.entries[0]);
+      if (key) counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    const merged = new Map(), result = [];
+    for (const row of rows) {
+      const key = row.entries.length === 1 && familyOf(row.entries[0]);
+      if (!key || counts.get(key) < 2) { result.push(row); continue; }
+      if (merged.has(key)) merged.get(key).entries.push(...row.entries);
+      else {
+        const item = {group:{id:`family:${key}`},entries:[...row.entries]};
+        merged.set(key,item); result.push(item);
       }
     }
-    if (!dur) dur = '4S-15S';
-    const fps = preset.fps || '24FPS';
-    const caps = [];
-    const seen = new Set();
-    for (const p of allProfiles) {
-      const pair = modeToCap[p.mode];
-      if (pair && !seen.has(pair[0] + pair[1])) { seen.add(pair[0] + pair[1]); caps.push(pair); }
-    }
-    if (!caps.length && preset.caps) caps.push(...preset.caps);
-    if (!caps.length) {
-      const fallback = modeToCap[model.business_type] || ['T2V','文生视频'];
-      caps.push(fallback);
-    }
-    let quota = preset.quota || '';
-    if (!quota) {
-      const lim = allProfiles.map(p => p.input_limits).find(Boolean);
-      if (lim) {
-        quota = (lim.images === 0 && lim.videos === 0 && lim.audio_files === 0)
-          ? '纯文本提示词驱动（0张图 · 0个视频 · 0个音频）'
-          : `最多 ${lim.images}张图 · ${lim.videos}个视频 · ${lim.audio_files}个音频`;
-      } else {
-        quota = '最多 9张图 · 3个视频 · 1个音频';
-      }
-    }
-    const maxSize = preset.maxSize || '≤ 50MB';
-    const ratios = [...new Set(allProfiles.flatMap(p => p.aspect_ratios || []))].join(' / ') || preset.ratios || '16:9 / 9:16 / 1:1';
-    const audioDesc = preset.audioDesc || '支持原生音画同步输出';
-    return { maxRes, dur, fps, caps, quota, maxSize, ratios, audioDesc };
+    return result;
+  };
+  const deriveSpecs = entries => {
+    const profiles = entries.map(profileFor);
+    const caps = [...new Map(profiles.map(p => p && modeToCap[p.mode]).filter(Boolean).map(pair => [pair[0],pair])).values()];
+    const resolution = [...new Set(profiles.map(p => p?.max_resolution).filter(Boolean))];
+    const duration = [...new Set(profiles.map(p => p?.duration_seconds
+      ? `${p.duration_seconds.minimum}S-${p.duration_seconds.maximum}S`
+      : p?.duration_choices_seconds?.length ? `${Math.min(...p.duration_choices_seconds)}S-${Math.max(...p.duration_choices_seconds)}S` : null).filter(Boolean))];
+    const ratiosByMode = profiles.map(p => (p?.aspect_ratios || []).join(' / '));
+    const ratios = ratiosByMode.every(value => value && value === ratiosByMode[0]) ? ratiosByMode[0] : entries.length > 1 ? '各模式见详情' : ratiosByMode[0] || '待核实';
+    const knownQuotas = entries.map((entry,index) => {
+      const limit = (entry.model.team_profiles || []).map(p => p.input_limits).find(Boolean);
+      const cap = profiles[index] && modeToCap[profiles[index].mode];
+      return limit && cap ? `${cap[0]} ${limit.images}图 · ${limit.videos}视频 · ${limit.audio_files}音频` : null;
+    }).filter(Boolean);
+    const quota = knownQuotas.length ? `${knownQuotas.join('；')}（适配器准入；${knownQuotas.length < entries.length ? '其余待核实；' : ''}未满额实测）` : '待验证';
+    const audioStates = profiles.map(p => p ? `${audio[p.audio_input] || '待核实'} / ${audio[p.audio_output] || '待核实'}` : '待核实');
+    const audioDesc = audioStates.every(value => value === audioStates[0]) ? audioStates[0] : '各模式见详情';
+    return { caps, quota, maxSize:'待验证', maxRes:resolution.length === 1 ? resolution[0] : resolution.length ? '各模式见详情' : '待核实',
+      dur:duration.length === 1 ? duration[0] : duration.length ? '各模式见详情' : '待核实', ratios, audioDesc };
   };
   function profiles(items, label) {
     if (!items.length) return `<p class="business-muted">${label}：规格待核实</p>`;
@@ -164,9 +153,17 @@
     card(group, entries) {
       const entry = entries[0];
       const model = entry.model;
-      const info = deriveSpecs(model);
+      const info = deriveSpecs(entries);
+      const familyKey = familyOf(entry);
+      const family = entries.length > 1 && familyKey && entries.every(e => familyOf(e) === familyKey);
+      const title = family ? model.display_name.split(' · ')[0] : model.display_name;
+      const upstreamId = family ? model.upstream_model_id.slice(0, model.upstream_model_id.lastIndexOf('/')) : model.upstream_model_id;
+      const description = family ? `${entries.length} 个视频生成端点；展开查看各模式的调用状态和规格。` : model.description;
+      const connected = entries.filter(e => this.data.execution?.fal?.[e.model.id]?.state === 'adapter_connected_unverified').length;
+      const catalogOnly = entries.filter(e => this.data.execution?.fal?.[e.model.id]?.state === 'catalog_only').length;
+      const summary = family && entry.channel.id === 'fal' ? `<p class="catalog-execution">${connected} 个端点已接入执行适配 · ${catalogOnly} 个仅目录收录；请查看各模式状态</p>` : '';
       const capPills = info.caps.map(([code, label]) => `<span class="cap-pill"><strong>${esc(code)}</strong> ${esc(label)}</span>`).join('');
-      return `<article class="business-card catalog-card" data-catalog-card><div class="model-head"><div><span class="business-muted">${esc(business[model.business_type] || model.business_type)}</span><h3>${esc(model.display_name)}</h3></div></div><p class="model-id-line">模型 ID：<code>${esc(model.upstream_model_id ?? "待核实")}</code></p><p class="model-desc">${esc(model.description)}</p><div class="model-cap-row">${capPills}</div><div class="model-quota-strip"><div class="model-quota-row"><span>参考文件配额</span><strong>${esc(info.quota)}</strong></div><div class="model-quota-row"><span>单次任务最大容量</span><strong>${esc(info.maxSize)}</strong></div></div><dl class="model-params"><dt>支持画幅</dt><dd>${esc(info.ratios)}</dd><dt>音频能力</dt><dd>${esc(info.audioDesc)}</dd></dl>${entries.length===1?this.executionStatus(entry):''}<div class="model-foot"><div class="tags model-tags" aria-label="输出规格胶囊"><span>${esc(info.maxRes)}</span><span>${esc(info.dur)}</span><span>${esc(info.fps)}</span></div></div><details data-catalog-entry="${esc(group.id)}" ${this.open.has(group.id)?'open':''}><summary>能力规格与审核状态</summary><div class="catalog-detail">${entries.map(e=>`<section>${this.executionStatus(e)}<p class="business-muted">${esc(review[e.model.identity_review])} · ${esc(e.model.billing_modes.map(b=>billing[b]).join(' / '))}</p>${profiles(e.model.team_profiles,'团队适配范围')}${profiles(e.model.supplier_profiles,'供应商声明范围')}</section>`).join('')}</div></details></article>`;
+      return `<article class="business-card catalog-card" data-catalog-card><div class="model-head"><div><span class="business-muted">${esc(business[model.business_type] || model.business_type)}</span><h3>${esc(title)}</h3></div></div><p class="model-id-line">模型 ID：<code>${esc(upstreamId ?? "待核实")}</code></p><p class="model-desc">${esc(description)}</p><div class="model-cap-row">${capPills}</div><div class="model-quota-strip"><div class="model-quota-row"><span>参考文件配额</span><strong>${esc(info.quota)}</strong></div><div class="model-quota-row"><span>单次任务最大容量</span><strong>${esc(info.maxSize)}</strong></div></div><dl class="model-params"><dt>支持画幅</dt><dd>${esc(info.ratios)}</dd><dt>音频输入 / 输出</dt><dd>${esc(info.audioDesc)}</dd></dl>${summary || (entries.length===1?this.executionStatus(entry):'')}<div class="model-foot"><div class="tags model-tags" aria-label="输出规格胶囊"><span>${esc(info.maxRes)}</span><span>${esc(info.dur)}</span></div></div><details data-catalog-entry="${esc(group.id)}" ${this.open.has(group.id)?'open':''}><summary>能力规格与审核状态</summary><div class="catalog-detail">${entries.map(e=>`<section><h4>${esc(e.model.display_name)}</h4><p class="model-id-line">端点 ID：<code>${esc(e.model.upstream_model_id ?? '待核实')}</code></p>${this.executionStatus(e)}<p class="business-muted">${esc(review[e.model.identity_review])} · ${esc(e.model.billing_modes.map(b=>billing[b]).join(' / '))}</p>${profiles(e.model.team_profiles,'团队适配范围')}${profiles(e.model.supplier_profiles,'供应商声明范围')}</section>`).join('')}</div></details></article>`;
     }
     renderResults() {
       if (!this.data) return;
@@ -177,19 +174,20 @@
         const {model,channel} = e, f = this.filters;
         return (f.channel==='all'||f.channel===channel.id) && (f.business==='all'||f.business===model.business_type) && `${model.display_name} ${model.description} ${model.upstream_model_id ?? ""}`.toLowerCase().includes(f.query.toLowerCase().trim());
       })})).filter(row=>row.entries.length);
-      this.root.querySelector('[data-catalog-count]').textContent = `${filtered.length} 个模型 · ${this.data.channels.length} 个渠道${this.data.conflicts.length ? ' · 部分模型身份资料冲突，已分开展示' : ''}`;
+      const visible = displayRows(filtered);
+      this.root.querySelector('[data-catalog-count]').textContent = `${visible.length} 个模型卡片 · ${filtered.reduce((sum,row)=>sum+row.entries.length,0)} 条目录能力 · ${this.data.channels.length} 个渠道${this.data.conflicts.length ? ' · 部分模型身份资料冲突，已分开展示' : ''}`;
       const results = this.root.querySelector('[data-catalog-results]');
       if (!filtered.length) { results.innerHTML = `<p class="empty">${this.data.groups.length?'暂无符合条件的模型。':'当前未收录模型。'}</p>`; return; }
       if (this.filters.view === 'channels') results.innerHTML = this.data.channels.map(channel=>{
         const order=new Map(channel.models.map((model,index)=>[model.id,index]));
-        const rows = filtered.map(row=>({...row,entries:row.entries.filter(e=>e.channel.id===channel.id)})).filter(row=>row.entries.length).sort((a,b)=>order.get(a.entries[0].model.id)-order.get(b.entries[0].model.id));
+        const rows = displayRows(filtered.map(row=>({...row,entries:row.entries.filter(e=>e.channel.id===channel.id)})).filter(row=>row.entries.length).sort((a,b)=>order.get(a.entries[0].model.id)-order.get(b.entries[0].model.id)));
         if (!rows.length) return '';
         const logo = channelLogos[channel.id] || channelLogos.local;
         const ver = `v${channel.version || channel.channel_version || '0.1.0'}`;
         const bill = channelBillingSummary[channel.id] || '按渠道计费';
         return `<section class="catalog-channel-section channel-group" data-channel-group="${esc(channel.id)}"><div class="channel-group-header"><div class="channel-group-title"><span class="channel-logo-badge">${logo}</span><h2>${esc(channel.display_name)}</h2></div><div class="channel-group-meta"><span class="channel-meta-pill">${esc(ver)}</span><span class="channel-meta-pill">${rows.length} 个模型</span><span class="channel-meta-pill">${esc(bill)}</span></div></div><div class="business-models">${rows.map(row=>this.card({...row.group,id:`${channel.id}/${row.group.id}`},row.entries)).join('')}</div></section>`;
       }).join('');
-      else results.innerHTML = `<div class="business-models">${filtered.map(row=>this.card(row.group,row.entries)).join('')}</div>`;
+      else results.innerHTML = `<div class="business-models">${visible.map(row=>this.card(row.group,row.entries)).join('')}</div>`;
     }
   }
   globalThis.VideoCatalogView = VideoCatalogView;

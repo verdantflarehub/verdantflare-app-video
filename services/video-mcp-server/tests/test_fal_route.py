@@ -185,6 +185,32 @@ class FalRouteTest(unittest.TestCase):
             self.assertEqual([request.method for request in calls], ["POST", "GET", "GET", "GET"])
             client.close()
 
+    def test_result_range_download_reassembles_exact_bytes_and_rejects_bad_ranges(self) -> None:
+        video = b"video" * 70000
+        calls = []
+        def handler(request):
+            self.assertEqual(request.url.host, "v3.fal.media")
+            self.assertNotIn("Authorization", request.headers)
+            span = request.headers["Range"].removeprefix("bytes=")
+            start, end = (int(value) for value in span.split("-"))
+            calls.append((start, end))
+            return httpx.Response(206, content=video[start:end + 1], headers={
+                "content-type":"video/mp4", "content-range":f"bytes {start}-{end}/{len(video)}"})
+        client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False)
+        executor = VideoExecutor(self.artifacts, self.tasks, client)
+        self.assertEqual(executor.fal._download("https://v3.fal.media/files/result.mp4"), video)
+        self.assertEqual(calls[0], (0, 0))
+        self.assertGreater(len(calls), 2)
+        client.close()
+
+        def corrupt(request):
+            return httpx.Response(206, content=b"x", headers={"content-type":"video/mp4", "content-range":"bytes 0-0/3"}) if request.headers["Range"] == "bytes=0-0" else httpx.Response(206, content=b"yz", headers={"content-type":"video/mp4", "content-range":"bytes 1-2/4"})
+        client = httpx.Client(transport=httpx.MockTransport(corrupt), follow_redirects=False)
+        executor = VideoExecutor(self.artifacts, self.tasks, client)
+        with self.assertRaisesRegex(FalError, "result_integrity_failed"):
+            executor.fal._download("https://v3.fal.media/files/result.mp4")
+        client.close()
+
     def test_missing_key_fails_closed_without_network_or_fallback(self) -> None:
         calls = []
         with mock.patch.dict(os.environ, {"FAL_KEY": ""}):

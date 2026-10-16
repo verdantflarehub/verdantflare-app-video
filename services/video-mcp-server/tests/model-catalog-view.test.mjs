@@ -32,12 +32,54 @@ test('default channel view follows channel order and shows supplier tiers separa
   assert.match(html, /class="channel-group-header"[\s\S]*<h2>Higgsfield<\/h2>/);
   assert.doesNotMatch(html, /class="catalog-channels"/);
   assert.doesNotMatch(html, /Higgsfield · 1080p/);
-  assert.match(html, /aria-label="输出规格胶囊"><span>1080p<\/span><span>4S-15S<\/span><span>24FPS<\/span>/);
-  assert.match(html, /aria-label="输出规格胶囊"><span>2K<\/span><span>4S-15S<\/span><span>24FPS<\/span>/);
+  assert.match(html, /aria-label="输出规格胶囊"><span>1080p<\/span><span>待核实<\/span>/);
+  assert.match(html, /aria-label="输出规格胶囊"><span>2K<\/span><span>待核实<\/span>/);
+  assert.doesNotMatch(html, /24FPS|≤ 50MB/);
   assert.match(html, /模型 ID：<code>待核实<\/code>/);
   view.filters.view = 'models';
   view.set({ ...view.data, snapshot_id: 'two' });
   assert.equal(view.filters.view, 'models');
+});
+
+test('fal H3 modes share one card without borrowing quotas or claiming a task-size maximum', () => {
+  const context = vm.createContext({});
+  vm.runInContext(readFileSync(new URL('../frontend/model-catalog.js', import.meta.url), 'utf8'), context);
+  const nodes = {};
+  const root = { innerHTML:'', addEventListener() {}, removeEventListener() {},
+    querySelectorAll: () => [], querySelector: selector => nodes[selector] ??= {} };
+  const view = new context.VideoCatalogView(root, async () => ({}));
+  const make = (mode,suffix,name,limit) => ({ id:`fal-h3-${suffix}`, display_name:`MiniMax H3 · ${name}`,
+    business_type:'video_generation', description:'', identity_review:'pending', billing_modes:[],
+    upstream_model_id:`minimax/h3/${suffix}`, supplier_profiles:[{ mode, max_resolution:'2K', duration_seconds:null,
+      duration_choices_seconds:[], aspect_ratios:[], input_limits:null, audio_input:'unknown', audio_output:'unknown',
+      review_status:'pending', verification_status:'unverified' }],
+    team_profiles:limit?[{ mode, max_resolution:'480p', duration_seconds:null, duration_choices_seconds:[],
+      aspect_ratios:['16:9'], input_limits:limit, audio_input:'supported', audio_output:'unknown',
+      review_status:'pending', verification_status:'unverified' }]:[] });
+  const fal = { id:'fal', display_name:'fal.ai', models:[
+    make('text_to_video','text-to-video','文生视频',null),
+    make('image_to_video','image-to-video','图生视频',null),
+    make('reference_to_video','reference-to-video','参考生视频',{ images:9,videos:3,audio_files:3 })
+  ] };
+  view.set({ state:'ready',snapshot_id:'h3',channels:[fal],conflicts:[],
+    execution:{ fal:Object.fromEntries(fal.models.map((m,i)=>[m.id,{state:i===2?'adapter_connected_unverified':'catalog_only'}])) },
+    groups:fal.models.map(m=>({id:m.id,entries:[{channel_id:'fal',entry_id:m.id}]})) });
+  const html = nodes['[data-catalog-results]'].innerHTML;
+  assert.equal((html.match(/data-catalog-card/g) || []).length,1);
+  assert.match(html, /<h3>MiniMax H3<\/h3>/);
+  assert.match(html, /<strong>T2V<\/strong>/);
+  assert.match(html, /<strong>I2V<\/strong>/);
+  assert.match(html, /<strong>R2V<\/strong>/);
+  assert.match(html, /R2V 9图 · 3视频 · 3音频（适配器准入；其余待核实；未满额实测）/);
+  assert.match(html, /单次任务最大容量<\/span><strong>待验证<\/strong>/);
+  assert.match(html, /1 个端点已接入执行适配 · 2 个仅目录收录/);
+  assert.match(html, /端点 ID：<code>minimax\/h3\/reference-to-video<\/code>/);
+  assert.doesNotMatch(html, /≤ 50MB|24FPS/);
+  assert.match(nodes['[data-catalog-count]'].textContent, /1 个模型卡片 · 3 条目录能力/);
+  view.filters.query = '图生视频';
+  view.renderResults();
+  assert.equal((nodes['[data-catalog-results]'].innerHTML.match(/data-catalog-card/g) || []).length,1);
+  assert.doesNotMatch(nodes['[data-catalog-results]'].innerHTML, /<strong>T2V<\/strong>/);
 });
 
 test('fal cards distinguish the one adapted endpoint from catalog-only entries', () => {
