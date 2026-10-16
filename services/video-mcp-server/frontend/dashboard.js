@@ -169,6 +169,7 @@ function notice(message, error = false) {
   $("notice").classList.toggle("error", error);
 }
 function clearMedia() {
+  window.studioReleaseMedia?.();
   modalUrls.forEach(URL.revokeObjectURL);
   modalUrls = [];
 }
@@ -455,6 +456,7 @@ async function mediaURL(id, taskId) {
   });
   if (modalTask !== taskId) throw new Error("详情已关闭");
   const url = URL.createObjectURL(blob);
+  window.studioRememberMedia?.(url, blob);
   modalUrls.push(url);
   return url;
 }

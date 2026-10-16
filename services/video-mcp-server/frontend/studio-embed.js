@@ -9,10 +9,14 @@ if (window.studioEmbedded) {
  const hostOrigin=new URL(location.href).origin;
  let next=0;const pending=new Map();
  const previews=new Map(),previewFocus=new Map(); let previewRevision=0;
+ const mediaBlobs=new Map();
+ window.studioRememberMedia=(url,blob)=>mediaBlobs.set(url,blob);
+ window.studioReleaseMedia=()=>{mediaBlobs.clear();window.studioClosePreview?.()};
  window.studioPreviewImage=async(url,title)=>{
   if(!url.startsWith('blob:'))throw Error('图片尚未准备好。');
   const epoch=++previewRevision,focus=document.activeElement;
-  const response=await fetch(url),blob=await response.blob();
+  const blob=mediaBlobs.get(url);
+  if(!blob)throw Error('图片尚未准备好，请重新打开详情。');
   if(blob.size>128*1024*1024)throw Error('图片过大，请下载查看。');
   const bytes=await blob.arrayBuffer(),id=++next;
   if(epoch!==previewRevision)return;
