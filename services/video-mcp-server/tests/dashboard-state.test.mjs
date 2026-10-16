@@ -58,3 +58,25 @@ test('task cards render Model x [Logo] Channel and 5 output tags without total f
   assert.match(tagsHtml, />R2V<\/span><span>720p<\/span><span>9:16<\/span><span>8S<\/span><span>24FPS<\/span>/);
   assert.doesNotMatch(tagsHtml, /192/);
 });
+
+test('task detail HTML and CSS match prototype v1.3 two-pane inspector, 380px stage, 3-col video grid, and affine zoom lightbox', () => {
+  const detailHtml = readFileSync(new URL('../frontend/task-detail.html', import.meta.url), 'utf8');
+  const dashboardHtml = readFileSync(new URL('../frontend/dashboard.html', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../frontend/dashboard.css', import.meta.url), 'utf8');
+  for (const html of [detailHtml, dashboardHtml]) {
+    assert.match(html, /id="taskDetail"[^>]*class="detail-shell"|class="detail-shell"[^>]*id="taskDetail"/);
+    assert.match(html, /class="inspect-layout"/);
+    assert.match(html, /id="detailIdentityBar"/);
+    assert.match(html, /id="backToTasksLink"/);
+    assert.match(html, /id="detailTriSteps"/);
+    assert.match(html, /id="detailOutputMeta"/);
+    assert.match(html, /id="imagePreviewStage"/);
+    assert.match(html, /id="zoomReadout"/);
+    assert.match(html, /id="zoomReset"/);
+  }
+  assert.doesNotMatch(css, /\.result-stage\{[^}]*width:640px/);
+  assert.match(css, /\.result-stage\{[^}]*width:100%;height:380px/);
+  assert.match(css, /\.result-stage video\{[^}]*max-height:348px[^}]*object-fit:contain[^}]*aspect-ratio:auto/);
+  assert.match(css, /\.inspect-layout\{display:grid;grid-template-columns:minmax\(0,0\.82fr\) minmax\(0,1\.18fr\);align-items:start\}/);
+  assert.match(css, /\.ref-video-grid\{display:grid!important;grid-template-columns:repeat\(3,minmax\(0,1fr\)\);gap:12px;width:100%\}/);
+});

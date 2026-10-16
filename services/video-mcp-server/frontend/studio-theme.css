@@ -804,19 +804,53 @@ html[data-embedded="true"] .modal-head {
   border-color: var(--line);
 }
 
-html[data-embedded="true"] .detail-heading {
+html[data-embedded="true"] .detail-shell {
+  background: var(--studio-panel) !important;
+  border-color: var(--vf-hairline-outer) !important;
+  box-shadow: inset 0 1px 0 0 var(--vf-hairline-inner), var(--vf-shadow-card) !important;
+}
+
+html[data-embedded="true"] .detail-heading,
+html[data-embedded="true"] .inspect-head,
+html[data-embedded="true"] .input-pane,
+html[data-embedded="true"] .result-controls,
+html[data-embedded="true"] .reference-caption,
+html[data-embedded="true"] .inspect-tech {
   border-color: var(--line) !important;
+}
+
+html[data-embedded="true"] .inspect-tech {
+  background: var(--ink-2) !important;
+}
+
+html[data-embedded="true"] .tri-step,
+html[data-embedded="true"] .output-meta span {
+  background: var(--ink-2) !important;
+  border-color: var(--line) !important;
+  color: var(--muted) !important;
+}
+
+html[data-embedded="true"] .tri-step.done {
+  color: var(--paper) !important;
+  border-color: var(--line-strong) !important;
+}
+
+html[data-embedded="true"] .tri-step.active {
+  color: var(--green) !important;
+  background: var(--studio-selected) !important;
+  border-color: var(--green) !important;
 }
 
 html[data-embedded="true"] .prompt-sheet,
 html[data-embedded="true"] .metric-card {
-  background: var(--studio-panel) !important;
+  background: var(--ink-2) !important;
   border-color: var(--line) !important;
   color: var(--paper) !important;
 }
 
 html[data-embedded="true"] .reference-preview,
-html[data-embedded="true"] .result-stage {
+html[data-embedded="true"] .result-stage,
+html[data-embedded="true"] .zoom-stage {
   background: var(--ink-2) !important;
   border-color: var(--line) !important;
 }
@@ -825,7 +859,8 @@ html[data-embedded="true"] .reference-caption strong {
   color: var(--paper) !important;
 }
 
-html[data-embedded="true"] .reference-link {
+html[data-embedded="true"] .reference-link,
+html[data-embedded="true"] .prompt-ref-chip {
   background: var(--studio-button) !important;
   border-color: var(--line) !important;
   color: var(--green) !important;
@@ -842,7 +877,7 @@ html[data-embedded="true"] #imagePreview {
 
 html[data-embedded="true"] .empty-factor-box,
 html[data-embedded="true"] .ref-empty-box {
-  background: var(--studio-panel) !important;
+  background: var(--ink-2) !important;
   border-color: var(--line) !important;
   color: var(--muted) !important;
 }

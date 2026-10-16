@@ -1,6 +1,23 @@
 "use strict";
 let detailRendered = false, resultArtifact = null, resultLoading = false;
 let currentTitleTask = null, titleEditRevision = 0;
+let zoomScale = 1, zoomTx = 0, zoomTy = 0, zoomDragging = false, zoomStartX = 0, zoomStartY = 0;
+function syncImageZoom() {
+  const img = $("imagePreviewImage");
+  if (img) img.style.transform = `translate3d(${zoomTx}px, ${zoomTy}px, 0) scale(${zoomScale})`;
+  if ($("zoomReadout")) $("zoomReadout").textContent = `${Math.round(zoomScale * 100)}%`;
+}
+function resetImageZoom() {
+  zoomScale = 1; zoomTx = 0; zoomTy = 0; zoomDragging = false;
+  $("imagePreviewStage")?.classList.remove("dragging");
+  syncImageZoom();
+}
+function openImagePreview(url, label) {
+  resetImageZoom();
+  $("imagePreviewTitle").textContent = `${label} · 游标仿射缩放 (0.5x – 5.0x)`;
+  $("imagePreviewImage").src = url;
+  if (!$("imagePreview").open) $("imagePreview").showModal();
+}
 function clearTaskDetail() {
   currentTitleTask = null;
   if ($("titleForm")) $("titleForm").hidden = true;
@@ -12,6 +29,9 @@ function clearTaskDetail() {
   $("detailContent").hidden = true;
   $("detailSubtitle").textContent = "";
   $("detailStatus").textContent = "";
+  if ($("detailIdentityBar")) $("detailIdentityBar").replaceChildren();
+  if ($("detailTriSteps")) $("detailTriSteps").replaceChildren();
+  if ($("detailOutputMeta")) $("detailOutputMeta").replaceChildren();
   $("taskPrompt").replaceChildren();
   $("taskParameters").replaceChildren();
   $("referenceGroups").replaceChildren();
@@ -19,6 +39,7 @@ function clearTaskDetail() {
   $("resultActions").replaceChildren();
   $("resultMessage").textContent = "";
   $("detailMessage").textContent = "请连接 MCP 以查看任务。";
+  resetImageZoom();
   $("imagePreview").close();
   $("imagePreviewImage").removeAttribute("src");
 }
@@ -40,6 +61,7 @@ function businessView() {
     if (el.dataset.nav === selected) el.setAttribute("aria-current", "page"); else el.removeAttribute("aria-current");
   });
   $("taskDetail").hidden = !detailTaskId;
+  if ($("backToTasksLink")) $("backToTasksLink").href = `${base}/dashboard#tasks`;
   if (detailTaskId) document.querySelector(".workspace-nav")?.remove();
   const crumb = $("videoBreadcrumb");
   const app = document.createElement("a"); app.href = `${base}/dashboard#tasks`; app.textContent = "Video MCP";
@@ -67,7 +89,8 @@ function promptReferences(prompt) {
     const id = `reference-${kind}-${Number(match[2])}`;
     if (document.getElementById(id)) {
       const button = document.createElement("button");
-      button.className = "reference-link";
+      button.type = "button";
+      button.className = "reference-link prompt-ref-chip";
       button.textContent = match[0];
       button.onclick = () => {
         document.querySelectorAll(".reference-focus").forEach(el => el.classList.remove("reference-focus"));
@@ -95,14 +118,11 @@ async function loadReference(reference, card, taskId, version) {
     if (kind === "images") {
       media.alt = reference.purpose || reference.filename || "参考图片";
       const button = document.createElement("button");
+      button.type = "button";
       button.className = "image-open";
       button.setAttribute("aria-label", `放大 ${card.dataset.label}`);
       button.append(media);
-      button.onclick = () => {
-        $("imagePreviewTitle").textContent = `${card.dataset.label} · ${reference.filename || "图片预览"}`;
-        $("imagePreviewImage").src = url;
-        $("imagePreview").showModal();
-      };
+      button.onclick = () => openImagePreview(url, `${card.dataset.label} · ${reference.filename || "图片预览"}`);
       preview.replaceChildren(button);
     } else {
       media.controls = true;
@@ -118,9 +138,9 @@ async function loadReference(reference, card, taskId, version) {
 }
 function renderReferences(task, version) {
   const definitions = [
-    ["images", "2. 参考图", "参考图", "Picture", 9, "张", "最大9张", "ref-image-grid"],
-    ["videos", "3. 参考视频", "参考视频", "Video", 3, "个", "最大3个", "ref-video-grid"],
-    ["audios", "4. 参考音频", "参考音频", "Audio", 1, "个", "最大1个", "ref-audio-list"],
+    ["images", "2. 参考图", "参考图", "Picture", 9, "张", "全局最大 9 张", "ref-image-grid"],
+    ["videos", "3. 参考视频", "参考视频", "Video", 3, "个", "全局最大 3 个", "ref-video-grid"],
+    ["audios", "4. 参考音频", "参考音频", "Audio", 1, "个", "全局最大 1 个", "ref-audio-list"],
   ];
   const pending = [];
   $("referenceGroups").replaceChildren();
@@ -129,11 +149,11 @@ function renderReferences(task, version) {
     const group = document.createElement("section");
     group.className = "reference-group input-factor-section";
     group.dataset.factorKind = kind;
-    group.innerHTML = `<div class="factor-header"><h3>${heading}</h3><span class="factor-quota">${quotaLabel} · ${references.length} / ${limit} ${unit}</span></div>`;
+    group.innerHTML = `<div class="factor-header pane-title"><h3>${heading} <small>（${quotaLabel}，不同模型上限不同）</small></h3><span class="factor-quota ${references.length === 0 ? "empty" : ""}">${references.length} / ${limit} ${unit}</span></div>`;
     if (!references.length) {
       const empty = document.createElement("div");
       empty.className = "empty-factor-box ref-empty-box";
-      empty.textContent = `未传入${emptyNoun}（0 / ${limit} ${unit}）`;
+      empty.innerHTML = `<span>未传入${emptyNoun}（0 / ${limit} ${unit}）</span><small>${quotaLabel} · 本次任务未传入该类参考素材</small>`;
       group.append(empty);
     } else {
       const cards = document.createElement("div");
@@ -144,7 +164,7 @@ function renderReferences(task, version) {
         card.id = `reference-${kind}-${index + 1}`;
         card.tabIndex = -1;
         card.dataset.label = `${prefix} ${index + 1}`;
-        card.innerHTML = `<div class="reference-preview ${kind === "images" ? "ref-image-thumb" : ""}">加载预览…</div><div class="reference-caption"><strong>${prefix} ${index + 1}</strong><span title="${escapeHTML(reference.filename || "")}">${escapeHTML(reference.filename || "素材不可用")}</span><p>${escapeHTML(reference.purpose || "")}</p></div>`;
+        card.innerHTML = `<span class="ref-slot-tag">${prefix} ${index + 1}</span><div class="reference-preview ${kind === "images" ? "ref-image-thumb" : kind === "videos" ? "ref-video-stage" : ""}">加载预览…</div><div class="reference-caption"><strong>${prefix} ${index + 1}</strong><span title="${escapeHTML(reference.filename || "")}">${escapeHTML(reference.filename || "素材不可用")}</span><p>${escapeHTML(reference.purpose || "")}</p></div>`;
         cards.append(card);
         pending.push([reference, card]);
       });
@@ -202,10 +222,59 @@ async function refreshTaskDetail(id, version) {
   modalTask = id;
   $("detailMessage").textContent = "";
   $("detailContent").hidden = false;
-  $("detailSubtitle").textContent = `${date(task.created_at)} · ${taskOperation(task)}`;
+  const res = taskResolution(task);
+  const specSummary = [res, task.aspect_ratio, task.duration_seconds != null ? `${task.duration_seconds}S` : null, taskFps(task)].filter(Boolean).join(" / ");
+  $("detailSubtitle").textContent = `${date(task.created_at)} · ${taskOperation(task)}${specSummary ? ` · 规格：${specSummary}` : ""}`;
   $("detailStatus").className = `detail-status ${task.status}`;
   $("detailStatus").textContent = taskStatusLabel(task);
-  $("outputCount").textContent = task.artifact || task.content_ref ? "1 个视频" : "0 / 1 个视频";
+  $("outputCount").textContent = task.artifact || task.content_ref ? "1 / 1 个视频产物" : "0 / 1 个视频";
+  if ($("detailIdentityBar")) {
+    const refCounts = {
+      images: (task.references || []).filter(r => r.kind === "images").length,
+      videos: (task.references || []).filter(r => r.kind === "videos").length,
+      audios: (task.references || []).filter(r => r.kind === "audios").length,
+    };
+    if (generationServices.has(task.service)) {
+      const modeCode = task.presentation?.generation_code;
+      const modeLabel = task.presentation?.generation_label;
+      $("detailIdentityBar").innerHTML =
+        `<span class="identity-channel detail-identity-pill"><strong class="identity-model">${escapeHTML(taskModel(task))}</strong> <span class="identity-separator" aria-hidden="true">×</span> ${channelLogo(task)}<span>${escapeHTML(taskRoute(task))}</span></span>` +
+        (modeCode ? `<span class="cap-pill"><strong>${escapeHTML(modeCode)}</strong>${modeLabel ? `<small>${escapeHTML(modeLabel)}</small>` : ""}</span>` : "") +
+        `<span class="factor-quota">四要素快照：1/1 提示词 · ${refCounts.images}/9 图 · ${refCounts.videos}/3 视频 · ${refCounts.audios}/1 音频</span>`;
+    } else {
+      $("detailIdentityBar").innerHTML =
+        `<span class="identity-channel detail-identity-pill"><strong>${escapeHTML(taskOperation(task))}</strong> <span class="identity-separator" aria-hidden="true">·</span> <span>${escapeHTML(taskService(task) || task.service || "视频处理")}</span></span>`;
+    }
+  }
+  if ($("detailTriSteps")) {
+    if (task.status === "succeeded") {
+      const archived = Boolean(task.artifact || task.content_ref);
+      $("detailTriSteps").innerHTML = `<span class="tri-step done">1. 令牌直通</span><span class="tri-step done">2. 推理完成</span><span class="tri-step ${archived ? "done" : "active"}">3. ${archived ? "已归档" : "待获取产物"}</span>`;
+    } else if (task.status === "failed" || task.status === "cancelled") {
+      $("detailTriSteps").innerHTML = `<span class="tri-step done">1. 令牌直通</span><span class="tri-step fail">2. ${task.status === "cancelled" ? "任务已取消" : "推理中断"}</span><span class="tri-step">3. 未归档</span>`;
+    } else {
+      $("detailTriSteps").innerHTML = `<span class="tri-step done">1. 令牌直通</span><span class="tri-step active">2. ${task.status === "queued" ? "排队等待中" : "引擎推理中"}</span><span class="tri-step">3. 产物归档</span>`;
+    }
+  }
+  if ($("detailOutputMeta")) {
+    const pills = [];
+    if (generationServices.has(task.service)) {
+      pills.push(`<span class="identity-channel">${escapeHTML(taskModel(task))} × ${channelLogo(task)}${escapeHTML(taskRoute(task))}</span>`);
+      if (task.presentation?.generation_code) {
+        pills.push(`<span>${escapeHTML(task.presentation.generation_code)}${task.presentation.generation_label ? ` (${escapeHTML(task.presentation.generation_label)})` : ""}</span>`);
+      }
+      if (res) pills.push(`<span>${escapeHTML(res)}</span>`);
+      if (task.aspect_ratio) pills.push(`<span>${escapeHTML(task.aspect_ratio)}</span>`);
+      if (task.duration_seconds != null) pills.push(`<span>${escapeHTML(task.duration_seconds)}S</span>`);
+      const fps = taskFps(task);
+      if (fps) pills.push(`<span>${escapeHTML(fps)}</span>`);
+    } else {
+      pills.push(`<span>${escapeHTML(taskOperation(task))}</span>`);
+      if (task.media?.width && task.media?.height) pills.push(`<span>${escapeHTML(task.media.width)}×${escapeHTML(task.media.height)}</span>`);
+      if (task.media?.frame_rate) pills.push(`<span>${escapeHTML(task.media.frame_rate)}FPS</span>`);
+    }
+    $("detailOutputMeta").innerHTML = pills.join("");
+  }
   const rows = [["任务 ID", task.video_task_id], ["项目 ID", task.project_id], ["幂等键", task.idempotency_key], ["模型", taskModel(task)], ["渠道", taskRoute(task)], ["生成类型", task.presentation?.generation_code ? `${task.presentation.generation_code} · ${task.presentation.generation_label}` : "未记录"], ["执行后端", task.route || task.service || "未记录"], ["执行实例", task.execution_instance_id || "未上报"], ["开始时间", date(task.created_at)], ["排队时间", seconds(task.timing?.queue_seconds)], ["运行时间", seconds(task.timing?.processing_seconds ?? task.timing?.processing_elapsed_seconds)], ["总耗时", seconds(task.timing?.total_seconds)], ["时长 / 画幅", `${task.duration_seconds}s · ${task.aspect_ratio}`], ["Seed", task.seed], ["Runtime 版本", task.runtime_version], ["输入摘要", task.input_digest]];
   if (task.service === "higgsfield") {
     rows.splice(rows.findIndex(([label]) => label === "总耗时"), 1);
@@ -234,12 +303,14 @@ async function refreshTaskDetail(id, version) {
     if ((task.artifact || task.content_ref) && !resultArtifact) await loadTaskResult(task, version);
     else if (!task.artifact && !task.content_ref && !resultLoading && !$("resultActions").children.length) {
       $("videoArea").textContent = "任务已完成，等待获取视频结果。";
+      $("resultMessage").textContent = "点击右侧按钮同步并加载视频产物";
       const button = document.createElement("button"); button.className = "button primary"; button.textContent = "获取视频结果";
       button.onclick = async () => { button.disabled = true; await loadTaskResult(task, version, true); button.disabled = false; };
       $("resultActions").replaceChildren(button);
     }
   } else {
     $("videoArea").textContent = task.status === "failed" ? `生成失败：${task.error?.message || task.error?.code || "请查看任务信息"}` : task.status === "cancelled" ? "任务已取消" : `${taskStatusLabel(task)}，结果就绪后将在这里显示。`;
+    $("resultMessage").textContent = task.status === "failed" ? "本次任务在推理阶段中断，未产生可下载视频" : task.status === "cancelled" ? "本次任务已取消" : "引擎推理中，完成后可在线预览与下载";
   }
 }
 window.addEventListener("hashchange", businessView);
@@ -281,6 +352,51 @@ window.addEventListener("DOMContentLoaded", () => {
       $("titleMessage").textContent = error.message;
     } finally { $("saveTitle").disabled = false; }
   };
+  const stage = $("imagePreviewStage");
+  if (stage) {
+    stage.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      const rect = stage.getBoundingClientRect();
+      const cx = event.clientX - rect.left - rect.width / 2;
+      const cy = event.clientY - rect.top - rect.height / 2;
+      const next = Math.max(0.5, Math.min(5, zoomScale * (event.deltaY < 0 ? 1.15 : 1 / 1.15)));
+      const r = next / zoomScale;
+      zoomTx = cx - (cx - zoomTx) * r;
+      zoomTy = cy - (cy - zoomTy) * r;
+      zoomScale = next;
+      syncImageZoom();
+    }, { passive: false });
+    stage.addEventListener("pointerdown", (event) => {
+      zoomDragging = true;
+      zoomStartX = event.clientX - zoomTx;
+      zoomStartY = event.clientY - zoomTy;
+      stage.classList.add("dragging");
+      stage.setPointerCapture?.(event.pointerId);
+    });
+    stage.addEventListener("pointermove", (event) => {
+      if (!zoomDragging) return;
+      zoomTx = event.clientX - zoomStartX;
+      zoomTy = event.clientY - zoomStartY;
+      syncImageZoom();
+    });
+    const stopDrag = () => { zoomDragging = false; stage.classList.remove("dragging"); };
+    stage.addEventListener("pointerup", stopDrag);
+    stage.addEventListener("pointercancel", stopDrag);
+  }
+  $("imagePreview")?.addEventListener("click", (event) => {
+    const stepBtn = event.target.closest("[data-zstep]");
+    if (stepBtn) {
+      zoomScale = Math.max(0.5, Math.min(5, zoomScale + Number(stepBtn.dataset.zstep)));
+      syncImageZoom();
+      return;
+    }
+    if (event.target.closest("#zoomReset")) {
+      resetImageZoom();
+    }
+  });
   $("closeImagePreview").onclick = () => $("imagePreview").close();
-  $("imagePreview").addEventListener("close", () => $("imagePreviewImage").removeAttribute("src"));
+  $("imagePreview").addEventListener("close", () => {
+    resetImageZoom();
+    $("imagePreviewImage").removeAttribute("src");
+  });
 });
