@@ -394,11 +394,14 @@ class VideoExecutor:
                  duration_seconds: int, aspect_ratio: str,
                  references: dict[str, list[dict[str, str]]], route: str | None = None,
                  quality_profile: str | None = None, mode: str | None = None,
-                 resolution: str | None = None, postprocess: dict | None = None) -> TaskRecord:
+                 resolution: str | None = None, postprocess: dict | None = None,
+                 channel_account_id: str | None = None, budget_limit: str | None = None) -> TaskRecord:
         project_id = require_project_id(project_id)
         if not idempotency_key.strip() or len(idempotency_key) > 128:
             raise ValueError("idempotency_key is invalid")
         route = route or self.runtime_route
+        if route != 'fal' and (channel_account_id is not None or budget_limit is not None):
+            raise ValueError('channel_budget_not_supported')
         from .delivery import normalize, authorize
         normalize(postprocess, route)
         if route == "higgsfield":
@@ -417,7 +420,8 @@ class VideoExecutor:
         if route == "fal":
             return self.fal.generate(project_id=project_id, idempotency_key=idempotency_key,
                                      model=model, prompt=prompt, duration_seconds=duration_seconds,
-                                     aspect_ratio=aspect_ratio, references=references)
+                                     aspect_ratio=aspect_ratio, references=references,
+                                     channel_account_id=channel_account_id, budget_limit=budget_limit)
         request, digest = self._normalize(project_id, model, prompt, duration_seconds, aspect_ratio,
                                           references, route, quality_profile)
         request, digest = self.delivery.prepare(request, digest, postprocess, check=False)

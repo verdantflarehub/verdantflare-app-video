@@ -182,7 +182,11 @@ class DashboardTest(unittest.TestCase):
         async def poll_once():
             await asyncio.sleep(3600)
         with mock.patch.object(server, 'dashboard', self.dashboard), mock.patch.object(self.dashboard, 'poll', poll_once), \
-             mock.patch.object(server, 'artifacts', self.artifacts), mock.patch.object(server, 'tasks', self.tasks):
+             mock.patch.object(server, 'artifacts', self.artifacts), mock.patch.object(server, 'tasks', self.tasks), \
+             mock.patch.object(server, 'executor', self.executor), \
+             mock.patch.object(self.executor.delivery, 'sync', return_value=None), \
+             mock.patch.object(server.registry, 'start', new_callable=mock.AsyncMock), \
+             mock.patch.object(server.registry, 'stop', new_callable=mock.AsyncMock):
             with TestClient(server.app) as client:
                 self.assertEqual(client.get('/health').status_code, 200)
                 response = client.post('/mcp', headers={**self.headers, 'Host':'localhost:8000', 'Accept':'application/json, text/event-stream'},

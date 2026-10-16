@@ -46,6 +46,8 @@ class FalRouteTest(unittest.TestCase):
             os.environ,
             {
                 "FAL_KEY": "test-fal-key",
+                "FAL_GATEWAY_URL": "http://video-fal-gateway:8001",
+                "FAL_GATEWAY_TOKEN": "g" * 40,
                 "FAL_QUEUE_BASE_URL": "https://queue.fal.run",
                 "FAL_MODEL_ID": "attacker/override-must-be-ignored",
                 "FAL_RUNTIME_VERSION": "attacker-version",
@@ -54,9 +56,12 @@ class FalRouteTest(unittest.TestCase):
             },
         )
         self.environment.start()
+        self.authority = mock.patch('app.delivery.authorize', return_value={'organization_id': 'org-one'})
+        self.authority.start()
 
     def tearDown(self) -> None:
         self.environment.stop()
+        self.authority.stop()
         self.temporary.cleanup()
 
     def inputs(self, **updates):
@@ -73,6 +78,7 @@ class FalRouteTest(unittest.TestCase):
                 "audios": [],
             },
             "route": "fal",
+            "budget_limit": "1.00",
         }
         value.update(updates)
         return value
@@ -111,7 +117,13 @@ class FalRouteTest(unittest.TestCase):
 
         client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False)
         executor = VideoExecutor(self.artifacts, self.tasks, client)
-        submitted = executor.generate(**self.inputs())
+        legacy_inputs = self.inputs()
+        for key in ('route', 'idempotency_key', 'budget_limit'):
+            legacy_inputs.pop(key)
+        normalized, digest = executor.fal.normalize(**legacy_inputs)
+        submitted = self.tasks.create(project_id='demo', idempotency_key='historical', input_digest=digest,
+                                      request=normalized, runtime_task_id='fal-request-001', status='queued')
+        submitted = self.tasks.update(submitted, service='fal', runtime_route='fal', runtime_version='video-fal-adapter-v0.2.2')
         self.assertEqual((submitted.service, submitted.runtime_route), ("fal", "fal"))
         self.assertEqual(submitted.runtime_task_id, "fal-request-001")
         self.assertNotIn("test-fal-key", submitted.model_dump_json())
@@ -146,7 +158,7 @@ class FalRouteTest(unittest.TestCase):
         self.assertIsNotNone(result.artifact_id)
         self.assertEqual(result.media["frame_rate"], 24)
         self.assertEqual(executor.result(submitted.video_task_id).artifact_id, result.artifact_id)
-        self.assertEqual([call.method for call in calls], ["POST", "GET", "GET", "GET"])
+        self.assertEqual([call.method for call in calls], ["GET", "GET", "GET"])
         client.close()
 
     def test_gateway_new_tasks_keep_legacy_recovery_boundary(self) -> None:
@@ -157,15 +169,17 @@ class FalRouteTest(unittest.TestCase):
             calls.append(request)
             if request.method == "POST":
                 self.assertEqual(request.url.host, "video-fal-gateway")
-                self.assertEqual(request.url.path, "/v1/submissions")
+                self.assertEqual(request.url.path, "/v1/calls")
                 self.assertEqual(request.headers["X-Organization-Id"], "org-one")
                 self.assertEqual(request.headers["Authorization"], "Bearer " + "g" * 40)
                 self.assertEqual(json.loads(request.content)["model_id"], "minimax/h3/reference-to-video")
-                return httpx.Response(200, json={"id": gateway_id, "state": "queued"})
+                self.assertEqual(json.loads(request.content)['budget_limit'], '1.00')
+                self.assertEqual(request.headers['X-Caller-Id'], 'video-mcp')
+                return httpx.Response(200, json={"call_id": gateway_id, "state": "queued", "accepted": True})
             if request.url.path.endswith("/result"):
                 return httpx.Response(200, json={"video_url": "https://v3.fal.media/files/result.mp4"})
             if request.url.host == "video-fal-gateway":
-                return httpx.Response(200, json={"state": "completed", "failed": False,
+                return httpx.Response(200, json={"state": "completed", "failed": False, "accepted": True,
                                                 "metrics": {"inference_time": 9.5}})
             return httpx.Response(200, content=b"video-bytes", headers={"content-type": "video/mp4"})
 
@@ -175,7 +189,7 @@ class FalRouteTest(unittest.TestCase):
             client = httpx.Client(transport=httpx.MockTransport(handler))
             executor = VideoExecutor(self.artifacts, self.tasks, client)
             record = executor.generate(**self.inputs(idempotency_key="gateway-1"))
-            self.assertEqual(record.runtime_version, "video-fal-gateway-v0.1.0")
+            self.assertEqual(record.runtime_version, "fal-channel-v1")
             self.assertEqual(record.runtime_task_id, gateway_id)
             self.assertEqual(record.request["organization_id"], "org-one")
             self.assertEqual(executor.status(record.video_task_id).status, "succeeded")
@@ -223,10 +237,76 @@ class FalRouteTest(unittest.TestCase):
             with mock.patch("app.providers.fal.time.monotonic", side_effect=[0, 10, 91]):
                 with self.assertRaisesRegex(FalError, "result_download_failed"):
                     executor.fal._download("https://v3.fal.media/files/result.mp4")
+    def test_channel_timeout_recovers_by_original_operation_without_resubmit(self):
+        requests = []
+        recovered = False
+        channel_id = '22222222-2222-4222-8222-222222222222'
+        def handler(request):
+            requests.append(request)
+            if request.method == 'POST':
+                raise httpx.ReadTimeout('mock interrupted response', request=request)
+            if '/by-idempotency/' in request.url.path:
+                if not recovered:
+                    return httpx.Response(404, json={'error': 'call_not_found'})
+                return httpx.Response(200, json={'call_id': channel_id, 'state': 'queued', 'accepted': True})
+            self.assertEqual(request.url.path, '/v1/calls/' + channel_id)
+            return httpx.Response(200, json={'call_id': channel_id, 'state': 'completed', 'accepted': True})
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            executor = VideoExecutor(self.artifacts, self.tasks, client)
+            record = executor.generate(**self.inputs(idempotency_key='lost-response'))
+            self.assertEqual(record.runtime_stage, 'submission_unknown')
+            self.assertEqual(record.status, 'queued')
+            from app.dashboard import Dashboard
+            Dashboard(executor).recover_incomplete_submissions()
+            self.assertEqual(self.tasks.get(record.video_task_id).status, 'queued')
+            self.assertEqual(executor.status(record.video_task_id).runtime_stage, 'submission_unknown')
+            recovered = True
+            found = executor.status(record.video_task_id)
+            self.assertEqual(found.runtime_task_id, channel_id)
+            self.assertEqual(executor.status(record.video_task_id).status, 'succeeded')
+            self.assertEqual(executor.generate(**self.inputs(idempotency_key='lost-response')).video_task_id, record.video_task_id)
+            self.assertEqual(sum(r.method == 'POST' for r in requests), 1)
+
+    def test_legacy_gateway_task_uses_original_query_path(self):
+        requests = []
+        def handler(request):
+            requests.append(request)
+            self.assertEqual(request.method, 'GET')
+            self.assertEqual(request.url.path, '/v1/submissions/legacy-gateway-call')
+            return httpx.Response(200, json={'state': 'completed'})
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            executor = VideoExecutor(self.artifacts, self.tasks, client)
+            record = self.tasks.create(project_id='demo', idempotency_key='legacy-gateway', input_digest='old',
+                request={'organization_id': 'org-one'}, runtime_task_id='legacy-gateway-call', status='queued')
+            record = self.tasks.update(record, service='fal', runtime_route='fal', runtime_version='video-fal-gateway-v0.1.0')
+            self.assertEqual(executor.status(record.video_task_id).status, 'succeeded')
+            self.assertEqual(len(requests), 1)
+
+    def test_direct_key_cannot_create_new_task_and_budget_changes_conflict(self):
+        with mock.patch.dict(os.environ, {'FAL_GATEWAY_TOKEN': ''}):
+            with httpx.Client(transport=httpx.MockTransport(lambda request: self.fail('direct submission'))) as client:
+                record = VideoExecutor(self.artifacts, self.tasks, client).generate(**self.inputs(idempotency_key='direct-disabled'))
+                self.assertEqual(record.error['code'], 'provider_auth_not_configured')
+        with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200,
+                         json={'call_id': 'new-call', 'state': 'queued', 'accepted': True}))) as client:
+            executor = VideoExecutor(self.artifacts, self.tasks, client)
+            executor.generate(**self.inputs(idempotency_key='budget'))
+            from app.tasks import TaskConflict
+            with self.assertRaises(TaskConflict):
+                executor.generate(**self.inputs(idempotency_key='budget', budget_limit='2.00'))
+
+    def test_result_corrupt_range_is_rejected(self):
+        def corrupt(request):
+            return httpx.Response(206, content=b"x", headers={"content-type":"video/mp4", "content-range":"bytes 0-0/3"}) if request.headers.get("Range") == "bytes=0-0" else httpx.Response(206, content=b"yz", headers={"content-type":"video/mp4", "content-range":"bytes 1-2/4"})
+        client = httpx.Client(transport=httpx.MockTransport(corrupt), follow_redirects=False)
+        executor = VideoExecutor(self.artifacts, self.tasks, client)
+        with self.assertRaisesRegex(FalError, "result_download_failed"):
+            executor.fal._download("https://v3.fal.media/files/result.mp4")
+        client.close()
 
     def test_missing_key_fails_closed_without_network_or_fallback(self) -> None:
         calls = []
-        with mock.patch.dict(os.environ, {"FAL_KEY": ""}):
+        with mock.patch.dict(os.environ, {"FAL_KEY": "", 'FAL_GATEWAY_TOKEN': ''}):
             client = httpx.Client(
                 transport=httpx.MockTransport(lambda request: calls.append(request) or httpx.Response(500))
             )
@@ -271,8 +351,8 @@ class FalRouteTest(unittest.TestCase):
         submitted = {}
 
         def handler(request):
-            submitted.update(json.loads(request.content))
-            return httpx.Response(200, json={"request_id": "fal-multimodal-001"})
+            submitted.update(json.loads(request.content)['payload'])
+            return httpx.Response(200, json={"call_id": "fal-multimodal-001", "state": "queued", "accepted": True})
 
         client = httpx.Client(transport=httpx.MockTransport(handler))
         executor = VideoExecutor(self.artifacts, self.tasks, client)

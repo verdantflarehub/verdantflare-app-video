@@ -8,6 +8,8 @@ import re
 import subprocess
 import tempfile
 import time
+import uuid
+from decimal import Decimal, InvalidOperation
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
@@ -22,6 +24,7 @@ FAL_MODEL_ID = "minimax/h3/reference-to-video"
 FAL_QUEUE_MODEL_ID = "minimax/h3"
 FAL_RUNTIME_VERSION = "video-fal-adapter-v0.2.2"
 FAL_GATEWAY_RUNTIME_VERSION = "video-fal-gateway-v0.1.0"
+FAL_CHANNEL_RUNTIME_VERSION = "fal-channel-v1"
 FAL_RESOLUTION = "480P"
 FAL_REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,255}")
 MAX_FAL_IMAGE_BYTES = 20 * 1024 * 1024
@@ -46,7 +49,7 @@ class FalAdapter:
             os.environ.get("FAL_QUEUE_BASE_URL", "https://queue.fal.run")
         )
         self.model_id = FAL_MODEL_ID
-        self.runtime_version = FAL_GATEWAY_RUNTIME_VERSION if self.gateway_url and self.gateway_token else FAL_RUNTIME_VERSION
+        self.runtime_version = FAL_CHANNEL_RUNTIME_VERSION
         self.resolution = FAL_RESOLUTION
 
     @staticmethod
@@ -70,17 +73,24 @@ class FalAdapter:
         return f"https://{host}" if port in {None, 443} else f"https://{host}:{port}"
 
     def connected(self) -> bool:
-        return bool(self.gateway_url and self.gateway_token) or bool(self.key)
+        return bool(self.gateway_url and self.gateway_token)
 
     def _gateway_headers(self, organization_id: str) -> dict[str, str]:
         if not self.gateway_url or not self.gateway_token or not organization_id:
             raise FalError("fal_gateway_not_configured")
         return {"Authorization": "Bearer " + self.gateway_token,
-                "X-Organization-Id": organization_id, "Content-Type": "application/json"}
+                "X-Organization-Id": organization_id, "X-Caller-Id": "video-mcp", "Content-Type": "application/json"}
 
     @staticmethod
     def _gateway_record(record: TaskRecord) -> bool:
-        return record.runtime_version == FAL_GATEWAY_RUNTIME_VERSION
+        return record.runtime_version in {FAL_GATEWAY_RUNTIME_VERSION, FAL_CHANNEL_RUNTIME_VERSION}
+
+    @staticmethod
+    def _channel_record(record: TaskRecord) -> bool:
+        return record.runtime_version == FAL_CHANNEL_RUNTIME_VERSION
+
+    def _gateway_task_path(self, record: TaskRecord) -> str:
+        return ('/v1/calls/' if self._channel_record(record) else '/v1/submissions/') + record.runtime_task_id
 
     def authorize_record(self, record: TaskRecord) -> None:
         if not self._gateway_record(record):
@@ -257,6 +267,8 @@ class FalAdapter:
         duration_seconds: int,
         aspect_ratio: str,
         references: dict[str, list[dict[str, str]]],
+        channel_account_id: str | None = None,
+        budget_limit: str | None = None,
     ) -> TaskRecord:
         request, digest = self.normalize(
             project_id=project_id,
@@ -266,6 +278,21 @@ class FalAdapter:
             aspect_ratio=aspect_ratio,
             references=references,
         )
+        if channel_account_id is not None:
+            try:
+                request['channel_account_id'] = str(uuid.UUID(channel_account_id))
+            except (ValueError, TypeError, AttributeError):
+                raise ValueError('invalid_channel_account') from None
+        if budget_limit is not None:
+            try:
+                if not isinstance(budget_limit, str) or not 1 <= len(budget_limit) <= 32:
+                    raise ValueError('invalid_budget_limit')
+                ceiling = Decimal(budget_limit)
+                if not ceiling.is_finite() or not 0 < ceiling <= Decimal('1e15') or ceiling.as_tuple().exponent < -8:
+                    raise ValueError('invalid_budget_limit')
+                request['budget_limit'] = format(ceiling, 'f')
+            except InvalidOperation:
+                raise ValueError('invalid_budget_limit') from None
         if self.gateway_url and self.gateway_token:
             from ..delivery import authorize
             actor = authorize(self.executor.client, project_id)
@@ -310,24 +337,27 @@ class FalAdapter:
                 ),
             )
         try:
-            if self._gateway_record(record):
-                response = self.executor.client.post(
-                    self.gateway_url + "/v1/submissions",
-                    headers=self._gateway_headers(str(request["organization_id"])),
-                    json={"operation_id": record.video_task_id, "model_id": self.model_id, "payload": payload},
-                    timeout=75,
-                )
-            else:
-                response = self.executor.client.post(
-                    self._request_url(), headers=self._headers(), json=payload, timeout=60,
-                )
+            response = self.executor.client.post(
+                self.gateway_url + "/v1/calls",
+                headers=self._gateway_headers(str(request["organization_id"])),
+                json={"idempotency_key": record.video_task_id, "task_id": record.video_task_id,
+                      "model_id": self.model_id, "capability": "video", "payload": payload,
+                      "account_id": request.get('channel_account_id'), "budget_limit": request.get('budget_limit')},
+                timeout=75,
+            )
         except (httpx.ConnectError, httpx.ConnectTimeout):
+            if self._channel_record(record):
+                return self.executor.tasks.update(record, status='queued', runtime_stage='submission_unknown',
+                    error=self._safe_error('submission_unconfirmed', 'query the original channel operation; do not resubmit'))
             return self.executor.tasks.update(
                 record,
                 status="failed",
                 error=self._safe_error("provider_unavailable", "fal is unreachable; generation was not submitted"),
             )
         except httpx.HTTPError:
+            if self._channel_record(record):
+                return self.executor.tasks.update(record, status='queued', runtime_stage='submission_unknown',
+                    error=self._safe_error('submission_unconfirmed', 'query the original channel operation; do not resubmit'))
             return self.executor.tasks.update(
                 record,
                 status="failed",
@@ -336,14 +366,35 @@ class FalAdapter:
                 ),
             )
         if not response.is_success:
+            if self._channel_record(record) and response.status_code not in {400, 401, 403, 404, 409, 422, 429}:
+                return self.executor.tasks.update(record, status='queued', runtime_stage='submission_unknown',
+                    error=self._safe_error('submission_unconfirmed', 'channel acceptance is unknown; query the original operation'))
+            try:
+                code = response.json().get('error')
+            except (ValueError, AttributeError):
+                code = None
+            messages = {'cost_unknown': 'provide an explicit USD budget limit before submitting',
+                        'budget_exceeded': 'channel account budget is insufficient',
+                        'daily_limit_reached': 'channel daily task limit reached',
+                        'account_required': 'select an account or configure the channel default',
+                        'account_disabled': 'the selected channel account is disabled',
+                        'authorization_not_verified': 'verify the channel account authorization',
+                        'historical_cost_unknown': 'historical channel costs require reconciliation',
+                        'proxy_unavailable': 'the configured channel proxy is unavailable',
+                        'legacy_call_requires_recovery': 'recover the existing task through its original route'}
+            if isinstance(code, str) and code in messages:
+                return self.executor.tasks.update(record, status='failed', error=self._safe_error(code, messages[code]))
             return self.executor.tasks.update(
                 record, status="failed", error=self._response_error(response, submission=True)
             )
         try:
-            request_id = response.json()["id" if self._gateway_record(record) else "request_id"]
+            request_id = response.json()["call_id" if self._channel_record(record) else "id" if self._gateway_record(record) else "request_id"]
             if not isinstance(request_id, str) or not FAL_REQUEST_ID_PATTERN.fullmatch(request_id):
                 raise ValueError
         except (ValueError, KeyError, TypeError):
+            if self._channel_record(record):
+                return self.executor.tasks.update(record, status='queued', runtime_stage='submission_unknown',
+                    error=self._safe_error('submission_unconfirmed', 'channel acceptance is unknown; query the original operation'))
             return self.executor.tasks.update(
                 record,
                 status="failed",
@@ -352,7 +403,14 @@ class FalAdapter:
                 ),
             )
         gateway_state = response.json().get("state") if self._gateway_record(record) else "queued"
-        if gateway_state == "submission_unconfirmed":
+        if self._channel_record(record):
+            accepted = response.json().get('accepted')
+            if accepted is False:
+                return self.executor.tasks.update(record, runtime_task_id=request_id, status='failed',
+                    error=self._safe_error('provider_rejected', 'channel did not accept the request'))
+            if accepted is not True:
+                gateway_state = 'acceptance_unknown'
+        if gateway_state in {"submission_unconfirmed", "acceptance_unknown"}:
             return self.executor.tasks.update(record, runtime_task_id=request_id,
                 runtime_stage="submission_unknown", status="queued",
                 error=self._safe_error("submission_unconfirmed", "fal submission requires manual reconciliation"))
@@ -366,27 +424,42 @@ class FalAdapter:
         if record.status in {"succeeded", "failed", "cancelled"}:
             return record
         if self._gateway_record(record):
-            if not record.runtime_task_id:
+            if not record.runtime_task_id and not self._channel_record(record):
                 return self.executor.tasks.update(record, status="failed",
                     error=self._safe_error("remote_state_unknown", "fal gateway task identity is unavailable"))
             try:
-                response = self.executor.client.get(self.gateway_url + "/v1/submissions/" + record.runtime_task_id,
+                path = self._gateway_task_path(record) if record.runtime_task_id else '/v1/calls/by-idempotency/' + record.video_task_id
+                response = self.executor.client.get(self.gateway_url + path,
                     headers=self._gateway_headers(str(record.request.get("organization_id", ""))), timeout=20)
+                if response.status_code == 404 and self._channel_record(record) and not record.runtime_task_id:
+                    return self.executor.tasks.update(record, status='queued', runtime_stage='submission_unknown',
+                        error=self._safe_error('submission_unconfirmed', 'original operation is not yet recoverable; do not resubmit'))
                 response.raise_for_status()
                 data = response.json()
+                if self._channel_record(record) and not record.runtime_task_id:
+                    call_id = data['call_id']
+                    if not isinstance(call_id, str) or not FAL_REQUEST_ID_PATTERN.fullmatch(call_id):
+                        raise ValueError('invalid_call_id')
+                    record = self.executor.tasks.update(record, runtime_task_id=call_id)
             except (httpx.HTTPError, ValueError, KeyError, TypeError) as error:
                 raise FalError("provider_unavailable") from error
             state = data.get("state")
-            if state in {"submission_unconfirmed", "queued", "in_queue"}:
+            if self._channel_record(record):
+                if data.get('accepted') is False:
+                    state = 'rejected'
+                elif data.get('accepted') is not True:
+                    state = 'acceptance_unknown'
+            if state in {"submission_unconfirmed", "acceptance_unknown", "queued", "in_queue"}:
                 return self.executor.tasks.update(record, status="queued",
-                    runtime_stage="submission_unknown" if state == "submission_unconfirmed" else "remote_queued")
+                    error=record.error if state in {"submission_unconfirmed", "acceptance_unknown"} else None,
+                    runtime_stage="submission_unknown" if state in {"submission_unconfirmed", "acceptance_unknown"} else "remote_queued")
             if state == "in_progress":
-                return self.executor.tasks.update(record, status="running", runtime_stage="remote_running")
+                return self.executor.tasks.update(record, status="running", runtime_stage="remote_running", error=None)
             if state == "completed" and not data.get("failed"):
-                return self.executor.tasks.update(record, status="succeeded", runtime_stage="completed",
+                return self.executor.tasks.update(record, status="succeeded", runtime_stage="completed", error=None,
                     runtime_metrics={"runtime_total_seconds": data["metrics"]["inference_time"]}
                     if isinstance(data.get("metrics"), dict) and isinstance(data["metrics"].get("inference_time"), (int, float)) else None)
-            if state in {"completed", "rejected"}:
+            if state in {"completed", "rejected", "failed"}:
                 return self.executor.tasks.update(record, status="failed", runtime_stage="remote_failed",
                     error=self._safe_error("provider_failed", "fal request failed"))
             raise FalError("provider_response_invalid")
@@ -564,7 +637,7 @@ class FalAdapter:
         try:
             if self._gateway_record(record):
                 response = self.executor.client.get(
-                    self.gateway_url + "/v1/submissions/" + record.runtime_task_id + "/result",
+                    self.gateway_url + self._gateway_task_path(record) + "/result",
                     headers=self._gateway_headers(str(record.request.get("organization_id", ""))), timeout=35)
             else:
                 response = self.executor.client.get(

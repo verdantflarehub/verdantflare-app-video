@@ -52,6 +52,8 @@ class Submission(BaseModel):
     aspect_ratio: str | None = None
     mode: str | None = None
     resolution: str | None = None
+    channel_account_id: str | None = Field(default=None, max_length=36)
+    budget_limit: str | None = Field(default=None, max_length=32)
     references: References
 
 
@@ -160,7 +162,8 @@ class Dashboard:
                 self.services["h3-sol"] = "unavailable"
         errors = 0
         for record in self.records():
-            if record.status in {"queued", "running"} and (record.runtime_task_id or record.service in {"depth", "sr", "interpolate", "h3-singularity", "grok", "higgsfield"}):
+            channel_pending = record.service == 'fal' and self.executor.fal._channel_record(record)
+            if record.status in {"queued", "running"} and (record.runtime_task_id or channel_pending or record.service in {"depth", "sr", "interpolate", "h3-singularity", "grok", "higgsfield"}):
                 try:
                     self.executor.status(record.video_task_id)
                 except (ExecutionError, OSError, ValueError):
@@ -170,6 +173,8 @@ class Dashboard:
 
     def recover_incomplete_submissions(self):
         for record in self.records():
+            if record.service == 'fal' and self.executor.fal._channel_record(record):
+                continue  # The channel ledger resolves unknown acceptance by the original operation key.
             if record.status == "queued" and not record.runtime_task_id and record.service not in {"depth", "sr", "interpolate", "grok", "higgsfield"}:
                 self.executor.tasks.update(record, status="queued" if record.service == "h3-singularity" else "failed", error={
                     "code": "submission_unconfirmed",

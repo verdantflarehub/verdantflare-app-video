@@ -437,12 +437,14 @@ def video_create(prompt: str,
                  references: dict[str, list[dict[str, str]]] | None = None,
                  route: str | None = None,
                  quality_profile: str | None = None, mode: str | None = None,
-                  resolution: str | None = None, postprocess: dict | None = None, title: object = None) -> types.CallToolResult:
+                  resolution: str | None = None, postprocess: dict | None = None, title: object = None,
+                  channel_account_id: str | None = None, budget_limit: str | None = None) -> types.CallToolResult:
     """Create an asynchronous video generation task."""
     record, naming = titles.create(executor, title=title, project_id=project_id, idempotency_key=idempotency_key, model=model,
                                prompt=prompt, duration_seconds=duration_seconds,
                                aspect_ratio=aspect_ratio, references=references or {}, route=route,
-                               quality_profile=quality_profile, mode=mode, resolution=resolution, postprocess=postprocess)
+                               quality_profile=quality_profile, mode=mode, resolution=resolution, postprocess=postprocess,
+                               channel_account_id=channel_account_id, budget_limit=budget_limit)
     return _result({**naming, "task_id": record.video_task_id, "video_task_id": record.video_task_id,
                     "status": record.status, "created_at": record.created_at, "error": record.error, "delivery": record.delivery,
                     "resolved_output": record.request.get("resolved_output"),
@@ -454,7 +456,8 @@ def video_generate(project_id: str, idempotency_key: str, model: str, prompt: st
                    duration_seconds: int, aspect_ratio: str,
                    references: dict[str, list[dict[str, str]]], route: str,
                    quality_profile: str | None = None, mode: str | None = None,
-                  resolution: str | None = None, postprocess: dict | None = None, title: object = None) -> types.CallToolResult:
+                  resolution: str | None = None, postprocess: dict | None = None, title: object = None,
+                  channel_account_id: str | None = None, budget_limit: str | None = None) -> types.CallToolResult:
     """Generate with a business model and an explicitly selected runtime route.
 
     `route` selects a configured channel such as h3-sol, h3-vdn, or fal.
@@ -465,7 +468,8 @@ def video_generate(project_id: str, idempotency_key: str, model: str, prompt: st
     record, naming = titles.create(executor, title=title, project_id=project_id, idempotency_key=idempotency_key, model=model,
                                prompt=prompt, duration_seconds=duration_seconds,
                                aspect_ratio=aspect_ratio, references=references, route=route,
-                               quality_profile=quality_profile, mode=mode, resolution=resolution, postprocess=postprocess)
+                               quality_profile=quality_profile, mode=mode, resolution=resolution, postprocess=postprocess,
+                               channel_account_id=channel_account_id, budget_limit=budget_limit)
     return _result({**naming, "task_id": record.video_task_id, "video_task_id": record.video_task_id,
                     "status": record.status, "created_at": record.created_at, "error": record.error, "delivery": record.delivery})
 
