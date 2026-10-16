@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from decimal import Decimal
+from datetime import datetime
 import hmac
 import json
 import re
@@ -45,13 +46,13 @@ def unique_object(pairs):
     return value
 
 
-async def read_body(request):
+async def read_body(request, maximum=8192):
     if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
         raise GatewayError("invalid_request", 422)
     body = bytearray()
     async for part in request.stream():
         body.extend(part)
-        if len(body) > 8192:
+        if len(body) > maximum:
             raise GatewayError("request_too_large", 422)
     def reject_constant(_):
         raise ValueError("non_finite_json")
@@ -179,6 +180,54 @@ class Management:
         return {"items": items, "next_cursor": page[-1][0] if len(rows) > query.page_size else None,
                 "provider_transactions_status": snapshot["status"], "provider_transactions": snapshot}
 
+    def calls(self, query):
+        if set(query) - {'search', 'state', 'offset', 'limit', 'media', 'account_id', 'created_from', 'created_before'}:
+            raise ValueError('invalid_filter')
+        offset, limit = query.get('offset', 0), query.get('limit', 50)
+        if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError('invalid_pagination')
+        for key in ('search', 'state', 'media', 'account_id'):
+            if key in query and (not isinstance(query[key], str) or len(query[key]) > 200):
+                raise ValueError('invalid_filter')
+        dates = {}
+        for key in ('created_from', 'created_before'):
+            if key in query:
+                if not isinstance(query[key], str) or len(query[key]) > 80:
+                    raise ValueError('invalid_date')
+                dates[key] = datetime.fromisoformat(query[key])
+                if dates[key].tzinfo is None:
+                    raise ValueError('invalid_date')
+        account = self.gateway.channel_account.get()
+        with self.gateway.db() as db:
+            jobs = [json.loads(row[0]) for row in db.execute('SELECT record FROM jobs')]
+        items = []
+        for job in jobs:
+            state = 'acceptance_unknown' if job['stage'] == 'submission_unknown' else job['status']
+            if (query.get('account_id') and query['account_id'] != self.gateway.binding
+                    or query.get('media', 'video') not in {'', 'video'}
+                    or query.get('state') and query['state'] != state):
+                continue
+            created = datetime.fromisoformat(job['created_at'])
+            if (dates.get('created_from') and created < dates['created_from']
+                    or dates.get('created_before') and created >= dates['created_before']):
+                continue
+            model = job['generation']['model']
+            if query.get('search', '') not in job['request_id'] + model + account['name']:
+                continue
+            items.append({'task_id': job['request_id'], 'account_id': self.gateway.binding,
+                'account_name': account['name'], 'account_status': account['status'],
+                'model_id': model, 'media': 'video', 'operation': 'generate', 'state': state,
+                'created_at': job['created_at'], 'duration_seconds': None,
+                'budget': {'amount': str(Decimal(str(job['quoted_credits']))), 'unit': 'Credits', 'source': 'provider_quote'},
+                'settlement': {'amount': None, 'unit': 'Credits', 'source': 'unknown'}})
+        items.sort(key=lambda row: (row['created_at'], row['task_id']), reverse=True)
+        total = sum((Decimal(row['budget']['amount']) for row in items), Decimal(0))
+        return {'items': items[offset:offset + limit], 'total': len(items),
+            'accounts': [{'account_id': self.gateway.binding, 'name': account['name'], 'status': account['status']}],
+            'summary': {'task_count': len(items),
+                'budget': {'amount': str(total), 'unit': 'Credits', 'unknown_count': 0},
+                'settlement': {'amount': None if items else '0', 'unit': 'Credits', 'unknown_count': len(items)}}}
+
 
 def create_management_app(gateway, *, token, execution_token, station_id, assets=None, video_channel=None):
     if (len(token) < 32 or len(execution_token) < 32 or
@@ -231,7 +280,31 @@ def create_management_app(gateway, *, token, execution_token, station_id, assets
             return reply({"code": "MANAGEMENT_DENIED"}, 403)
         try:
             path = request.url.path
-            if path == "/limits":
+            if path == '/calls/search':
+                result = await run_in_threadpool(management.calls, await read_body(request, 32768))
+            elif path == '/accounts/search':
+                query = await read_body(request, 32768)
+                if set(query) - {'search', 'status', 'offset', 'limit'}:
+                    raise ValueError('invalid_filter')
+                if (type(query.get('offset', 0)) is not int or query.get('offset', 0) < 0
+                        or type(query.get('limit', 50)) is not int or not 1 <= query.get('limit', 50) <= 100
+                        or not isinstance(query.get('search', ''), str)
+                        or query.get('status', '') not in {'', 'active', 'disabled', 'archived'}):
+                    raise ValueError('invalid_filter')
+                account = await run_in_threadpool(gateway.channel_account.get)
+                account['provider_observation'] = (await run_in_threadpool(management.authorization))['last_success']
+                matches = ((account['status'] != 'archived' if not query.get('status') else account['status'] == query['status'])
+                           and query.get('search', '') in account['name'])
+                result = {'items': [account] if matches and query.get('offset', 0) == 0 else [], 'total': int(matches)}
+            elif path.startswith('/accounts/'):
+                if request.path_params['account_id'] != gateway.binding:
+                    raise GatewayError('account_not_found', 404)
+                if request.method == 'GET':
+                    result = await run_in_threadpool(gateway.channel_account.get)
+                else:
+                    result = await run_in_threadpool(gateway.channel_account.update, await read_body(request, 32768), actor,
+                                                    archive=request.method == 'DELETE')
+            elif path == "/limits":
                 if request.method == "PUT":
                     value = LimitUpdate.model_validate(await read_body(request))
                     result = await run_in_threadpool(gateway.update_limits, value, **actor)
@@ -266,6 +339,9 @@ def create_management_app(gateway, *, token, execution_token, station_id, assets
             return reply({"code": "STORAGE_UNAVAILABLE"}, 503)
 
     app = Starlette(routes=[Route("/overview", handle), Route("/authorization", handle),
+        Route('/accounts/search', handle, methods=['POST']),
+        Route('/accounts/{account_id}', handle, methods=['GET', 'PATCH', 'DELETE']),
+        Route('/calls/search', handle, methods=['POST']),
         Route("/authorization/check", handle, methods=["POST"]),
         Route("/usage/query", handle, methods=["POST"]), Route("/limits", handle, methods=["GET", "PUT"]),
         Route("/internal/dashboard-declaration", handle), Route("/internal/dashboard-index", handle),

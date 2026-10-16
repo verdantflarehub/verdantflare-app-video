@@ -1,11 +1,14 @@
-import {createLimitsEditor, errorCode, request} from './model.mjs';
+import {createLimitsEditor, errorCode, request, accountView, accountPayload, registrationFields} from './model.mjs';
 
 const root = document.getElementById('dashboard'), $ = id => root.querySelector(`#${id}`);
 const {appSDK: sdk, dashboardHost: bridge} = window.$wujie?.props || {};
-const pages = new Set(['overview', 'authorization', 'usage', 'limits']);
+const pages = new Set(['overview', 'authorization', 'usage', 'account']);
 const authNames = {authorized: '已授权', unconnected: '未连接', authorization_required: '需重新授权', unavailable: '暂时无法观测'};
 let disposed = false, visible = true, overview = null, timer, reader, readVersion = 0;
+let readFailures = 0, readsStopped = false;
 let dirty = false, editor, usageCursor = null, usageNext = null, usageReader;
+let account = null, editingAccount = null, accountDirty = false, accountBusy = false, currentPage = "overview";
+let composing = false;
 const events = new AbortController(), unsubscribe = [];
 const text = (id, value) => { $(id).textContent = value ?? '—'; };
 const time = value => value ? new Date(value).toLocaleString('zh-CN') : '尚无观测';
@@ -15,7 +18,7 @@ function denied(error) { return error.status === 401 || error.status === 403 || 
 function failure(error, message) {
   if (disposed) return;
   if (denied(error)) {
-    overview = null; $('business').hidden = true;
+    overview = null; account = null; editingAccount = null; $('business').hidden = true;
     notice('当前身份无权管理此渠道，或会话已失效。请从应用中心重新打开。');
   } else notice(message);
 }
@@ -24,7 +27,7 @@ function updateEditor() {
   $('credits').disabled = $('submissions').disabled = Boolean(pending || state?.busy || !editor);
   $('save').disabled = !overview || !editor || Boolean(state?.busy);
   text('save', pending ? '重试原保存请求' : '保存设置');
-  bridge?.setDirty?.(dirty || Boolean(pending));
+  bridge?.setDirty?.(dirty || accountDirty || Boolean(pending));
 }
 function render() {
   if (!overview || disposed) return;
@@ -33,12 +36,8 @@ function render() {
   text('authState', authNames[auth.status] || '待检查');
   text('authorizationBadge', authNames[auth.status] || '待检查');
   text('authorizationHeading', auth.status === 'authorized' ? '会员已连接到团队' : '检查或恢复会员连接');
-  text('balance', auth.last_success ? `${auth.last_success.balance_credits} Credits` : '待检查');
-  text('balanceTime', auth.last_success ? `${time(auth.last_success.observed_at)}${auth.stale ? ' · 旧观测' : ''}` : '检查授权后读取余额');
-  text('reserved', `${limits.reserved_credits} Credits`);
-  text('observed', time(auth.observed_at));
   text('workspaceState', auth.workspace_matches ? '与服务器绑定一致' : '等待校验原绑定');
-  text('refreshState', auth.last_refresh_at ? time(auth.last_refresh_at) : '服务器维护 · 尚无可核验的刷新时间');
+  renderAccount();
   text('generationState', ({paused: '新增生成已受限额暂停', channel_paused: 'Video 已暂停 Higgsfield 新增生成',
     not_verified: 'Video 渠道可用性待核验', authorization_unverified: '会员授权待检查，暂不能确认可生成',
     busy: '当前并发名额已占满', eligible: '可以提交，费用与项目权限仍按任务校验'})[overview.generation_status] || '新增生成状态待核验');
@@ -53,83 +52,124 @@ function render() {
     $('credits').value = limits.credit_limit; $('submissions').value = limits.submission_limit;
   }
   $('check').disabled = Boolean(auth.pending_check_id);
-  text('checkState', auth.pending_check_id ? '服务器正在检查，稍后自动更新。' : `最近检查：${time(auth.observed_at)}`);
+  text('checkState', auth.pending_check_id ? '服务器正在检查，稍后自动更新。' : auth.error_code ? '暂未确认有效授权，请检查连接。' : '授权检查已完成。');
+  $('accountRefresh').disabled = Boolean(auth.pending_check_id || accountBusy);
   updateEditor(); size();
 }
-async function refresh() {
-  if (disposed || !visible) return;
+async function refresh(automatic = false) {
+  if (disposed || !visible || (automatic && readsStopped)) return false;
+  if (!automatic) { readFailures = 0; readsStopped = false; }
   clearTimeout(timer); reader?.abort();
   const version = ++readVersion;
   reader = new AbortController();
   try {
-    const value = await request(sdk, 'GET', '/overview', undefined, reader.signal);
+    const [value, accounts] = await Promise.all([request(sdk, 'GET', '/overview', undefined, reader.signal), request(sdk, 'POST', '/accounts/search', {}, reader.signal)]);
     if (disposed || !visible || version !== readVersion) return;
-    overview = value; notice(''); render();
+    overview = value; account = accounts.items[0] || null; readFailures = 0; notice(''); render(); return true;
   } catch (error) {
     if (disposed || !visible || version !== readVersion) return;
-    failure(error, '暂时无法更新渠道状态。已显示的数据可能过期，可重新读取。');
+    readFailures++;
+    readsStopped = denied(error) || (error.status && error.status !== 429 && error.status < 500) || readFailures > 3;
+    failure(error, readsStopped ? '自动更新已停止。已保留上次数据，请点击重新读取。' : '暂时无法更新渠道状态。已显示的数据可能过期，稍后重试。'); return false;
   } finally {
-    if (!disposed && visible && version === readVersion) {
-      timer = setTimeout(refresh, overview?.authorization.pending_check_id ? 2000 : 30000);
+    if (!disposed && visible && version === readVersion && !readsStopped) {
+      const delay = readFailures ? Math.min(600000, 5000 * 2 ** (readFailures - 1) * (.85 + Math.random() * .3)) : overview?.authorization.pending_check_id ? 2000 : 30000;
+      timer = setTimeout(() => void refresh(true), delay);
     }
   }
 }
+const stateNames = {completed:'已完成', failed:'失败', acceptance_unknown:'受理待确认', running:'处理中', queued:'排队中'};
+const amount = value => value?.amount == null ? '未知' : `${value.amount} ${value.unit}`;
 async function loadUsage() {
   if (!visible || disposed) return;
   usageReader?.abort(); const activeReader = usageReader = new AbortController();
-  text('usage', '正在读取用量…'); $('usageNext').disabled = true;
+  text('usageState', '正在读取日志…'); $('usageNext').disabled = true;
   try {
-    const value = await request(sdk, 'POST', '/usage/query', {cursor: usageCursor, page_size: 20}, activeReader.signal);
+    const value = await request(sdk, 'POST', '/calls/search', {
+      offset: usageCursor || 0, limit: 20, search: $('logSearch').value,
+      state: $('logStatus').value, media: $('logMedia').value,
+    }, activeReader.signal);
     if (disposed || !visible || usageReader !== activeReader) return;
     $('usage').replaceChildren();
-    if (!value.items.length) text('usage', '暂无团队提交记录。');
+    text('taskCount', `${value.summary.task_count}次`);
+    text('budgetTotal', amount(value.summary.budget));
+    text('settlementTotal', amount(value.summary.settlement));
     for (const item of value.items) {
-      const row = document.createElement('article'); row.className = 'hf-task-row';
-      const label = document.createElement('div'), title = document.createElement('strong'), detail = document.createElement('p');
-      title.textContent = ({grok_video_v15_lite: 'Grok Imagine Video 1.5 Lite', seedance_2_5: 'Seedance 2.5', seedance_2_5_draft: 'Seedance 2.5 Draft', wan3_0: 'Wan 3.0'})[item.model] || item.model;
-      detail.textContent = `Higgsfield · 报价预留 ${item.quoted_credits} Credits · ${time(item.created_at)}`;
-      label.append(title, detail);
-      const status = document.createElement('span'); status.className = 'hf-tag';
-      status.textContent = item.status === 'completed' ? '已完成' : item.status === 'failed' ? '失败' : '处理中';
-      row.append(label, status); $('usage').append(row);
+      const row = document.createElement('tr');
+      const values = [time(item.created_at), item.account_name, '视频／生成', item.model_id,
+        stateNames[item.state] || item.state, item.duration_seconds == null ? '—' : `${item.duration_seconds}秒`,
+        amount(item.budget), amount(item.settlement)];
+      for (const value of values) { const cell = document.createElement('td'); cell.textContent = value; row.append(cell); }
+      const task = document.createElement('small'); task.textContent = item.task_id; row.firstChild.append(task);
+      $('usage').append(row);
     }
-    const note = document.createElement('p'); note.className = 'hf-caption';
-    note.textContent = '报价预留不代表实扣，任务与供应商流水尚待对账。任务与结果请在 Video 查看。';
-    $('usage').append(note);
-    const heading = document.createElement('h3'); heading.className = 'hf-spacing';
-    heading.textContent = '会员近期流水'; $('usage').append(heading);
-    const snapshot = value.provider_transactions, observed = snapshot?.last_success;
-    const observation = document.createElement('p'); observation.className = 'hf-caption';
-    observation.textContent = observed
-      ? `最近 ${observed.window_size} 条以内 · ${time(observed.observed_at)}${snapshot.stale ? ' · 旧观测' : ''}。包含官网等入口使用，不等同团队任务总账。`
-      : '尚无可用流水观测，请在会员授权页检查授权与用量。';
-    $('usage').append(observation);
-    for (const item of observed?.items || []) {
-      const row = document.createElement('article'); row.className = 'hf-task-row';
-      const label = document.createElement('div'), title = document.createElement('strong'), detail = document.createElement('p');
-      title.textContent = ({grant: '额度入账', spend: '额度支出'})[item.action] || '其他额度变动';
-      detail.textContent = time(item.created_at); label.append(title, detail);
-      const amount = document.createElement('span'); amount.textContent = `${item.credits} Credits`;
-      row.append(label, amount); $('usage').append(row);
-    }
-    if (observed && !observed.items.length) {
-      const empty = document.createElement('p'); empty.className = 'hf-caption'; empty.textContent = '本次观测未返回近期流水。';
-      $('usage').append(empty);
-    }
-    usageNext = value.next_cursor; $('usageNext').disabled = !usageNext;
+    text('usageState', value.items.length ? '' : '暂无符合条件的调用日志。');
+    usageNext = (usageCursor || 0) + value.items.length;
+    $('usageNext').disabled = usageNext >= value.total;
+    $('usageFirst').disabled = !usageCursor;
   } catch (error) {
     if (disposed || !visible || usageReader !== activeReader) return;
-    text('usage', '暂时无法读取用量，请重新读取。'); failure(error, '用量读取失败。');
+    text('usageState', '读取失败，已保留上次日志。请重新读取。'); failure(error, '日志读取失败。');
   }
   size();
 }
+
+function renderAccount() {
+  const matches = account && account.name.includes($('accountSearch').value) && (!$('accountFilter').value || account.status === $('accountFilter').value);
+  $('accountCard').hidden = !matches; $('accountEmpty').hidden = Boolean(matches);
+  if (!account) return;
+  const view = accountView(account, overview.authorization);
+  for (const [id, key] of Object.entries({accountName:'name',accountStatus:'status',membershipTier:'tier',membershipPrice:'price',membershipCredits:'credits',membershipQuota:'quota',membershipExpiry:'expiry',membershipConcurrency:'concurrency',providerBalance:'providerBalance'})) text(id, view[key]);
+  text('balanceStale', overview.authorization.stale && overview.authorization.last_success ? '（上次有效数据）' : '');
+  $('disabledNote').hidden = account.status !== 'disabled';
+  const label = account.status === 'active' ? '禁用账号' : '启用账号';
+  $('accountToggle').title = label; $('accountToggle').setAttribute('aria-label', label);
+  for (const id of ['accountEdit', 'accountToggle', 'accountDelete']) $(id).disabled = accountBusy;
+  if (currentPage === 'account' && !editingAccount) fillAccount();
+}
+function fillAccount(force = false) {
+  if (!account || (editingAccount && !force)) return;
+  editingAccount = structuredClone(account);
+  const form = $('accountForm');
+  for (const field of registrationFields) form.elements.namedItem(field).value = account.registration?.[field] ?? '';
+  form.elements.namedItem('name').value = account.name;
+  form.elements.namedItem('status').value = account.status;
+  accountDirty = false; updateEditor();
+}
+async function mutateAccount(method, value, source = account) {
+  if (accountBusy || !source || !visible || disposed) return false;
+  accountBusy = true; $('accountSave').disabled = true; renderAccount();
+  try {
+    const result = await request(sdk, method, '/accounts/' + encodeURIComponent(source.account_id), {expected_revision:source.revision, ...value});
+    if (disposed) return false;
+    account = result.status === 'archived' ? null : result;
+    if (method === 'PATCH' && source === editingAccount) { editingAccount = null; accountDirty = false; fillAccount(); }
+    notice(method === 'DELETE' ? '账号已删除，历史日志保留。' : '账号已保存。');
+    await refresh(); return true;
+  } catch (error) {
+    if (!disposed) {
+      const message = error.status === 409 ? '账号已被修改，请重新读取后核对。已保留填写内容。' : '保存未确认，已保留填写内容。请重新读取账号核对结果。';
+      failure(error, message); text('accountSaveState', message);
+    }
+    return false;
+  } finally {
+    accountBusy = false;
+    if (!disposed) { $('accountSave').disabled = false; renderAccount(); updateEditor(); }
+  }
+}
+
 function route(value) {
-  const selected = value.path.replace(/^\//, '') || 'overview';
+  const incoming = value.path.replace(/^\//, '') || 'overview';
+  const selected = ['log', 'logs', 'usage'].includes(incoming) ? 'usage' : ['accounts/new', 'authorization'].includes(incoming) ? 'authorization' : /^accounts\/[^/]+\/edit$/.test(incoming) || incoming === 'limits' ? 'account' : incoming;
   const page = pages.has(selected) ? selected : 'overview';
-  root.querySelectorAll('[data-page]').forEach(el => { el.hidden = el.dataset.page !== page; });
+  currentPage = page;
+  root.querySelectorAll('[data-page]').forEach(el => { el.hidden = el.dataset.page !== page && !(page === 'account' && el.dataset.page === 'limits'); });
   root.querySelectorAll('nav [data-route]').forEach(el => {
-    if (el.dataset.route === page) el.setAttribute('aria-current', 'page'); else el.removeAttribute('aria-current');
+    if (el.dataset.route === (page === 'usage' ? 'log' : 'overview')) el.setAttribute('aria-current', 'page'); else el.removeAttribute('aria-current');
   });
+  $('breadcrumb').hidden = !['authorization', 'account'].includes(page);
+  text('breadcrumbPage', page === 'account' ? '编辑账号' : '连接会员');
+  if (page === 'account') fillAccount();
   if (page === 'usage') void loadUsage();
   size();
 }
@@ -148,11 +188,14 @@ if (!sdk?.app || !sdk?.theme || !sdk?.navigation?.get || !bridge) {
   unsubscribe.push(sdk.context.subscribe(next => {
     if ([next.stationId, next.installationId, next.organizationId, next.userId].join(':') !== identity) dispose();
   }));
+  root.addEventListener('compositionstart', () => { composing = true; }, {signal:events.signal});
+  root.addEventListener('compositionend', () => { composing = false; }, {signal:events.signal});
+  root.addEventListener('keydown', event => { if (event.key === 'Enter' && (composing || event.isComposing || event.keyCode === 229)) event.preventDefault(); }, {signal:events.signal});
   root.addEventListener('click', async event => {
     const target = event.target.closest('button');
     if (!target || target.disabled || !visible || disposed) return;
     try {
-      if (target.dataset.route) await sdk.navigation.request({target: 'app', path: `/${target.dataset.route}`});
+      if (target.dataset.route) await sdk.navigation.request({target: 'app', path: target.dataset.route === 'overview' ? '/' : `/${target.dataset.route}`});
       if (target.hasAttribute('data-video')) await sdk.capabilities.call('navigation.openApp', {appId: 'video-mcp-server', path: '/'});
     } catch (error) { failure(error, '无法打开目标页面，请确认应用已安装且当前身份有访问权限。'); }
   }, {signal: events.signal});
@@ -172,6 +215,7 @@ if (!sdk?.app || !sdk?.theme || !sdk?.navigation?.get || !bridge) {
   for (const id of ['credits', 'submissions']) $(id).addEventListener('input', () => { dirty = true; updateEditor(); }, {signal: events.signal});
   $('limitsForm').addEventListener('submit', async event => {
     event.preventDefault();
+    if (composing) return;
     if (!editor || !overview || !visible || disposed || editor.snapshot().busy) return;
     const operation = editor.save(overview.limits, $('credits').value, Number($('submissions').value));
     updateEditor();
@@ -186,6 +230,30 @@ if (!sdk?.app || !sdk?.theme || !sdk?.navigation?.get || !bridge) {
       } else { text('saveState', editor.snapshot().pending ? '结果尚未确认，请重试原保存请求。' : '保存未完成，请检查输入并重试。'); if (denied(error)) failure(error, ''); }
     } finally { if (!disposed) updateEditor(); }
   }, {signal: events.signal});
+  $('accountFilters').addEventListener('submit', event => { event.preventDefault(); if (!composing && overview) renderAccount(); }, {signal:events.signal});
+  $('accountRefresh').addEventListener('click', () => $('check').click(), {signal:events.signal});
+  $('accountEdit').addEventListener('click', async () => {
+    if (!account) return;
+    editingAccount = null;
+    try { await sdk.navigation.request({target:'app', path:`/accounts/${encodeURIComponent(account.account_id)}/edit`}); }
+    catch (error) { failure(error, '无法打开编辑页。'); }
+  }, {signal:events.signal});
+  $('accountToggle').addEventListener('click', () => { if (account) void mutateAccount('PATCH', {status:account.status === 'active' ? 'disabled' : 'active'}); }, {signal:events.signal});
+  $('accountDelete').addEventListener('click', () => {
+    if (account && window.confirm(`删除“${account.name}”？停止新任务，保留已有任务与日志。`)) void mutateAccount('DELETE', {});
+  }, {signal:events.signal});
+  $('accountForm').addEventListener('input', () => { accountDirty = true; updateEditor(); }, {signal:events.signal});
+  $('accountForm').addEventListener('submit', async event => {
+    event.preventDefault();
+    if (composing || !editingAccount || accountBusy) return;
+    const values = Object.fromEntries(new FormData($('accountForm')));
+    if (await mutateAccount('PATCH', accountPayload(editingAccount, values), editingAccount)) text('accountSaveState', '会员资料已保存。');
+  }, {signal:events.signal});
+  $('accountReload').addEventListener('click', async () => {
+    if (accountBusy || (accountDirty && !window.confirm('重新读取会替换尚未保存的会员资料，继续吗？'))) return;
+    const loaded = await refresh(); if (loaded && !disposed && account) { fillAccount(true); text('accountSaveState', '已读取当前会员资料。'); }
+  }, {signal:events.signal});
+  $('logFilters').addEventListener('submit', event => { event.preventDefault(); if (composing) return; usageCursor = null; void loadUsage(); }, {signal: events.signal});
   $('usageFirst').onclick = () => { usageCursor = null; void loadUsage(); };
   $('usageNext').onclick = () => { usageCursor = usageNext; void loadUsage(); };
   const resize = new ResizeObserver(size); resize.observe(root);
@@ -199,7 +267,7 @@ if (!sdk?.app || !sdk?.theme || !sdk?.navigation?.get || !bridge) {
   unsubscribe.push(sdk.lifecycle.subscribe(event => {
     if (event === 'dispose') { dispose(); return; }
     if (event === 'hidden') { visible = false; ++readVersion; clearTimeout(timer); reader?.abort(); usageReader?.abort(); }
-    if (event === 'active') { visible = true; void refresh(); route(sdk.navigation.get()); }
+    if (event === 'active') { visible = true; void refresh(true); route(sdk.navigation.get()); }
   }));
   route(sdk.navigation.get()); updateEditor(); bridge.ready(); void refresh();
 }

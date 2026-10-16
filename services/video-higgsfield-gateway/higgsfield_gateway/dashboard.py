@@ -25,6 +25,10 @@ def decode(data):
     return json.loads(data, object_pairs_hook=unique)
 
 
+def policy_for_version(version):
+    return 'higgsfield-management-v2' if tuple(map(int, version.split('.'))) >= (0, 5, 0) else 'higgsfield-management-v1'
+
+
 def build(source, output, version):
     if not re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version):
         raise ValueError("INVALID_APP_VERSION")
@@ -54,7 +58,7 @@ def build(source, output, version):
         "entryRef": "dashboard/index.html", "artifactDigest": "sha256:" + hashlib.sha256(index).hexdigest(),
         "adapter": "wujie", "sdkMajor": 1, "minimumSdkVersion": "1.2.0",
         "requiredCapabilities": ["app.request", "navigation.request"], "optionalCapabilities": ["navigation.openApp"],
-        "appApiPolicyRef": "higgsfield-management-v1", "keepAlive": True}}
+        "appApiPolicyRef": policy_for_version(version), "keepAlive": True}}
     output.mkdir(parents=True, exist_ok=True)
     for name, data in files.items():
         target = output / name
@@ -81,7 +85,7 @@ class DashboardAssets:
         dashboard = declaration["dashboard"]
         if (not isinstance(dashboard, dict) or dashboard.get("adapter") != "wujie"
                 or dashboard.get("entryRef") != "dashboard/index.html"
-                or dashboard.get("appApiPolicyRef") != "higgsfield-management-v1"
+                or dashboard.get("appApiPolicyRef") != policy_for_version(version)
                 or dashboard.get("artifactDigest") != "sha256:" + hashlib.sha256(self.index).hexdigest()
                 or not isinstance(index, dict) or set(index) != {"schemaVersion", "files"}
                 or type(index["schemaVersion"]) is not int or index["schemaVersion"] != 1

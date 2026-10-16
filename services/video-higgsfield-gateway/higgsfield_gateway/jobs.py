@@ -71,6 +71,8 @@ class Gateway:
                     record.update(stage="submission_unknown", error="submission_unknown", updated_at=now())
                     self.save(db, record)
         os.chmod(root / "jobs.sqlite3", 0o600)
+        from .accounts import BoundAccount
+        self.channel_account = BoundAccount(self)
 
     @contextmanager
     def db(self):
@@ -110,7 +112,8 @@ class Gateway:
             value.update(submitted_count=len(jobs), reserved_credits=str(reserved),
                          active_count=len(active),
                          active_reserved_credits=str(sum((Decimal(str(job["quoted_credits"])) for job in active), Decimal(0))),
-                         budget_available=(Decimal(value["credit_limit"]) > 0 and len(jobs) < value["submission_limit"] and
+                         budget_available=(self.channel_account.read(db)['status'] == 'active' and
+                                           Decimal(value["credit_limit"]) > 0 and len(jobs) < value["submission_limit"] and
                                            reserved <= Decimal(value["credit_limit"])))
             return value
 
@@ -235,6 +238,8 @@ class Gateway:
 
     def cost(self, generation):
         with self._lock:
+            if self.channel_account.get()['status'] != 'active':
+                raise GatewayError('account_disabled')
             account = self.account()
             with self.source(generation) as path:
                 credits = self.quote(generation, path, self.reference_ids(generation))
@@ -276,6 +281,8 @@ class Gateway:
                     if old[0] != digest:
                         raise GatewayError("idempotency_conflict")
                     return self.public(json.loads(old[1]))
+                if self.channel_account.read(db)['status'] != 'active':
+                    raise GatewayError('account_disabled')
             account = self.account()
             with self.source(request.generation) as path:
                 media_ids = self.reference_ids(request.generation)
@@ -283,6 +290,8 @@ class Gateway:
                 if request.price_ceiling is not None and cost > request.price_ceiling:
                     raise GatewayError("quote_changed")
                 with self.db() as db:
+                    if self.channel_account.read(db)['status'] != 'active':
+                        raise GatewayError('account_disabled')
                     jobs = [json.loads(row[0]) for row in db.execute("SELECT record FROM jobs")]
                     if any(job["stage"] == "submission_unknown" for job in jobs):
                         raise GatewayError("account_reconciliation_required")
