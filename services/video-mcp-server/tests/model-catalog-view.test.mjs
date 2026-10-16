@@ -29,8 +29,11 @@ test('default channel view follows channel order and shows supplier tiers separa
   const html = nodes['[data-catalog-results]'].innerHTML;
   assert.ok(html.indexOf('<h3>Seedance 2.5</h3>') < html.indexOf('<h3>Higgsfield Genjutsu</h3>'));
   assert.ok(html.indexOf('<h3>Higgsfield Genjutsu</h3>') < html.indexOf('<h3>MiniMax H3</h3>'));
-  assert.match(html, /class="catalog-spec">Higgsfield · 1080p/);
-  assert.match(html, /class="catalog-spec">Higgsfield · 2K/);
+  assert.match(html, /class="channel-group-header"[\s\S]*<h2>Higgsfield<\/h2>/);
+  assert.doesNotMatch(html, /class="catalog-channels"/);
+  assert.doesNotMatch(html, /Higgsfield · 1080p/);
+  assert.match(html, /aria-label="输出规格胶囊"><span>1080p<\/span><span>4S-15S<\/span><span>24FPS<\/span>/);
+  assert.match(html, /aria-label="输出规格胶囊"><span>2K<\/span><span>4S-15S<\/span><span>24FPS<\/span>/);
   assert.match(html, /模型 ID：<code>待核实<\/code>/);
   view.filters.view = 'models';
   view.set({ ...view.data, snapshot_id: 'two' });

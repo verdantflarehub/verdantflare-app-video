@@ -51,6 +51,13 @@ function businessView() {
   crumb.append(current);
 }
 function promptReferences(prompt) {
+  if (!prompt || !prompt.trim()) {
+    const empty = document.createElement("div");
+    empty.className = "empty-factor-box ref-empty-box";
+    empty.textContent = "未传入提示词（0 / 1）";
+    $("taskPrompt").replaceChildren(empty);
+    return;
+  }
   const fragment = document.createDocumentFragment();
   const pattern = /<(Picture|Image|Video|Audio)\s+(\d+)>/gi;
   let last = 0;
@@ -110,26 +117,39 @@ async function loadReference(reference, card, taskId, version) {
   }
 }
 function renderReferences(task, version) {
-  const definitions = [["images", "图片", "Picture", 9], ["videos", "视频", "Video", 3], ["audios", "音频", "Audio", 3]];
+  const definitions = [
+    ["images", "2. 参考图", "参考图", "Picture", 9, "张", "最大9张", "ref-image-grid"],
+    ["videos", "3. 参考视频", "参考视频", "Video", 3, "个", "最大3个", "ref-video-grid"],
+    ["audios", "4. 参考音频", "参考音频", "Audio", 1, "个", "最大1个", "ref-audio-list"],
+  ];
   const pending = [];
   $("referenceGroups").replaceChildren();
-  for (const [kind, label, prefix, limit] of definitions) {
+  for (const [kind, heading, emptyNoun, prefix, limit, unit, quotaLabel, gridClass] of definitions) {
     const references = (task.references || []).filter(ref => ref.kind === kind);
     const group = document.createElement("section");
-    group.className = "reference-group";
-    group.innerHTML = `<h3>${label} <small>${references.length} / ${limit}</small></h3><div class="reference-cards"></div>`;
-    const cards = group.querySelector(".reference-cards");
-    if (!references.length) cards.textContent = `未使用${label}参考`;
-    references.forEach((reference, index) => {
-      const card = document.createElement("article");
-      card.className = `reference-card ${kind}`;
-      card.id = `reference-${kind}-${index + 1}`;
-      card.tabIndex = -1;
-      card.dataset.label = `${prefix} ${index + 1}`;
-      card.innerHTML = `<div class="reference-preview">加载预览…</div><div class="reference-caption"><strong>${prefix} ${index + 1}</strong><span title="${escapeHTML(reference.filename || "")}">${escapeHTML(reference.filename || "素材不可用")}</span><p>${escapeHTML(reference.purpose)}</p></div>`;
-      cards.append(card);
-      pending.push([reference, card]);
-    });
+    group.className = "reference-group input-factor-section";
+    group.dataset.factorKind = kind;
+    group.innerHTML = `<div class="factor-header"><h3>${heading}</h3><span class="factor-quota">${quotaLabel} · ${references.length} / ${limit} ${unit}</span></div>`;
+    if (!references.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty-factor-box ref-empty-box";
+      empty.textContent = `未传入${emptyNoun}（0 / ${limit} ${unit}）`;
+      group.append(empty);
+    } else {
+      const cards = document.createElement("div");
+      cards.className = `reference-cards ${gridClass}`;
+      references.forEach((reference, index) => {
+        const card = document.createElement("article");
+        card.className = `reference-card ${kind === "images" ? "ref-image-card " : ""}${kind}`;
+        card.id = `reference-${kind}-${index + 1}`;
+        card.tabIndex = -1;
+        card.dataset.label = `${prefix} ${index + 1}`;
+        card.innerHTML = `<div class="reference-preview ${kind === "images" ? "ref-image-thumb" : ""}">加载预览…</div><div class="reference-caption"><strong>${prefix} ${index + 1}</strong><span title="${escapeHTML(reference.filename || "")}">${escapeHTML(reference.filename || "素材不可用")}</span><p>${escapeHTML(reference.purpose || "")}</p></div>`;
+        cards.append(card);
+        pending.push([reference, card]);
+      });
+      group.append(cards);
+    }
     $("referenceGroups").append(group);
   }
   // Keep every slot visible while limiting parallel downloads of large media.

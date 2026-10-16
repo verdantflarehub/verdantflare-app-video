@@ -33,7 +33,14 @@ const taskModel = (task) => generationServices.has(task.service) ? task.presenta
 const taskRoute = (task) => generationServices.has(task.service) ? task.presentation?.channel_label || task.route || task.service || "未记录渠道" : "";
 const higgsfieldLogo = "<svg width=\"14\" height=\"14\" class=\"channel-logo\" aria-hidden=\"true\" focusable=\"false\" viewBox=\"0 0 1355 1355\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\n<rect width=\"1355\" height=\"1355\" rx=\"363\" fill=\"#D1FE17\"/>\n<path d=\"M1088.73 670.726L1087.95 662.156C1080.52 579.906 1026.99 425.16 878.52 425.16C768.341 425.16 685.111 533.914 611.658 629.796C553.046 706.582 502.264 772.452 446.385 772.452C431.533 770.898 412.391 763.49 400.676 746.73C390.125 731.522 387.392 712.035 392.858 688.649C401.448 651.619 450.686 617.315 502.644 580.677C531.161 561.19 560.472 540.529 580.79 520.651C639.402 464.134 669.094 423.205 669.094 357.336C669.094 291.467 632.76 258.716 602.283 244.682C541.331 216.625 451.862 232.994 394.818 282.114C386.227 289.913 377.625 297.31 369.807 304.328C312.371 355.392 273.696 390.086 185 363.571V470.369C302.605 522.216 401.46 423.205 438.97 377.605C467.878 347.592 498.355 330.049 521.024 330.049H522.2C532.359 330.441 540.95 334.34 547.211 341.357C557.37 353.056 561.279 366.699 559.319 381.896C555.018 413.864 521.808 451.273 460.856 492.203C389.352 540.149 269.799 620.444 260.413 721.399C253.379 793.905 290.889 866.4 349.501 894.458C486.247 959.165 569.477 847.684 657.77 729.969C725.365 639.149 789.443 553.01 878.531 553.01C958.625 553.01 988.318 619.271 988.318 660.982V669.173L980.5 670.726C786.318 705.029 680.429 886.67 680.429 970.473C680.429 1054.28 751.541 1126 839.061 1126C941.433 1126 1068.02 1038.69 1088.34 793.123L1089.12 784.162H1170V670.737H1088.73V670.726ZM982.841 796.62C967.216 943.566 891.804 1012.17 846.095 1012.17C825.385 1012.17 796.477 995.021 796.477 963.064C796.477 927.208 850.003 818.454 970.341 786.106L984.409 782.597L982.841 796.632V796.62Z\" fill=\"black\"/>\n</svg>";
 const localChannelLogo = '<svg class="channel-logo" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg>';
-const channelLogo = (task) => task.presentation?.channel_icon === "higgsfield" ? higgsfieldLogo : task.presentation?.channel_icon === "local" ? localChannelLogo : "";
+const falChannelLogo = '<svg class="channel-logo" width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><rect width="24" height="24" rx="6" fill="#6C3AED"/><path d="M8.5 7H15.5M8.5 12H13.5M8.5 7V17" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="15.5" cy="15.5" r="1.8" fill="#4CE39A"/></svg>';
+const channelLogo = (task) => {
+  const icon = task.presentation?.channel_icon;
+  if (icon === "higgsfield") return higgsfieldLogo;
+  if (icon === "local") return localChannelLogo;
+  if (icon === "fal" || task.presentation?.channel_label === "fal.ai" || task.route === "fal" || task.service === "fal") return falChannelLogo;
+  return "";
+};
 const generationBadge = (task) => {
   const code = task.presentation?.generation_code;
   const label = task.presentation?.generation_label;
@@ -64,9 +71,28 @@ const taskPrompt = (task) =>
   generationServices.has(task.service)
     ? task.prompt || "未提供提示词"
     : taskOperation(task);
+const taskResolution = (task) => {
+  if (task.resolution) return task.resolution;
+  const h = Number(task.media?.height || 0), w = Number(task.media?.width || 0);
+  const shortSide = h && w ? Math.min(h, w) : 0;
+  if (shortSide >= 2160) return "4K";
+  if (shortSide >= 1440) return "2K";
+  if (shortSide >= 1080) return "1080p";
+  if (shortSide >= 760) return "768p";
+  if (shortSide >= 720) return "720p";
+  if (shortSide >= 480) return "480p";
+  const route = task.route || task.service;
+  if (["h3", "h3-sol", "h3-vdn", "h3-singularity"].includes(route) || ["h3", "h3-sol", "h3-vdn", "h3-singularity"].includes(task.service)) return "768p";
+  if (route === "fal" || task.service === "fal") return "480p";
+  if (task.service === "higgsfield" || task.service === "grok") return "720p";
+  return "";
+};
+const taskFps = (task) => `${task.media?.frame_rate || 24}FPS`;
 const taskTags = (task) => {
   if (generationServices.has(task.service)) {
-    return `${generationBadge(task)}${task.aspect_ratio ? `<span>${escapeHTML(task.aspect_ratio)}</span>` : ""}${task.duration_seconds != null ? `<span>${escapeHTML(task.duration_seconds)}s</span>` : ""}`;
+    const res = taskResolution(task);
+    const fps = taskFps(task);
+    return `${generationBadge(task)}${res ? `<span>${escapeHTML(res)}</span>` : ""}${task.aspect_ratio ? `<span>${escapeHTML(task.aspect_ratio)}</span>` : ""}${task.duration_seconds != null ? `<span>${escapeHTML(task.duration_seconds)}S</span>` : ""}${fps ? `<span>${escapeHTML(fps)}</span>` : ""}`;
   }
   const media = task.media || {};
   const size =
@@ -74,7 +100,7 @@ const taskTags = (task) => {
       ? `<span>${escapeHTML(media.width)}×${escapeHTML(media.height)}</span>`
       : "";
   const fps = media.frame_rate
-    ? `<span>${escapeHTML(media.frame_rate)} FPS</span>`
+    ? `<span>${escapeHTML(media.frame_rate)}FPS</span>`
     : "";
   return `${size}${fps}`;
 };
@@ -358,7 +384,7 @@ function render(data) {
   const galleryHTML = data.tasks
     .map(
       (t) =>
-        `<article class="model-card" tabindex="0" role="button" data-task="${escapeHTML(t.video_task_id)}" aria-label="查看 ${escapeHTML(taskDisplayName(t))}"><div class="card-thumb-wrap"><span>${t.status === "succeeded" ? "▶" : t.status === "running" ? "◌" : "◇"}</span>${taskIdentity(t)}<div class="card-badges">${badge(t)}</div><div class="card-times"><span title="开始时间">${date(t.created_at)}</span><span title="${t.service === "higgsfield" ? generationTimeHint : "排队 / 运行"}">${elapsed(t)}</span></div></div><div class="card-body"><div><div class="card-title-row"><span title="${escapeHTML(taskDisplayName(t))}">${escapeHTML(taskDisplayName(t))}</span></div><p class="card-prompt">${escapeHTML(taskPrompt(t))}</p></div><div class="card-footer"><div class="model-tags">${taskTags(t)}</div><span class="card-footer-action">查看详情 →</span></div></div></article>`,
+        `<article class="model-card" tabindex="0" role="button" data-task="${escapeHTML(t.video_task_id)}" aria-label="查看 ${escapeHTML(taskDisplayName(t))}"><div class="card-thumb-wrap"><span>${t.status === "succeeded" ? "▶" : t.status === "running" ? "◌" : "◇"}</span>${taskIdentity(t)}<div class="card-badges">${badge(t)}</div><div class="card-times"><span title="开始时间">${date(t.created_at)}</span><span title="${t.service === "higgsfield" ? generationTimeHint : "排队 / 运行"}">${elapsed(t)}</span></div></div><div class="card-body"><div><div class="card-title-row"><span title="${escapeHTML(taskDisplayName(t))}">${escapeHTML(taskDisplayName(t))}</span></div><p class="card-prompt">${escapeHTML(taskPrompt(t))}</p></div><div class="card-footer"><div class="model-tags">${taskTags(t)}</div><span class="card-footer-action">查看</span></div></div></article>`,
     )
     .join("");
   reconcileGallery(galleryHTML, data.tasks);

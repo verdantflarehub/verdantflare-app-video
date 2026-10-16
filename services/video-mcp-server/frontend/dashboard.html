@@ -44,7 +44,6 @@
 </section>
 <section aria-labelledby="tasksHeading" class="market-wrap business-section" data-business-view="tasks" id="view-tasks">
 <h1 id="tasksHeading">任务</h1>
-<div class="actions"><a class="button primary" href="#create">＋ 新建视频</a><a class="button" href="#higgsfield">Higgsfield 任务</a></div>
 
 <p class="business-muted">平均处理耗时（包含排队）：<span id="metricLatency">—</span> · 数量按项目、模型和关键词汇总。</p>
 <div class="market-toolbar">
@@ -90,7 +89,7 @@
 <button class="button" id="prevPage">上一页</button><span id="pageLabel">0 个任务</span><button class="button" id="nextPage">下一页</button>
 </div>
 </section>
-<section hidden="" id="taskDetail"><div class="detail-heading"><div><p class="market-kicker">H3 REF2VA / TASK DETAIL</p><h1 id="detailTitle">加载中</h1><p id="detailSubtitle"></p><button class="button" id="editTitle" hidden="" type="button">编辑名称</button><form id="titleForm" class="title-form" hidden=""><label for="titleInput">任务名称</label><input id="titleInput" name="title" required="" maxlength="128" autocomplete="off"/><div class="actions"><button class="button primary" id="saveTitle" type="submit">保存名称</button><button class="button" id="cancelTitle" type="button">取消</button></div><p id="titleMessage" role="status"></p></form></div><span id="detailStatus"></span></div><div id="detailMessage" role="status"></div><div hidden="" id="detailContent"><section class="output-pane"><h2>生成结果 <small id="outputCount"></small></h2><div class="result-stage" id="videoArea"></div><div id="resultActions"></div><p id="resultMessage" role="status"></p></section><section><h2>提示词</h2><div class="prompt-sheet" id="taskPrompt"></div></section><section><h2>参考素材</h2><div id="referenceGroups"></div></section><details><summary>技术信息与生成参数</summary><dl id="taskParameters"></dl></details></div></section></main></div>
+<section hidden="" id="taskDetail"><div class="detail-heading"><div><p class="market-kicker">H3 REF2VA / TASK DETAIL</p><h1 id="detailTitle">加载中</h1><p id="detailSubtitle"></p><button class="button" id="editTitle" hidden="" type="button">编辑名称</button><form id="titleForm" class="title-form" hidden=""><label for="titleInput">任务名称</label><input id="titleInput" name="title" required="" maxlength="128" autocomplete="off"/><div class="actions"><button class="button primary" id="saveTitle" type="submit">保存名称</button><button class="button" id="cancelTitle" type="button">取消</button></div><p id="titleMessage" role="status"></p></form></div><span id="detailStatus"></span></div><div id="detailMessage" role="status"></div><div hidden="" id="detailContent"><section class="output-pane"><h2>生成结果 <small id="outputCount"></small></h2><div class="result-stage" id="videoArea"></div><div id="resultActions"></div><p id="resultMessage" role="status"></p></section><section class="input-factor-section"><div class="factor-header"><h2>1. 提示词</h2><span class="factor-quota">唯一 · 1 / 1</span></div><div class="prompt-sheet" id="taskPrompt"></div></section><section class="input-factors-container"><h2>参考素材与多模态输入要素</h2><div id="referenceGroups"></div></section><details open=""><summary>技术信息与生成参数</summary><dl id="taskParameters"></dl></details></div></section></main></div>
 <div aria-labelledby="tokenTitle" aria-modal="true" class="modal-backdrop" hidden="" id="tokenModal" role="dialog">
 <div class="modal-window">
 <div class="modal-head">

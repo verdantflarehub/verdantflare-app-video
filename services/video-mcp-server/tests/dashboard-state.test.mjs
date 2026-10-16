@@ -33,3 +33,28 @@ test('restoring table view cannot signal list readiness before the first render'
   app.listeners.get('input')(); app.flush();
   assert.equal(app.messages.length, 3);
 });
+
+test('task cards render Model x [Logo] Channel and 5 output tags without total frame count', () => {
+  const app = setup();
+  const identityHtml = app.run(`taskIdentity({
+    service: 'fal',
+    route: 'fal',
+    model: 'minimax-h3-ref2va',
+    presentation: { is_generation: true, model_label: 'MiniMax H3', channel_label: 'fal.ai', channel_icon: null, generation_code: 'R2V', generation_label: '参考生视频' }
+  })`);
+  assert.match(identityHtml, /MiniMax H3/);
+  assert.match(identityHtml, /channel-logo/);
+  assert.match(identityHtml, /fal\.ai/);
+
+  const tagsHtml = app.run(`taskTags({
+    service: 'higgsfield',
+    route: 'higgsfield',
+    resolution: '720p',
+    aspect_ratio: '9:16',
+    duration_seconds: 8,
+    media: { frame_rate: 24, frames: 192 },
+    presentation: { is_generation: true, generation_code: 'R2V', generation_label: '参考生视频' }
+  })`);
+  assert.match(tagsHtml, />R2V<\/span><span>720p<\/span><span>9:16<\/span><span>8S<\/span><span>24FPS<\/span>/);
+  assert.doesNotMatch(tagsHtml, /192/);
+});
