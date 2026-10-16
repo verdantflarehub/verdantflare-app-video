@@ -3,9 +3,9 @@
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const business = {video_generation:'视频生成',video_editing:'视频编辑',motion_control:'动作控制',video_upscale:'视频超分',frame_interpolation:'视频补帧',depth_estimation:'深度估计',video_processing:'视频处理'};
   const modes = {text_to_video:'文生视频',image_to_video:'图生视频',first_last_frame_to_video:'首尾帧视频',reference_to_video:'参考生视频',...business};
-  const review = {pending:'待核实',approved:'资料已审核',rejected:'资料未通过'};
+  const review = {pending:'资料尚未审核',approved:'资料已审核',rejected:'资料未通过'};
   const verification = {unverified:'未验证',verified:'技术已验证',failed:'技术验证失败'};
-  const audio = {supported:'支持',unsupported:'不支持',unknown:'待核实'};
+  const audio = {supported:'支持',unsupported:'不支持',unknown:'未公布'};
   const billing = {credits:'积分',unlimited:'会员权益',local_resources:'本地资源',provider_billed:'供应商计费'};
   const channelLogos = {
     local: '<svg class="channel-logo" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg>',
@@ -71,12 +71,22 @@
   const deriveSpecs = entries => {
     const profiles = entries.map(profileFor);
     const caps = [...new Map(entries.map(modeFor).map(mode => modeToCap[mode]).filter(Boolean).map(pair => [pair[0],pair])).values()];
-    const resolution = [...new Set(profiles.map(p => p?.max_resolution).filter(Boolean))];
-    const duration = [...new Set(profiles.map(p => p?.duration_seconds
+    const summarize = values => {
+      const grouped = new Map();
+      values.forEach((value,index) => {
+        if (!value) return;
+        const code = modeToCap[modeFor(entries[index])]?.[0] || modes[modeFor(entries[index])];
+        if (!grouped.has(value)) grouped.set(value, []);
+        if (code && !grouped.get(value).includes(code)) grouped.get(value).push(code);
+      });
+      if (grouped.size === 1 && values.every(Boolean)) return [...grouped.keys()][0];
+      return [...grouped].map(([value,codes]) => `${codes.join(' / ')}：${value}`).join('；');
+    };
+    const resolution = summarize(profiles.map(p => p?.max_resolution));
+    const duration = summarize(profiles.map(p => p?.duration_seconds
       ? `${p.duration_seconds.minimum}S-${p.duration_seconds.maximum}S`
-      : p?.duration_choices_seconds?.length ? `${Math.min(...p.duration_choices_seconds)}S-${Math.max(...p.duration_choices_seconds)}S` : null).filter(Boolean))];
-    const ratiosByMode = profiles.map(p => (p?.aspect_ratios || []).join(' / '));
-    const ratios = ratiosByMode.every(value => value && value === ratiosByMode[0]) ? ratiosByMode[0] : entries.length > 1 ? '各模式见详情' : ratiosByMode[0] || '待核实';
+      : p?.duration_choices_seconds?.length ? `${Math.min(...p.duration_choices_seconds)}S-${Math.max(...p.duration_choices_seconds)}S` : null));
+    const ratios = summarize(profiles.map(p => (p?.aspect_ratios || []).map(value => ['adaptive','auto'].includes(value) ? '自适应' : value).join(' / ')));
     const input = entries.map(entry => {
       if (modeFor(entry) !== 'reference_to_video') return null;
       const limit = (entry.model.supplier_profiles || []).map(p => p.input_limits).find(Boolean);
@@ -85,11 +95,10 @@
       if (team) return `支持参考视频 · 适配器准入 ${team.videos} 段`;
       return '支持参考视频';
     }).filter(Boolean);
-    const videoInput = input.length === 1 ? input[0] : input.length ? '各模式见详情' : null;
-    const audioStates = profiles.map(p => p ? `${audio[p.audio_input] || '待核实'} / ${audio[p.audio_output] || '待核实'}` : '待核实');
-    const audioDesc = audioStates.every(value => value === audioStates[0]) ? audioStates[0] : '各模式见详情';
-    return { caps, videoInput, maxRes:resolution.length === 1 ? resolution[0] : resolution.length ? '各模式见详情' : '待核实',
-      dur:duration.length === 1 ? duration[0] : duration.length ? '各模式见详情' : '待核实', ratios, audioDesc };
+    const videoInput = [...new Set(input)].join('；');
+    const audioDesc = summarize(profiles.map(p => p && (p.audio_input !== 'unknown' || p.audio_output !== 'unknown')
+      ? `${audio[p.audio_input] || '未公布'} / ${audio[p.audio_output] || '未公布'}` : null));
+    return { caps, videoInput, maxRes:resolution, dur:duration, ratios, audioDesc };
   };
   function inputGuidance(entries) {
     const rows = entries.map(entry => {
@@ -105,7 +114,7 @@
     return rows.length ? `<div class="model-quota-strip">${rows.join('')}</div>` : '';
   }
   function profiles(items, label) {
-    if (!items.length) return `<p class="business-muted">${label}：规格待核实</p>`;
+    if (!items.length) return `<p class="business-muted">${label}：暂无适配规格</p>`;
     return `<h5>${label}</h5>${items.map(p => {
       const duration = p.duration_seconds ? `${p.duration_seconds.minimum}–${p.duration_seconds.maximum} 秒` : p.duration_choices_seconds.length ? p.duration_choices_seconds.join(' / ')+' 秒' : '待核实';
       const limits = p.input_limits;
@@ -166,11 +175,11 @@
       const capability = this.data.execution?.fal?.[entry.model.id];
       const state = capability?.state;
       const labels = {
-        adapter_connected_unverified:'执行适配已接入 · 组织授权、限额及生成待验证',
+        adapter_connected_unverified:'执行适配已接入 · 调用受组织授权与额度限制',
         adapter_disconnected:'执行适配已接入 · 服务未连接，暂不可提交',
         catalog_only:'仅目录收录 · 暂不可提交'
       };
-      const label = labels[state] || '调用状态待核实 · 暂不可提交';
+      const label = labels[state] || '暂不可提交';
       return `<p class="catalog-execution" data-execution-state="${esc(state || 'unknown')}">${esc(label)}</p>`;
     }
     card(group, entries) {
@@ -181,15 +190,15 @@
       const family = entries.length > 1 && familyKey && entries.every(e => familyOf(e) === familyKey);
       const title = family ? model.display_name.split(' · ')[0] : model.display_name;
       const upstreamId = family ? model.upstream_model_id.slice(0, model.upstream_model_id.lastIndexOf('/')) : model.upstream_model_id;
-      const description = family ? `${entries.length} 个视频生成端点；展开查看各模式的调用状态和规格。` : model.description;
+      const description = family ? `${info.caps.map(([,label]) => label).join("、")}；各模式参数如下。` : model.description;
       const connected = entries.filter(e => this.data.execution?.fal?.[e.model.id]?.state === 'adapter_connected_unverified').length;
       const catalogOnly = entries.filter(e => this.data.execution?.fal?.[e.model.id]?.state === 'catalog_only').length;
-      const summary = family && entry.channel.id === 'fal' ? `<p class="catalog-execution">${connected} 个端点已接入执行适配 · ${catalogOnly} 个仅目录收录；请查看各模式状态</p>` : '';
+      const summary = family && entry.channel.id === 'fal' ? `<p class="catalog-execution">${connected} 个端点已接入执行适配 · ${catalogOnly} 个仅目录收录</p>` : '';
       const capPills = info.caps.map(([code, label]) => `<span class="cap-pill"><strong>${esc(code)}</strong> ${esc(label)}</span>`).join('');
       const videoInput = info.videoInput ? `<div class="model-quota-strip"><div class="model-quota-row"><span>视频参考输入</span><strong>${esc(info.videoInput)}</strong></div></div>` : '';
-      const ratios = info.ratios !== '待核实' ? `<dt>支持画幅</dt><dd>${esc(info.ratios)}</dd>` : '';
-      const audioRow = info.audioDesc !== '待核实' ? `<dt>音频输入 / 输出</dt><dd>${esc(info.audioDesc)}</dd>` : '';
-      const output = [info.maxRes,info.dur].filter(value => value !== '待核实');
+      const ratios = info.ratios ? `<dt>支持画幅</dt><dd>${esc(info.ratios)}</dd>` : '';
+      const audioRow = info.audioDesc ? `<dt>音频输入 / 输出</dt><dd>${esc(info.audioDesc)}</dd>` : '';
+      const output = [info.maxRes,info.dur].filter(Boolean);
       const outputLabel = entry.channel.id === 'fal' ? '供应商视频输出' : '视频输出';
       const outputFooter = output.length ? `<div class="model-foot"><span class="business-muted">${outputLabel}</span><div class="tags model-tags" aria-label="输出规格胶囊">${output.map(value=>`<span>${esc(value)}</span>`).join('')}</div></div>` : '';
       return `<article class="business-card catalog-card" data-catalog-card><div class="model-head"><div><span class="business-muted">${esc(business[model.business_type] || model.business_type)}</span><h3>${esc(title)}</h3></div></div><p class="model-id-line">模型 ID：<code>${esc(upstreamId ?? "待核实")}</code></p><p class="model-desc">${esc(description)}</p><div class="model-cap-row">${capPills}</div>${inputGuidance(entries) || videoInput}<dl class="model-params">${ratios}${audioRow}</dl>${summary || (entries.length===1?this.executionStatus(entry):'')}${outputFooter}<details data-catalog-entry="${esc(group.id)}" ${this.open.has(group.id)?'open':''}><summary>能力规格与审核状态</summary><div class="catalog-detail">${entries.map(e=>`<section><h4>${esc(e.model.display_name)}</h4><p class="model-id-line">端点 ID：<code>${esc(e.model.upstream_model_id ?? '待核实')}</code></p><p class="model-desc">${esc(e.model.description)}</p>${this.executionStatus(e)}<p class="business-muted">${esc(review[e.model.identity_review])} · ${esc(e.model.billing_modes.map(b=>billing[b]).join(' / '))}</p>${profiles(e.model.team_profiles,'团队适配范围')}${profiles(e.model.supplier_profiles,'供应商声明范围')}</section>`).join('')}</div></details></article>`;

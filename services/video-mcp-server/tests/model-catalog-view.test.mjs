@@ -103,12 +103,14 @@ test('fal official catalog candidate shows mode badges and sourced input/output 
   assert.match(html, /图片 ≤30 MB\/张；视频合计 &lt;50 MB；音频 ≤15 MB\/个/);
   assert.match(html, /官方未公布单任务附件合计上限/);
   assert.match(html, /官方来源 · 2026-10-17/);
-  assert.doesNotMatch(html, /最大配额待验证|满额实测/);
+  assert.doesNotMatch(html, /待验证|待核实|各模式见详情|满额实测/);
   assert.match(html, /支持参考视频/);
   assert.match(html, /MP4\/MOV/);
   assert.match(html, /1080p/);
   assert.match(html, /4K/);
-  assert.match(html, /21:9/);
+  assert.match(html, /T2V \/ R2V：自适应/);
+  assert.match(html, /I2V：跟随输入图/);
+  assert.match(html, /T2V \/ I2V：不支持 \/ 支持；R2V：支持 \/ 支持/);
   assert.doesNotMatch(html, /单次任务最大容量/);
 });
 
@@ -126,7 +128,7 @@ test('fal cards distinguish the one adapted endpoint from catalog-only entries',
     execution:{ fal:{ ref:{ state:'adapter_connected_unverified' }, text:{ state:'catalog_only' } } },
     groups:fal.models.map(item=>({id:item.id,entries:[{channel_id:'fal',entry_id:item.id}]})) });
   const html = nodes['[data-catalog-results]'].innerHTML;
-  assert.match(html, /执行适配已接入 · 组织授权、限额及生成待验证/);
+  assert.match(html, /执行适配已接入 · 调用受组织授权与额度限制/);
   assert.match(html, /仅目录收录 · 暂不可提交/);
   assert.doesNotMatch(html, /可生成/);
   view.set({ ...view.data, execution:{ fal:{
