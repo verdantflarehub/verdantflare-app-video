@@ -7,7 +7,7 @@ import os
 import re
 import subprocess
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
+import time
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
@@ -475,55 +475,35 @@ class FalAdapter:
 
     def _download(self, url: str) -> bytes:
         source = self._allowed_result_url(url)
-        def receive(response: httpx.Response, maximum: int) -> bytes:
-            content_type = response.headers.get("content-type", "").split(";", 1)[0].strip()
-            if content_type not in {"video/mp4", "application/octet-stream"}:
-                raise FalError("result_integrity_failed")
-            data = bytearray()
-            for chunk in response.iter_bytes():
-                data.extend(chunk)
-                if len(data) > maximum:
-                    raise FalError("result_integrity_failed")
-            if not data:
-                raise FalError("result_integrity_failed")
-            return bytes(data)
-
+        deadline = time.monotonic() + 90
         try:
+            # The CDN's parallel Range path can stall while a normal GET succeeds.
+            # Keep one stream and bound both idle reads and the overall transfer.
             with self.executor.client.stream(
-                "GET", source, headers={"Accept": "video/*", "Range": "bytes=0-0"}, timeout=60
+                "GET", source, headers={"Accept": "video/*", "Accept-Encoding": "identity"},
+                timeout=httpx.Timeout(connect=10, read=15, write=10, pool=10),
             ) as response:
-                if response.status_code == 200:
-                    declared = response.headers.get("content-length")
-                    if declared and (not declared.isdecimal() or not 0 < int(declared) <= MAX_ARTIFACT_BYTES):
-                        raise FalError("result_integrity_failed")
-                    return receive(response, MAX_ARTIFACT_BYTES)
-                if response.status_code != 206:
+                if response.status_code != 200:
                     raise FalError("result_download_failed")
-                match = re.fullmatch(r"bytes 0-0/([1-9][0-9]*)", response.headers.get("content-range", ""))
-                if not match or int(match[1]) > MAX_ARTIFACT_BYTES:
+                content_type = response.headers.get("content-type", "").split(";", 1)[0].strip()
+                if content_type not in {"video/mp4", "application/octet-stream"}:
                     raise FalError("result_integrity_failed")
-                total = int(match[1])
-                first = receive(response, 1)
-
-            chunk_size = max(256 * 1024, (total + 63) // 64)
-            ranges = [(start, min(start + chunk_size - 1, total - 1)) for start in range(1, total, chunk_size)]
-            def fetch(part: tuple[int, int]) -> bytes:
-                start, end = part
-                with self.executor.client.stream(
-                    "GET", source, headers={"Accept": "video/*", "Range": f"bytes={start}-{end}"}, timeout=180
-                ) as response:
-                    if response.status_code != 206 or response.headers.get("content-range") != f"bytes {start}-{end}/{total}":
+                declared = response.headers.get("content-length")
+                if declared is not None and (not declared.isdecimal() or not 0 < int(declared) <= MAX_ARTIFACT_BYTES):
+                    raise FalError("result_integrity_failed")
+                maximum = int(declared) if declared is not None else MAX_ARTIFACT_BYTES
+                data = bytearray()
+                for chunk in response.iter_bytes():
+                    if time.monotonic() > deadline:
+                        raise FalError("result_download_failed")
+                    data.extend(chunk)
+                    if len(data) > maximum:
                         raise FalError("result_integrity_failed")
-                    payload = receive(response, end - start + 1)
-                    if len(payload) != end - start + 1:
-                        raise FalError("result_integrity_failed")
-                    return payload
-            with ThreadPoolExecutor(max_workers=min(8, len(ranges) or 1)) as pool:
-                pieces = list(pool.map(fetch, ranges))
-            data = first + b"".join(pieces)
-            if len(data) != total:
-                raise FalError("result_integrity_failed")
-            return data
+                if time.monotonic() > deadline:
+                    raise FalError("result_download_failed")
+                if not data or (declared is not None and len(data) != maximum):
+                    raise FalError("result_integrity_failed")
+                return bytes(data)
         except httpx.HTTPError as error:
             raise FalError("result_download_failed") from error
 

@@ -145,6 +145,7 @@ class FalRouteTest(unittest.TestCase):
             result = executor.result(submitted.video_task_id)
         self.assertIsNotNone(result.artifact_id)
         self.assertEqual(result.media["frame_rate"], 24)
+        self.assertEqual(executor.result(submitted.video_task_id).artifact_id, result.artifact_id)
         self.assertEqual([call.method for call in calls], ["POST", "GET", "GET", "GET"])
         client.close()
 
@@ -185,31 +186,43 @@ class FalRouteTest(unittest.TestCase):
             self.assertEqual([request.method for request in calls], ["POST", "GET", "GET", "GET"])
             client.close()
 
-    def test_result_range_download_reassembles_exact_bytes_and_rejects_bad_ranges(self) -> None:
+    def test_result_download_uses_one_full_request_without_credentials_or_ranges(self) -> None:
         video = b"video" * 70000
         calls = []
         def handler(request):
             self.assertEqual(request.url.host, "v3.fal.media")
             self.assertNotIn("Authorization", request.headers)
-            span = request.headers["Range"].removeprefix("bytes=")
-            start, end = (int(value) for value in span.split("-"))
-            calls.append((start, end))
-            return httpx.Response(206, content=video[start:end + 1], headers={
-                "content-type":"video/mp4", "content-range":f"bytes {start}-{end}/{len(video)}"})
-        client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False)
-        executor = VideoExecutor(self.artifacts, self.tasks, client)
-        self.assertEqual(executor.fal._download("https://v3.fal.media/files/result.mp4"), video)
-        self.assertEqual(calls[0], (0, 0))
-        self.assertGreater(len(calls), 2)
-        client.close()
+            self.assertNotIn("Range", request.headers)
+            self.assertEqual(request.headers["Accept-Encoding"], "identity")
+            calls.append(request)
+            return httpx.Response(200, content=video, headers={"content-type": "video/mp4"})
+        with httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False) as client:
+            executor = VideoExecutor(self.artifacts, self.tasks, client)
+            self.assertEqual(executor.fal._download("https://v3.fal.media/files/result.mp4"), video)
+        self.assertEqual(len(calls), 1)
 
-        def corrupt(request):
-            return httpx.Response(206, content=b"x", headers={"content-type":"video/mp4", "content-range":"bytes 0-0/3"}) if request.headers["Range"] == "bytes=0-0" else httpx.Response(206, content=b"yz", headers={"content-type":"video/mp4", "content-range":"bytes 1-2/4"})
-        client = httpx.Client(transport=httpx.MockTransport(corrupt), follow_redirects=False)
-        executor = VideoExecutor(self.artifacts, self.tasks, client)
-        with self.assertRaisesRegex(FalError, "result_integrity_failed"):
-            executor.fal._download("https://v3.fal.media/files/result.mp4")
-        client.close()
+    def test_result_download_rejects_truncation_partial_responses_and_trickle_overrun(self) -> None:
+        for status, body, headers, expected in [
+            (200, b"abc", {"content-type": "video/mp4", "content-length": "4"}, "result_integrity_failed"),
+            (200, b"abc", {"content-type": "video/mp4", "content-length": "2"}, "result_integrity_failed"),
+            (200, b"", {"content-type": "video/mp4"}, "result_integrity_failed"),
+            (206, b"abc", {"content-type": "video/mp4"}, "result_download_failed"),
+        ]:
+            with self.subTest(status=status, headers=headers):
+                with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(status, content=body, headers=headers))) as client:
+                    executor = VideoExecutor(self.artifacts, self.tasks, client)
+                    with self.assertRaisesRegex(FalError, expected):
+                        executor.fal._download("https://v3.fal.media/files/result.mp4")
+
+        class Trickle(httpx.SyncByteStream):
+            def __iter__(self):
+                yield b"a"
+                yield b"b"
+        with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=Trickle(), headers={"content-type": "video/mp4"}))) as client:
+            executor = VideoExecutor(self.artifacts, self.tasks, client)
+            with mock.patch("app.providers.fal.time.monotonic", side_effect=[0, 10, 91]):
+                with self.assertRaisesRegex(FalError, "result_download_failed"):
+                    executor.fal._download("https://v3.fal.media/files/result.mp4")
 
     def test_missing_key_fails_closed_without_network_or_fallback(self) -> None:
         calls = []
