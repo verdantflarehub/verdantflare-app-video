@@ -30,7 +30,6 @@ function clearTaskDetail() {
   $("detailSubtitle").textContent = "";
   $("detailStatus").textContent = "";
   if ($("detailIdentityBar")) $("detailIdentityBar").replaceChildren();
-  if ($("detailTriSteps")) $("detailTriSteps").replaceChildren();
   if ($("detailOutputMeta")) $("detailOutputMeta").replaceChildren();
   $("taskPrompt").replaceChildren();
   $("taskParameters").replaceChildren();
@@ -246,20 +245,10 @@ async function refreshTaskDetail(id, version) {
         `<span class="identity-channel detail-identity-pill"><strong>${escapeHTML(taskOperation(task))}</strong> <span class="identity-separator" aria-hidden="true">·</span> <span>${escapeHTML(taskService(task) || task.service || "视频处理")}</span></span>`;
     }
   }
-  if ($("detailTriSteps")) {
-    if (task.status === "succeeded") {
-      const archived = Boolean(task.artifact || task.content_ref);
-      $("detailTriSteps").innerHTML = `<span class="tri-step done">1. 令牌直通</span><span class="tri-step done">2. 推理完成</span><span class="tri-step ${archived ? "done" : "active"}">3. ${archived ? "已归档" : "待获取产物"}</span>`;
-    } else if (task.status === "failed" || task.status === "cancelled") {
-      $("detailTriSteps").innerHTML = `<span class="tri-step done">1. 令牌直通</span><span class="tri-step fail">2. ${task.status === "cancelled" ? "任务已取消" : "推理中断"}</span><span class="tri-step">3. 未归档</span>`;
-    } else {
-      $("detailTriSteps").innerHTML = `<span class="tri-step done">1. 令牌直通</span><span class="tri-step active">2. ${task.status === "queued" ? "排队等待中" : "引擎推理中"}</span><span class="tri-step">3. 产物归档</span>`;
-    }
-  }
   if ($("detailOutputMeta")) {
     const pills = [];
     if (generationServices.has(task.service)) {
-      pills.push(`<span class="identity-channel">${escapeHTML(taskModel(task))} × ${channelLogo(task)}${escapeHTML(taskRoute(task))}</span>`);
+      pills.push(`<span>${escapeHTML(taskModel(task))}</span>`);
       if (task.presentation?.generation_code) {
         pills.push(`<span>${escapeHTML(task.presentation.generation_code)}${task.presentation.generation_label ? ` (${escapeHTML(task.presentation.generation_label)})` : ""}</span>`);
       }

@@ -1131,11 +1131,6 @@ body{background:#0d120f;color:#e3e9e5}
 .result-controls{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 0;border-bottom:0.5px solid #2b352e;font-size:12px;color:#91a096;flex-wrap:wrap}
 #resultActions,#resultMessage{width:100%;max-width:100%;margin-top:0;font-size:12px}
 .result-controls #resultActions,.result-controls #resultMessage{width:auto;margin:0}
-.tri-steps{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:12px;font-size:11px}
-.tri-step{padding:5px 8px;border-radius:5px;background:#0d1510;border:0.5px solid #2b352e;color:#91a096;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
-.tri-step.done{color:#e3e9e5;border-color:#3d5244}
-.tri-step.active{color:var(--green);background:rgba(76,227,154,0.12);border-color:rgba(76,227,154,0.38);font-weight:600}
-.tri-step.fail{color:#e9a094;background:rgba(233,160,148,0.12);border-color:rgba(233,160,148,0.35)}
 .output-meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
 .output-meta span{display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border-radius:5px;background:#0d1510;border:0.5px solid #2b352e;color:#91a096;font-size:11px;font-variant-numeric:tabular-nums}
 .factor-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;flex-wrap:wrap}
