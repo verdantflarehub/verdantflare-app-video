@@ -114,11 +114,11 @@
       let source;
       try { source = new URL(g.source_url); } catch { return ''; }
       if (source.protocol !== 'https:' || source.username || source.password) return '';
-      const mode = modeToCap[p.mode]?.[0] || modes[p.mode] || p.mode;
-      const quota = knownParameterText(g.reference_quota);
+      if (p.mode === 'text_to_video') return '';
+      const quota = knownParameterText(g.reference_quota).replace(/（(?:T2V|I2V|R2V)）/g, '');
       const capacity = knownParameterText(g.capacity);
       if (!quota && !capacity) return '';
-      return `<div class="catalog-profile"><strong>${esc(mode)}</strong><dl class="catalog-meta">${quota ? `<dt>参考文件配额</dt><dd>${esc(quota)}</dd>` : ''}${capacity ? `<dt>附件容量说明</dt><dd>${esc(capacity)}</dd>` : ''}</dl></div>`;
+      return `<div class="catalog-profile">${quota ? `<p>${esc(quota)}</p>` : ''}${capacity ? `<dl class="catalog-meta"><dt>附件容量说明</dt><dd>${esc(capacity)}</dd></dl>` : ''}</div>`;
     }).filter(Boolean);
     return rows.length ? `<div class="model-quota-strip">${rows.join('')}</div>` : '';
   }

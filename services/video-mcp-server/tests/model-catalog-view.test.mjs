@@ -99,6 +99,8 @@ test('fal official catalog candidate shows mode badges and sourced input/output 
   assert.match(html, /<strong>I2V<\/strong>/);
   assert.equal((html.match(/class="cap-pill"><strong>R2V<\/strong>/g) || []).length,3);
   assert.match(html, /最多 9 图、3 视频、3 音频，合计 ≤12 件/);
+  assert.doesNotMatch(html, /参考文件配额|<div class="catalog-profile"><strong>(T2V|I2V|R2V)<\/strong>|无需参考附件|此模式不接收参考附件/);
+  assert.match(html, /起始帧 1 张，可选结束帧 1 张/);
   assert.doesNotMatch(html, /官方资料|官方来源|官方未|所查官方|未公布|未公开/);
   assert.match(html, /图片 ≤30 MB\/张；视频合计 &lt;50 MB；音频 ≤15 MB\/个/);
   assert.match(html, /参考视频、音频各自合计 ≤15 秒，每段 2–15 秒/);
