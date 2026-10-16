@@ -70,7 +70,7 @@ test('fal H3 modes share one card without borrowing quotas or claiming a task-si
   assert.match(html, /<strong>T2V<\/strong>/);
   assert.match(html, /<strong>I2V<\/strong>/);
   assert.match(html, /<strong>R2V<\/strong>/);
-  assert.match(html, /R2V 9图 · 3视频 · 3音频（适配器准入；其余待核实；未满额实测）/);
+  assert.match(html, /最大配额待验证（适配器准入：R2V 9图 · 3视频 · 3音频；其余模式待核实；未满额实测）/);
   assert.match(html, /单次任务最大容量<\/span><strong>待验证<\/strong>/);
   assert.match(html, /1 个端点已接入执行适配 · 2 个仅目录收录/);
   assert.match(html, /端点 ID：<code>minimax\/h3\/reference-to-video<\/code>/);

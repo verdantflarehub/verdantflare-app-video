@@ -76,7 +76,7 @@
       const cap = profiles[index] && modeToCap[profiles[index].mode];
       return limit && cap ? `${cap[0]} ${limit.images}图 · ${limit.videos}视频 · ${limit.audio_files}音频` : null;
     }).filter(Boolean);
-    const quota = knownQuotas.length ? `${knownQuotas.join('；')}（适配器准入；${knownQuotas.length < entries.length ? '其余待核实；' : ''}未满额实测）` : '待验证';
+    const quota = knownQuotas.length ? `最大配额待验证（适配器准入：${knownQuotas.join('；')}；${knownQuotas.length < entries.length ? '其余模式待核实；' : ''}未满额实测）` : '最大配额待验证';
     const audioStates = profiles.map(p => p ? `${audio[p.audio_input] || '待核实'} / ${audio[p.audio_output] || '待核实'}` : '待核实');
     const audioDesc = audioStates.every(value => value === audioStates[0]) ? audioStates[0] : '各模式见详情';
     return { caps, quota, maxSize:'待验证', maxRes:resolution.length === 1 ? resolution[0] : resolution.length ? '各模式见详情' : '待核实',
