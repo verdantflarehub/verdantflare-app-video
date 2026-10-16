@@ -1189,3 +1189,8 @@ html[data-page="task"] [data-action="dispatch"] { display: none !important; }
 .title-form[hidden] { display:none; }
 #taskParameters dd { overflow-wrap:anywhere; }
 #taskParameters dd .button { margin-left:12px; }
+
+.title-edit-icon{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;padding:8px}
+.result-load-target{position:absolute;inset:0;width:100%;height:100%;border:0;border-radius:inherit;background:transparent;color:inherit;font:inherit;cursor:pointer}
+.result-load-target:focus-visible{outline:2px solid currentColor;outline-offset:-4px}
+.result-load-target:disabled{cursor:progress}

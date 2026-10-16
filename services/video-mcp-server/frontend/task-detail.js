@@ -65,7 +65,6 @@ function businessView() {
     if (el.dataset.nav === selected) el.setAttribute("aria-current", "page"); else el.removeAttribute("aria-current");
   });
   $("taskDetail").hidden = !detailTaskId;
-  if ($("backToTasksLink")) $("backToTasksLink").href = `${base}/dashboard#tasks`;
   if (detailTaskId) document.querySelector(".workspace-nav")?.remove();
   const crumb = $("videoBreadcrumb");
   const app = document.createElement("a"); app.href = `${base}/dashboard#tasks`; app.textContent = "Video MCP";
@@ -181,10 +180,22 @@ function renderReferences(task, version) {
   async function worker() { while (next < pending.length && version === revision && authorized) { const [reference, card] = pending[next++]; await loadReference(reference, card, task.video_task_id, version); } }
   Promise.allSettled([worker(), worker(), worker()]);
 }
+function showResultLoader(task, version, retrieve, retry = false) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "result-load-target";
+  button.textContent = retry ? "加载失败，点击重试" : "点击加载视频";
+  button.setAttribute("aria-label", retry ? "重新加载视频" : "加载视频结果");
+  button.onclick = () => loadTaskResult(task, version, retrieve);
+  $("videoArea").replaceChildren(button);
+  $("resultActions").replaceChildren();
+}
 async function loadTaskResult(task, version, retrieve = false) {
   if (resultLoading) return;
   resultLoading = true;
   $("resultMessage").textContent = "正在加载视频…";
+  const trigger = $("videoArea").querySelector(".result-load-target");
+  if (trigger) { trigger.disabled = true; trigger.textContent = "正在加载视频…"; }
   try {
     if (retrieve) task = await api(`/api/tasks/${encodeURIComponent(task.video_task_id)}/result`, { method: "POST" });
     if (version !== revision || !authorized) return;
@@ -205,11 +216,11 @@ async function loadTaskResult(task, version, retrieve = false) {
     $("resultActions").replaceChildren(link);
     $("resultMessage").textContent = `${task.media?.width || "—"} × ${task.media?.height || "—"} · ${task.media?.frame_rate || "—"} FPS`;
     resultArtifact = task.content_ref?.version_id || task.artifact.artifact_id;
+    $("outputCount").textContent = "1 / 1 个视频产物";
   } catch (error) {
     if (version === revision && authorized) {
       $("resultMessage").textContent = error.message;
-      const retry = document.createElement("button"); retry.className = "button"; retry.textContent = "重试加载";
-      retry.onclick = () => loadTaskResult(task, version, retrieve); $("resultActions").replaceChildren(retry);
+      showResultLoader(task, version, retrieve, true);
       // Avoid repeatedly downloading a failing asset on every poll.
       resultArtifact = task.artifact?.artifact_id || "unavailable";
     }
@@ -233,18 +244,9 @@ async function refreshTaskDetail(id, version) {
   $("detailStatus").textContent = taskStatusLabel(task);
   $("outputCount").textContent = task.artifact || task.content_ref ? "1 / 1 个视频产物" : "0 / 1 个视频";
   if ($("detailIdentityBar")) {
-    const refCounts = {
-      images: (task.references || []).filter(r => r.kind === "images").length,
-      videos: (task.references || []).filter(r => r.kind === "videos").length,
-      audios: (task.references || []).filter(r => r.kind === "audios").length,
-    };
     if (generationServices.has(task.service)) {
-      const modeCode = task.presentation?.generation_code;
-      const modeLabel = task.presentation?.generation_label;
       $("detailIdentityBar").innerHTML =
-        `<span class="identity-channel detail-identity-pill"><strong class="identity-model">${escapeHTML(taskModel(task))}</strong> <span class="identity-separator" aria-hidden="true">×</span> ${channelLogo(task)}<span>${escapeHTML(taskRoute(task))}</span></span>` +
-        (modeCode ? `<span class="cap-pill"><strong>${escapeHTML(modeCode)}</strong>${modeLabel ? `<small>${escapeHTML(modeLabel)}</small>` : ""}</span>` : "") +
-        `<span class="factor-quota">四要素快照：1/1 提示词 · ${refCounts.images}/9 图 · ${refCounts.videos}/3 视频 · ${refCounts.audios}/1 音频</span>`;
+        `<span class="identity-channel detail-identity-pill"><strong class="identity-model">${escapeHTML(taskModel(task))}</strong> <span class="identity-separator" aria-hidden="true">×</span> ${channelLogo(task)}<span>${escapeHTML(taskRoute(task))}</span></span>`;
     } else {
       $("detailIdentityBar").innerHTML =
         `<span class="identity-channel detail-identity-pill"><strong>${escapeHTML(taskOperation(task))}</strong> <span class="identity-separator" aria-hidden="true">·</span> <span>${escapeHTML(taskService(task) || task.service || "视频处理")}</span></span>`;
@@ -255,7 +257,7 @@ async function refreshTaskDetail(id, version) {
     if (generationServices.has(task.service)) {
       pills.push(`<span>${escapeHTML(taskModel(task))}</span>`);
       if (task.presentation?.generation_code) {
-        pills.push(`<span>${escapeHTML(task.presentation.generation_code)}${task.presentation.generation_label ? ` (${escapeHTML(task.presentation.generation_label)})` : ""}</span>`);
+        pills.push(`<span>${escapeHTML(task.presentation.generation_code)}</span>`);
       }
       if (res) pills.push(`<span>${escapeHTML(res)}</span>`);
       if (task.aspect_ratio) pills.push(`<span>${escapeHTML(task.aspect_ratio)}</span>`);
@@ -295,12 +297,8 @@ async function refreshTaskDetail(id, version) {
   }
   if (task.status === "succeeded") {
     if ((task.artifact || task.content_ref) && !resultArtifact) await loadTaskResult(task, version);
-    else if (!task.artifact && !task.content_ref && !resultLoading && !$("resultActions").children.length) {
-      $("videoArea").textContent = "任务已完成，等待获取视频结果。";
-      $("resultMessage").textContent = "点击右侧按钮同步并加载视频产物";
-      const button = document.createElement("button"); button.className = "button primary"; button.textContent = "获取视频结果";
-      button.onclick = async () => { button.disabled = true; await loadTaskResult(task, version, true); button.disabled = false; };
-      $("resultActions").replaceChildren(button);
+    else if (!task.artifact && !task.content_ref && !resultLoading && !resultArtifact && !$("videoArea").children.length) {
+      showResultLoader(task, version, true);
     }
   } else {
     $("videoArea").textContent = task.status === "failed" ? `生成失败：${task.error?.message || task.error?.code || "请查看任务信息"}` : task.status === "cancelled" ? "任务已取消" : `${taskStatusLabel(task)}，结果就绪后将在这里显示。`;

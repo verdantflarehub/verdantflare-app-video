@@ -67,7 +67,7 @@ test('task detail HTML and CSS match prototype v1.3 two-pane inspector, 380px st
     assert.match(html, /id="taskDetail"[^>]*class="detail-shell"|class="detail-shell"[^>]*id="taskDetail"/);
     assert.match(html, /class="inspect-layout"/);
     assert.match(html, /id="detailIdentityBar"/);
-    assert.match(html, /id="backToTasksLink"/);
+    assert.doesNotMatch(html, /id="backToTasksLink"/);
     assert.doesNotMatch(html, /id="detailTriSteps"|令牌直通/);
     assert.match(html, /id="detailOutputMeta"/);
     assert.match(html, /id="imagePreviewStage"/);
