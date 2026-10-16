@@ -64,6 +64,20 @@ class CatalogTest(unittest.TestCase):
         value['channels'].clear()
         self.assertEqual(len(catalog.snapshot()['channels']),1)
 
+    def test_public_input_guidance_preserves_source_without_claiming_verified(self):
+        data = channel('fal')
+        profile = data['models'][0]['team_profiles'][0]
+        profile['input_guidance'] = {
+            'reference_quota': '合计 ≤12 件', 'capacity': '官方未公布合计上限',
+            'source_url': 'https://fal.ai/minimax-h3', 'checked_on': '2026-10-17'}
+        result = self.load([self.write(data)])
+        self.assertEqual(result['state'], 'ready')
+        actual = result['channels'][0]['models'][0]['team_profiles'][0]
+        self.assertEqual(actual['input_guidance'], profile['input_guidance'])
+        self.assertEqual(actual['verification_status'], 'unverified')
+        profile['input_guidance']['source_url'] = 'javascript:alert(1)'
+        self.assertEqual(self.load([self.write(data)])['state'], 'error')
+
     def test_channel_removal_recomputes_groups(self):
         local, hf = channel('local'), channel('higgsfield')
         local['models'][0]['identity_review'] = hf['models'][0]['identity_review'] = 'approved'

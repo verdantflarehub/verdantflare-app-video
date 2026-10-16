@@ -33,9 +33,15 @@
     const model = entry.model;
     const team = (model.team_profiles || []).find(p => p.max_resolution || p.duration_seconds || p.duration_choices_seconds?.length || p.input_limits || p.aspect_ratios?.length);
     const supplier = (model.supplier_profiles || [])[0];
-    return entry.channel.id === 'fal' ? team || supplier || null : supplier || team || null;
+    return supplier || team || null;
   };
-  const modeFor = entry => profileFor(entry)?.mode || entry.model.team_profiles?.[0]?.mode || entry.model.supplier_profiles?.[0]?.mode;
+  const modeFor = entry => {
+    const declared = profileFor(entry)?.mode || entry.model.team_profiles?.[0]?.mode || entry.model.supplier_profiles?.[0]?.mode;
+    if (declared) return declared;
+    if (entry.channel.id !== 'fal') return null;
+    const suffix = String(entry.model.upstream_model_id || '').match(/\/(text-to-video|image-to-video|reference-to-video)$/)?.[1];
+    return { 'text-to-video':'text_to_video', 'image-to-video':'image_to_video', 'reference-to-video':'reference_to_video' }[suffix] || null;
+  };
   const familyOf = entry => {
     const {model, channel} = entry;
     const match = String(model.upstream_model_id || '').match(/^(.*)\/(text-to-video|image-to-video|reference-to-video)$/);
@@ -64,30 +70,47 @@
   };
   const deriveSpecs = entries => {
     const profiles = entries.map(profileFor);
-    const caps = [...new Map(profiles.map(p => p && modeToCap[p.mode]).filter(Boolean).map(pair => [pair[0],pair])).values()];
+    const caps = [...new Map(entries.map(modeFor).map(mode => modeToCap[mode]).filter(Boolean).map(pair => [pair[0],pair])).values()];
     const resolution = [...new Set(profiles.map(p => p?.max_resolution).filter(Boolean))];
     const duration = [...new Set(profiles.map(p => p?.duration_seconds
       ? `${p.duration_seconds.minimum}S-${p.duration_seconds.maximum}S`
       : p?.duration_choices_seconds?.length ? `${Math.min(...p.duration_choices_seconds)}S-${Math.max(...p.duration_choices_seconds)}S` : null).filter(Boolean))];
     const ratiosByMode = profiles.map(p => (p?.aspect_ratios || []).join(' / '));
     const ratios = ratiosByMode.every(value => value && value === ratiosByMode[0]) ? ratiosByMode[0] : entries.length > 1 ? '各模式见详情' : ratiosByMode[0] || '待核实';
-    const knownQuotas = entries.map((entry,index) => {
-      const limit = (entry.model.team_profiles || []).map(p => p.input_limits).find(Boolean);
-      const cap = profiles[index] && modeToCap[profiles[index].mode];
-      return limit && cap ? `${cap[0]} ${limit.images}图 · ${limit.videos}视频 · ${limit.audio_files}音频` : null;
+    const input = entries.map(entry => {
+      if (modeFor(entry) !== 'reference_to_video') return null;
+      const limit = (entry.model.supplier_profiles || []).map(p => p.input_limits).find(Boolean);
+      const team = (entry.model.team_profiles || []).map(p => p.input_limits).find(Boolean);
+      if (limit) return `最多 ${limit.videos} 段参考视频 · ${limit.images} 图 · ${limit.audio_files} 音频${team && team.videos < limit.videos ? `（适配器 ${team.videos} 段）` : ''}`;
+      if (team) return `支持参考视频 · 适配器准入 ${team.videos} 段`;
+      return '支持参考视频';
     }).filter(Boolean);
-    const quota = knownQuotas.length ? `最大配额待验证（适配器准入：${knownQuotas.join('；')}；${knownQuotas.length < entries.length ? '其余模式待核实；' : ''}未满额实测）` : '最大配额待验证';
+    const videoInput = input.length === 1 ? input[0] : input.length ? '各模式见详情' : null;
     const audioStates = profiles.map(p => p ? `${audio[p.audio_input] || '待核实'} / ${audio[p.audio_output] || '待核实'}` : '待核实');
     const audioDesc = audioStates.every(value => value === audioStates[0]) ? audioStates[0] : '各模式见详情';
-    return { caps, quota, maxSize:'待验证', maxRes:resolution.length === 1 ? resolution[0] : resolution.length ? '各模式见详情' : '待核实',
+    return { caps, videoInput, maxRes:resolution.length === 1 ? resolution[0] : resolution.length ? '各模式见详情' : '待核实',
       dur:duration.length === 1 ? duration[0] : duration.length ? '各模式见详情' : '待核实', ratios, audioDesc };
   };
+  function inputGuidance(entries) {
+    const rows = entries.map(entry => {
+      const p = (entry.model.supplier_profiles || []).find(profile => profile.input_guidance);
+      if (!p) return '';
+      const g = p.input_guidance;
+      let source;
+      try { source = new URL(g.source_url); } catch { return ''; }
+      if (source.protocol !== 'https:' || source.username || source.password) return '';
+      const mode = modeToCap[p.mode]?.[0] || modes[p.mode] || p.mode;
+      return `<div class="catalog-profile"><strong>${esc(mode)} · 官方资料</strong><dl class="catalog-meta"><dt>参考文件配额</dt><dd>${esc(g.reference_quota)}</dd><dt>附件容量说明</dt><dd>${esc(g.capacity)}</dd></dl><a href="${esc(source.href)}" target="_blank" rel="noopener noreferrer">官方来源 · ${esc(g.checked_on)}</a></div>`;
+    }).filter(Boolean);
+    return rows.length ? `<div class="model-quota-strip">${rows.join('')}</div>` : '';
+  }
   function profiles(items, label) {
     if (!items.length) return `<p class="business-muted">${label}：规格待核实</p>`;
     return `<h5>${label}</h5>${items.map(p => {
       const duration = p.duration_seconds ? `${p.duration_seconds.minimum}–${p.duration_seconds.maximum} 秒` : p.duration_choices_seconds.length ? p.duration_choices_seconds.join(' / ')+' 秒' : '待核实';
       const limits = p.input_limits;
-      return `<div class="catalog-profile"><strong>${esc(modes[p.mode] || p.mode)}</strong><dl class="catalog-meta"><dt>画幅</dt><dd>${esc(p.aspect_ratios.join(' · ') || '待核实')}</dd><dt>参考输入</dt><dd>${limits ? `图像 ${limits.images} · 视频 ${limits.videos} · 音频 ${limits.audio_files}` : '待核实'}</dd><dt>音频输入 / 输出</dt><dd>${audio[p.audio_input]} / ${audio[p.audio_output]}</dd><dt>资料 / 技术验证</dt><dd>${review[p.review_status]} · ${verification[p.verification_status]}</dd></dl></div>`;
+      const input = limits ? `图像 ${limits.images} · 视频 ${limits.videos} · 音频 ${limits.audio_files}` : p.mode === 'reference_to_video' ? '支持参考视频（独立数量未公开）' : '无需参考视频';
+      return `<div class="catalog-profile"><strong>${esc(modes[p.mode] || p.mode)}</strong><dl class="catalog-meta"><dt>画幅</dt><dd>${esc(p.aspect_ratios.join(' · ') || '未公布')}</dd><dt>视频输入</dt><dd>${esc(input)}</dd><dt>视频输出</dt><dd>${esc([p.max_resolution, duration !== '待核实' ? duration : null].filter(Boolean).join(' · ') || '未公布')}</dd><dt>音频输入 / 输出</dt><dd>${audio[p.audio_input]} / ${audio[p.audio_output]}</dd><dt>资料 / 技术验证</dt><dd>${review[p.review_status]} · ${verification[p.verification_status]}</dd></dl></div>`;
     }).join('')}`;
   }
   class VideoCatalogView {
@@ -163,7 +186,13 @@
       const catalogOnly = entries.filter(e => this.data.execution?.fal?.[e.model.id]?.state === 'catalog_only').length;
       const summary = family && entry.channel.id === 'fal' ? `<p class="catalog-execution">${connected} 个端点已接入执行适配 · ${catalogOnly} 个仅目录收录；请查看各模式状态</p>` : '';
       const capPills = info.caps.map(([code, label]) => `<span class="cap-pill"><strong>${esc(code)}</strong> ${esc(label)}</span>`).join('');
-      return `<article class="business-card catalog-card" data-catalog-card><div class="model-head"><div><span class="business-muted">${esc(business[model.business_type] || model.business_type)}</span><h3>${esc(title)}</h3></div></div><p class="model-id-line">模型 ID：<code>${esc(upstreamId ?? "待核实")}</code></p><p class="model-desc">${esc(description)}</p><div class="model-cap-row">${capPills}</div><div class="model-quota-strip"><div class="model-quota-row"><span>参考文件配额</span><strong>${esc(info.quota)}</strong></div><div class="model-quota-row"><span>单次任务最大容量</span><strong>${esc(info.maxSize)}</strong></div></div><dl class="model-params"><dt>支持画幅</dt><dd>${esc(info.ratios)}</dd><dt>音频输入 / 输出</dt><dd>${esc(info.audioDesc)}</dd></dl>${summary || (entries.length===1?this.executionStatus(entry):'')}<div class="model-foot"><div class="tags model-tags" aria-label="输出规格胶囊"><span>${esc(info.maxRes)}</span><span>${esc(info.dur)}</span></div></div><details data-catalog-entry="${esc(group.id)}" ${this.open.has(group.id)?'open':''}><summary>能力规格与审核状态</summary><div class="catalog-detail">${entries.map(e=>`<section><h4>${esc(e.model.display_name)}</h4><p class="model-id-line">端点 ID：<code>${esc(e.model.upstream_model_id ?? '待核实')}</code></p>${this.executionStatus(e)}<p class="business-muted">${esc(review[e.model.identity_review])} · ${esc(e.model.billing_modes.map(b=>billing[b]).join(' / '))}</p>${profiles(e.model.team_profiles,'团队适配范围')}${profiles(e.model.supplier_profiles,'供应商声明范围')}</section>`).join('')}</div></details></article>`;
+      const videoInput = info.videoInput ? `<div class="model-quota-strip"><div class="model-quota-row"><span>视频参考输入</span><strong>${esc(info.videoInput)}</strong></div></div>` : '';
+      const ratios = info.ratios !== '待核实' ? `<dt>支持画幅</dt><dd>${esc(info.ratios)}</dd>` : '';
+      const audioRow = info.audioDesc !== '待核实' ? `<dt>音频输入 / 输出</dt><dd>${esc(info.audioDesc)}</dd>` : '';
+      const output = [info.maxRes,info.dur].filter(value => value !== '待核实');
+      const outputLabel = entry.channel.id === 'fal' ? '供应商视频输出' : '视频输出';
+      const outputFooter = output.length ? `<div class="model-foot"><span class="business-muted">${outputLabel}</span><div class="tags model-tags" aria-label="输出规格胶囊">${output.map(value=>`<span>${esc(value)}</span>`).join('')}</div></div>` : '';
+      return `<article class="business-card catalog-card" data-catalog-card><div class="model-head"><div><span class="business-muted">${esc(business[model.business_type] || model.business_type)}</span><h3>${esc(title)}</h3></div></div><p class="model-id-line">模型 ID：<code>${esc(upstreamId ?? "待核实")}</code></p><p class="model-desc">${esc(description)}</p><div class="model-cap-row">${capPills}</div>${inputGuidance(entries) || videoInput}<dl class="model-params">${ratios}${audioRow}</dl>${summary || (entries.length===1?this.executionStatus(entry):'')}${outputFooter}<details data-catalog-entry="${esc(group.id)}" ${this.open.has(group.id)?'open':''}><summary>能力规格与审核状态</summary><div class="catalog-detail">${entries.map(e=>`<section><h4>${esc(e.model.display_name)}</h4><p class="model-id-line">端点 ID：<code>${esc(e.model.upstream_model_id ?? '待核实')}</code></p><p class="model-desc">${esc(e.model.description)}</p>${this.executionStatus(e)}<p class="business-muted">${esc(review[e.model.identity_review])} · ${esc(e.model.billing_modes.map(b=>billing[b]).join(' / '))}</p>${profiles(e.model.team_profiles,'团队适配范围')}${profiles(e.model.supplier_profiles,'供应商声明范围')}</section>`).join('')}</div></details></article>`;
     }
     renderResults() {
       if (!this.data) return;

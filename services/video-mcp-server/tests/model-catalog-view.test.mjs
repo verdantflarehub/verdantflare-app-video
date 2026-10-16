@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import test from 'node:test';
 
 test('default channel view follows channel order and shows supplier tiers separately from team limits', () => {
-  const context = vm.createContext({});
+  const context = vm.createContext({ URL });
   vm.runInContext(readFileSync(new URL('../frontend/model-catalog.js', import.meta.url), 'utf8'), context);
   const nodes = {};
   const root = { innerHTML: '', addEventListener() {}, removeEventListener() {},
@@ -32,8 +32,8 @@ test('default channel view follows channel order and shows supplier tiers separa
   assert.match(html, /class="channel-group-header"[\s\S]*<h2>Higgsfield<\/h2>/);
   assert.doesNotMatch(html, /class="catalog-channels"/);
   assert.doesNotMatch(html, /Higgsfield · 1080p/);
-  assert.match(html, /aria-label="输出规格胶囊"><span>1080p<\/span><span>待核实<\/span>/);
-  assert.match(html, /aria-label="输出规格胶囊"><span>2K<\/span><span>待核实<\/span>/);
+  assert.match(html, /aria-label="输出规格胶囊"><span>1080p<\/span>/);
+  assert.match(html, /aria-label="输出规格胶囊"><span>2K<\/span>/);
   assert.doesNotMatch(html, /24FPS|≤ 50MB/);
   assert.match(html, /模型 ID：<code>待核实<\/code>/);
   view.filters.view = 'models';
@@ -42,7 +42,7 @@ test('default channel view follows channel order and shows supplier tiers separa
 });
 
 test('fal H3 modes share one card without borrowing quotas or claiming a task-size maximum', () => {
-  const context = vm.createContext({});
+  const context = vm.createContext({ URL });
   vm.runInContext(readFileSync(new URL('../frontend/model-catalog.js', import.meta.url), 'utf8'), context);
   const nodes = {};
   const root = { innerHTML:'', addEventListener() {}, removeEventListener() {},
@@ -70,8 +70,8 @@ test('fal H3 modes share one card without borrowing quotas or claiming a task-si
   assert.match(html, /<strong>T2V<\/strong>/);
   assert.match(html, /<strong>I2V<\/strong>/);
   assert.match(html, /<strong>R2V<\/strong>/);
-  assert.match(html, /最大配额待验证（适配器准入：R2V 9图 · 3视频 · 3音频；其余模式待核实；未满额实测）/);
-  assert.match(html, /单次任务最大容量<\/span><strong>待验证<\/strong>/);
+  assert.match(html, /视频参考输入<\/span><strong>支持参考视频 · 适配器准入 3 段<\/strong>/);
+  assert.doesNotMatch(html, /单次任务最大容量/);
   assert.match(html, /1 个端点已接入执行适配 · 2 个仅目录收录/);
   assert.match(html, /端点 ID：<code>minimax\/h3\/reference-to-video<\/code>/);
   assert.doesNotMatch(html, /≤ 50MB|24FPS/);
@@ -82,8 +82,38 @@ test('fal H3 modes share one card without borrowing quotas or claiming a task-si
   assert.doesNotMatch(nodes['[data-catalog-results]'].innerHTML, /<strong>T2V<\/strong>/);
 });
 
+test('fal official catalog candidate shows mode badges and sourced input/output specs', () => {
+  const context = vm.createContext({ URL });
+  vm.runInContext(readFileSync(new URL('../frontend/model-catalog.js', import.meta.url), 'utf8'), context);
+  const nodes = {};
+  const root = { innerHTML:'', addEventListener() {}, removeEventListener() {},
+    querySelectorAll: () => [], querySelector: selector => nodes[selector] ??= {} };
+  const candidate = readFileSync(new URL('../../../../deploys/k8s.dev.verdantflarehub.com/verdantflare-video/video-models-fal-v0-1-1.cm.yaml', import.meta.url), 'utf8');
+  const catalog = JSON.parse(candidate.split('  channel-catalog.yaml: |\n')[1].split('  review.yaml: |\n')[0].replace(/^    /gm, ''));
+  const channel = { ...catalog.channel, version:catalog.channel_version, models:catalog.models };
+  const view = new context.VideoCatalogView(root, async () => ({}));
+  view.set({ state:'ready',snapshot_id:'official-parameters',channels:[channel],conflicts:[],execution:{fal:{}},
+    groups:channel.models.map(model=>({ id:model.id, entries:[{channel_id:'fal',entry_id:model.id}] })) });
+  const html = nodes['[data-catalog-results]'].innerHTML;
+  assert.match(html, /<strong>T2V<\/strong>/);
+  assert.match(html, /<strong>I2V<\/strong>/);
+  assert.equal((html.match(/<strong>R2V<\/strong>/g) || []).length,3);
+  assert.match(html, /最多 9 图、3 视频、3 音频，合计 ≤12 件/);
+  assert.match(html, /官方资料/);
+  assert.match(html, /图片 ≤30 MB\/张；视频合计 &lt;50 MB；音频 ≤15 MB\/个/);
+  assert.match(html, /官方未公布单任务附件合计上限/);
+  assert.match(html, /官方来源 · 2026-10-17/);
+  assert.doesNotMatch(html, /最大配额待验证|满额实测/);
+  assert.match(html, /支持参考视频/);
+  assert.match(html, /MP4\/MOV/);
+  assert.match(html, /1080p/);
+  assert.match(html, /4K/);
+  assert.match(html, /21:9/);
+  assert.doesNotMatch(html, /单次任务最大容量/);
+});
+
 test('fal cards distinguish the one adapted endpoint from catalog-only entries', () => {
-  const context = vm.createContext({});
+  const context = vm.createContext({ URL });
   vm.runInContext(readFileSync(new URL('../frontend/model-catalog.js', import.meta.url), 'utf8'), context);
   const nodes = {};
   const root = { innerHTML: '', addEventListener() {}, removeEventListener() {},

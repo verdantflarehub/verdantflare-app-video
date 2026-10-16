@@ -319,6 +319,38 @@
                   },
                   "minItems": 1,
                   "uniqueItems": true
+                },
+                "input_guidance": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "reference_quota": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "capacity": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "source_url": {
+                      "type": "string",
+                      "format": "uri",
+                      "pattern": "^https://",
+                      "maxLength": 2048
+                    },
+                    "checked_on": {
+                      "type": "string",
+                      "format": "date"
+                    }
+                  },
+                  "required": [
+                    "reference_quota",
+                    "capacity",
+                    "source_url",
+                    "checked_on"
+                  ]
                 }
               },
               "required": [
@@ -492,6 +524,38 @@
                   },
                   "minItems": 1,
                   "uniqueItems": true
+                },
+                "input_guidance": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "reference_quota": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "capacity": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "source_url": {
+                      "type": "string",
+                      "format": "uri",
+                      "pattern": "^https://",
+                      "maxLength": 2048
+                    },
+                    "checked_on": {
+                      "type": "string",
+                      "format": "date"
+                    }
+                  },
+                  "required": [
+                    "reference_quota",
+                    "capacity",
+                    "source_url",
+                    "checked_on"
+                  ]
                 }
               },
               "required": [
