@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
@@ -473,33 +474,58 @@ class FalAdapter:
         return value
 
     def _download(self, url: str) -> bytes:
-        data = bytearray()
+        source = self._allowed_result_url(url)
+        def receive(response: httpx.Response, maximum: int) -> bytes:
+            content_type = response.headers.get("content-type", "").split(";", 1)[0].strip()
+            if content_type not in {"video/mp4", "application/octet-stream"}:
+                raise FalError("result_integrity_failed")
+            data = bytearray()
+            for chunk in response.iter_bytes():
+                data.extend(chunk)
+                if len(data) > maximum:
+                    raise FalError("result_integrity_failed")
+            if not data:
+                raise FalError("result_integrity_failed")
+            return bytes(data)
+
         try:
             with self.executor.client.stream(
-                "GET", self._allowed_result_url(url), headers={"Accept": "video/*"}, timeout=600
+                "GET", source, headers={"Accept": "video/*", "Range": "bytes=0-0"}, timeout=60
             ) as response:
-                if not response.is_success:
+                if response.status_code == 200:
+                    declared = response.headers.get("content-length")
+                    if declared and (not declared.isdecimal() or not 0 < int(declared) <= MAX_ARTIFACT_BYTES):
+                        raise FalError("result_integrity_failed")
+                    return receive(response, MAX_ARTIFACT_BYTES)
+                if response.status_code != 206:
                     raise FalError("result_download_failed")
-                content_type = response.headers.get("content-type", "").split(";", 1)[0].strip()
-                if content_type not in {"video/mp4", "application/octet-stream"}:
+                match = re.fullmatch(r"bytes 0-0/([1-9][0-9]*)", response.headers.get("content-range", ""))
+                if not match or int(match[1]) > MAX_ARTIFACT_BYTES:
                     raise FalError("result_integrity_failed")
-                content_length = response.headers.get("content-length")
-                if content_length:
-                    try:
-                        declared_size = int(content_length)
-                    except ValueError as error:
-                        raise FalError("result_integrity_failed") from error
-                    if not 0 < declared_size <= MAX_ARTIFACT_BYTES:
+                total = int(match[1])
+                first = receive(response, 1)
+
+            chunk_size = max(256 * 1024, (total + 63) // 64)
+            ranges = [(start, min(start + chunk_size - 1, total - 1)) for start in range(1, total, chunk_size)]
+            def fetch(part: tuple[int, int]) -> bytes:
+                start, end = part
+                with self.executor.client.stream(
+                    "GET", source, headers={"Accept": "video/*", "Range": f"bytes={start}-{end}"}, timeout=180
+                ) as response:
+                    if response.status_code != 206 or response.headers.get("content-range") != f"bytes {start}-{end}/{total}":
                         raise FalError("result_integrity_failed")
-                for chunk in response.iter_bytes():
-                    data.extend(chunk)
-                    if len(data) > MAX_ARTIFACT_BYTES:
+                    payload = receive(response, end - start + 1)
+                    if len(payload) != end - start + 1:
                         raise FalError("result_integrity_failed")
+                    return payload
+            with ThreadPoolExecutor(max_workers=min(8, len(ranges) or 1)) as pool:
+                pieces = list(pool.map(fetch, ranges))
+            data = first + b"".join(pieces)
+            if len(data) != total:
+                raise FalError("result_integrity_failed")
+            return data
         except httpx.HTTPError as error:
             raise FalError("result_download_failed") from error
-        if not data:
-            raise FalError("result_integrity_failed")
-        return bytes(data)
 
     @staticmethod
     def _probe(payload: bytes) -> dict[str, object]:
