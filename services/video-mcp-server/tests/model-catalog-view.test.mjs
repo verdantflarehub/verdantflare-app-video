@@ -97,12 +97,12 @@ test('fal official catalog candidate shows mode badges and sourced input/output 
   const html = nodes['[data-catalog-results]'].innerHTML;
   assert.match(html, /<strong>T2V<\/strong>/);
   assert.match(html, /<strong>I2V<\/strong>/);
-  assert.equal((html.match(/<strong>R2V<\/strong>/g) || []).length,3);
+  assert.equal((html.match(/class="cap-pill"><strong>R2V<\/strong>/g) || []).length,3);
   assert.match(html, /最多 9 图、3 视频、3 音频，合计 ≤12 件/);
-  assert.match(html, /官方资料/);
+  assert.doesNotMatch(html, /官方资料|官方来源|官方未|所查官方|未公布|未公开/);
   assert.match(html, /图片 ≤30 MB\/张；视频合计 &lt;50 MB；音频 ≤15 MB\/个/);
-  assert.match(html, /官方未公布单任务附件合计上限/);
-  assert.match(html, /官方来源 · 2026-10-17/);
+  assert.match(html, /参考视频、音频各自合计 ≤15 秒，每段 2–15 秒/);
+  assert.doesNotMatch(html, /href="https:\/\/fal.ai/);
   assert.doesNotMatch(html, /待验证|待核实|各模式见详情|满额实测/);
   assert.match(html, /支持参考视频/);
   assert.match(html, /MP4\/MOV/);

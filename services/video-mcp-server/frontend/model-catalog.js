@@ -100,6 +100,12 @@
       ? `${audio[p.audio_input] || '未公布'} / ${audio[p.audio_output] || '未公布'}` : null));
     return { caps, videoInput, maxRes:resolution, dur:duration, ratios, audioDesc };
   };
+  // Keep provenance in the catalog; the customer view contains known parameters only.
+  const knownParameterText = value => String(value || '').split(/[；。]/).map(sentence =>
+    sentence.split('，').filter(clause => !/(?:官方|所查官方资料)?未(?:公布|提供|给)|未公开/.test(clause)).join('，')
+  ).filter(Boolean).join('；');
+  const descriptionFor = entry => entry.channel.id === 'fal'
+    ? knownParameterText(entry.model.description).replace(/^fal 官方 /, '') : entry.model.description;
   function inputGuidance(entries) {
     const rows = entries.map(entry => {
       const p = (entry.model.supplier_profiles || []).find(profile => profile.input_guidance);
@@ -109,16 +115,30 @@
       try { source = new URL(g.source_url); } catch { return ''; }
       if (source.protocol !== 'https:' || source.username || source.password) return '';
       const mode = modeToCap[p.mode]?.[0] || modes[p.mode] || p.mode;
-      return `<div class="catalog-profile"><strong>${esc(mode)} · 官方资料</strong><dl class="catalog-meta"><dt>参考文件配额</dt><dd>${esc(g.reference_quota)}</dd><dt>附件容量说明</dt><dd>${esc(g.capacity)}</dd></dl><a href="${esc(source.href)}" target="_blank" rel="noopener noreferrer">官方来源 · ${esc(g.checked_on)}</a></div>`;
+      const quota = knownParameterText(g.reference_quota);
+      const capacity = knownParameterText(g.capacity);
+      if (!quota && !capacity) return '';
+      return `<div class="catalog-profile"><strong>${esc(mode)}</strong><dl class="catalog-meta">${quota ? `<dt>参考文件配额</dt><dd>${esc(quota)}</dd>` : ''}${capacity ? `<dt>附件容量说明</dt><dd>${esc(capacity)}</dd>` : ''}</dl></div>`;
     }).filter(Boolean);
     return rows.length ? `<div class="model-quota-strip">${rows.join('')}</div>` : '';
   }
-  function profiles(items, label) {
-    if (!items.length) return `<p class="business-muted">${label}：暂无适配规格</p>`;
+  function profiles(items, label, knownOnly = false) {
+    if (!items.length) return knownOnly ? '' : `<p class="business-muted">${label}：暂无适配规格</p>`;
     return `<h5>${label}</h5>${items.map(p => {
       const duration = p.duration_seconds ? `${p.duration_seconds.minimum}–${p.duration_seconds.maximum} 秒` : p.duration_choices_seconds.length ? p.duration_choices_seconds.join(' / ')+' 秒' : '待核实';
       const limits = p.input_limits;
-      const input = limits ? `图像 ${limits.images} · 视频 ${limits.videos} · 音频 ${limits.audio_files}` : p.mode === 'reference_to_video' ? '支持参考视频（独立数量未公开）' : '无需参考视频';
+      const input = limits ? `图像 ${limits.images} · 视频 ${limits.videos} · 音频 ${limits.audio_files}` : p.mode === 'reference_to_video' ? '支持参考视频' : '无需参考视频';
+      if (knownOnly) {
+        const rows = [
+          ['画幅', p.aspect_ratios.join(' · ')],
+          ['视频输入', input],
+          ['视频输出', [p.max_resolution, duration !== '待核实' ? duration : null].filter(Boolean).join(' · ')],
+          ['音频输入', p.audio_input !== 'unknown' ? audio[p.audio_input] : ''],
+          ['音频输出', p.audio_output !== 'unknown' ? audio[p.audio_output] : ''],
+          ['资料 / 技术验证', `${review[p.review_status]} · ${verification[p.verification_status]}`]
+        ].filter(([,value]) => value);
+        return `<div class="catalog-profile"><strong>${esc(modes[p.mode] || p.mode)}</strong><dl class="catalog-meta">${rows.map(([name,value]) => `<dt>${esc(name)}</dt><dd>${esc(value)}</dd>`).join('')}</dl></div>`;
+      }
       return `<div class="catalog-profile"><strong>${esc(modes[p.mode] || p.mode)}</strong><dl class="catalog-meta"><dt>画幅</dt><dd>${esc(p.aspect_ratios.join(' · ') || '未公布')}</dd><dt>视频输入</dt><dd>${esc(input)}</dd><dt>视频输出</dt><dd>${esc([p.max_resolution, duration !== '待核实' ? duration : null].filter(Boolean).join(' · ') || '未公布')}</dd><dt>音频输入 / 输出</dt><dd>${audio[p.audio_input]} / ${audio[p.audio_output]}</dd><dt>资料 / 技术验证</dt><dd>${review[p.review_status]} · ${verification[p.verification_status]}</dd></dl></div>`;
     }).join('')}`;
   }
@@ -190,7 +210,7 @@
       const family = entries.length > 1 && familyKey && entries.every(e => familyOf(e) === familyKey);
       const title = family ? model.display_name.split(' · ')[0] : model.display_name;
       const upstreamId = family ? model.upstream_model_id.slice(0, model.upstream_model_id.lastIndexOf('/')) : model.upstream_model_id;
-      const description = family ? `${info.caps.map(([,label]) => label).join("、")}；各模式参数如下。` : model.description;
+      const description = family ? `${info.caps.map(([,label]) => label).join("、")}；各模式参数如下。` : descriptionFor(entry);
       const connected = entries.filter(e => this.data.execution?.fal?.[e.model.id]?.state === 'adapter_connected_unverified').length;
       const catalogOnly = entries.filter(e => this.data.execution?.fal?.[e.model.id]?.state === 'catalog_only').length;
       const summary = family && entry.channel.id === 'fal' ? `<p class="catalog-execution">${connected} 个端点已接入执行适配 · ${catalogOnly} 个仅目录收录</p>` : '';
@@ -201,7 +221,7 @@
       const output = [info.maxRes,info.dur].filter(Boolean);
       const outputLabel = entry.channel.id === 'fal' ? '供应商视频输出' : '视频输出';
       const outputFooter = output.length ? `<div class="model-foot"><span class="business-muted">${outputLabel}</span><div class="tags model-tags" aria-label="输出规格胶囊">${output.map(value=>`<span>${esc(value)}</span>`).join('')}</div></div>` : '';
-      return `<article class="business-card catalog-card" data-catalog-card><div class="model-head"><div><span class="business-muted">${esc(business[model.business_type] || model.business_type)}</span><h3>${esc(title)}</h3></div></div><p class="model-id-line">模型 ID：<code>${esc(upstreamId ?? "待核实")}</code></p><p class="model-desc">${esc(description)}</p><div class="model-cap-row">${capPills}</div>${inputGuidance(entries) || videoInput}<dl class="model-params">${ratios}${audioRow}</dl>${summary || (entries.length===1?this.executionStatus(entry):'')}${outputFooter}<details data-catalog-entry="${esc(group.id)}" ${this.open.has(group.id)?'open':''}><summary>能力规格与审核状态</summary><div class="catalog-detail">${entries.map(e=>`<section><h4>${esc(e.model.display_name)}</h4><p class="model-id-line">端点 ID：<code>${esc(e.model.upstream_model_id ?? '待核实')}</code></p><p class="model-desc">${esc(e.model.description)}</p>${this.executionStatus(e)}<p class="business-muted">${esc(review[e.model.identity_review])} · ${esc(e.model.billing_modes.map(b=>billing[b]).join(' / '))}</p>${profiles(e.model.team_profiles,'团队适配范围')}${profiles(e.model.supplier_profiles,'供应商声明范围')}</section>`).join('')}</div></details></article>`;
+      return `<article class="business-card catalog-card" data-catalog-card><div class="model-head"><div><span class="business-muted">${esc(business[model.business_type] || model.business_type)}</span><h3>${esc(title)}</h3></div></div><p class="model-id-line">模型 ID：<code>${esc(upstreamId ?? "待核实")}</code></p><p class="model-desc">${esc(description)}</p><div class="model-cap-row">${capPills}</div>${inputGuidance(entries) || videoInput}<dl class="model-params">${ratios}${audioRow}</dl>${summary || (entries.length===1?this.executionStatus(entry):'')}${outputFooter}<details data-catalog-entry="${esc(group.id)}" ${this.open.has(group.id)?'open':''}><summary>能力规格与审核状态</summary><div class="catalog-detail">${entries.map(e=>`<section><h4>${esc(e.model.display_name)}</h4><p class="model-id-line">端点 ID：<code>${esc(e.model.upstream_model_id ?? '待核实')}</code></p><p class="model-desc">${esc(descriptionFor(e))}</p>${this.executionStatus(e)}<p class="business-muted">${esc(review[e.model.identity_review])} · ${esc(e.model.billing_modes.map(b=>billing[b]).join(' / '))}</p>${profiles(e.model.team_profiles,'团队适配范围',e.channel.id === 'fal')}${profiles(e.model.supplier_profiles,'供应商声明范围',e.channel.id === 'fal')}</section>`).join('')}</div></details></article>`;
     }
     renderResults() {
       if (!this.data) return;
