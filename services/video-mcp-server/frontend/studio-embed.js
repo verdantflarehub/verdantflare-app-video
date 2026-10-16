@@ -8,6 +8,22 @@ if (window.studioEmbedded) {
  const view=new URLSearchParams(location.search).get('view');
  const hostOrigin=new URL(location.href).origin;
  let next=0;const pending=new Map();
+ const previews=new Map(),previewFocus=new Map(); let previewRevision=0;
+ window.studioPreviewImage=async(url,title)=>{
+  if(!url.startsWith('blob:'))throw Error('图片尚未准备好。');
+  const epoch=++previewRevision,focus=document.activeElement;
+  const response=await fetch(url),blob=await response.blob();
+  if(blob.size>128*1024*1024)throw Error('图片过大，请下载查看。');
+  const bytes=await blob.arrayBuffer(),id=++next;
+  if(epoch!==previewRevision)return;
+  previewFocus.set(id,focus);
+  return new Promise((resolve,reject)=>{
+   const timer=setTimeout(()=>{previews.delete(id);previewFocus.delete(id);reject(Error('全局预览未响应，请刷新 Studio 后重试。'))},15000);
+   previews.set(id,{resolve,reject,timer});
+   parent.postMessage({channel:'vf-video',view,type:'media-preview',id,bytes,mime:blob.type,title:String(title).slice(0,256)},hostOrigin,[bytes]);
+  });
+ };
+ window.studioClosePreview=()=>{previewRevision++;parent.postMessage({channel:'vf-video',view,type:'media-close'},hostOrigin)};
  window.studioRequest=(path,options={})=>new Promise((resolve,reject)=>{
   const id=++next;const timer=setTimeout(()=>{pending.delete(id);reject(Error('Video 连接超时，请重新连接。'))},95000);
   pending.set(id,{resolve,reject,timer});
@@ -16,6 +32,11 @@ if (window.studioEmbedded) {
  window.addEventListener('message',e=>{
   if(e.source!==parent||e.origin!==hostOrigin||e.data?.channel!=='vf-studio')return;
   const d=e.data;
+  if(d.type==='media-result'&&previews.has(d.id)){
+   const item=previews.get(d.id);previews.delete(d.id);clearTimeout(item.timer);
+   if(d.ok)item.resolve();else {previewFocus.delete(d.id);item.reject(Error('无法打开图片预览，请刷新后重试。'))}return;
+  }
+  if(d.type==='media-closed'){const focus=previewFocus.get(d.id);if(focus?.isConnected)focus.focus({preventScroll:true});previewFocus.delete(d.id);return}
   if(d.type==='theme'){document.documentElement.dataset.theme=d.theme==='light'?'light':'dark';return}
   if(d.type==='route'&&typeof d.hash==='string'){if(location.hash!=='#'+d.hash)location.hash='#'+d.hash;return}
   if(d.type==='restore'){window.dispatchEvent(new CustomEvent('studio-restore',{detail:d.state}));return}

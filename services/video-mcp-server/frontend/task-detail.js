@@ -13,12 +13,17 @@ function resetImageZoom() {
   syncImageZoom();
 }
 function openImagePreview(url, label) {
+  if (window.studioEmbedded && window.studioPreviewImage) {
+    window.studioPreviewImage(url, label).catch(error => { $("detailMessage").textContent = error.message; });
+    return;
+  }
   resetImageZoom();
   $("imagePreviewTitle").textContent = `${label} · 游标仿射缩放 (0.5x – 5.0x)`;
   $("imagePreviewImage").src = url;
   if (!$("imagePreview").open) $("imagePreview").showModal();
 }
 function clearTaskDetail() {
+  window.studioClosePreview?.();
   currentTitleTask = null;
   if ($("titleForm")) $("titleForm").hidden = true;
   if ($("editTitle")) $("editTitle").hidden = true;
