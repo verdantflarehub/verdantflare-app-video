@@ -73,6 +73,7 @@ test('task detail HTML and CSS match prototype v1.3 two-pane inspector, 380px st
     assert.match(html, /id="imagePreviewStage"/);
     assert.match(html, /id="zoomReadout"/);
     assert.match(html, /id="zoomReset"/);
+    assert.match(html, /<section class="output-pane">[\s\S]*id="detailOutputMeta"[\s\S]*id="taskPrompt"[\s\S]*<\/section><div class="input-pane"><section class="input-factors-container"><div id="referenceGroups">/);
   }
   assert.doesNotMatch(css, /\.result-stage\{[^}]*width:640px/);
   assert.match(css, /\.result-stage\{[^}]*width:100%;height:380px/);

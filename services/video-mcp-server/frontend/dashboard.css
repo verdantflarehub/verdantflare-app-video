@@ -1123,7 +1123,7 @@ body{background:#0d120f;color:#e3e9e5}
 #detailMessage{font-size:13px;color:var(--muted)}#detailMessage:not(:empty){padding:14px 24px;border-bottom:0.5px solid #2b352e}
 #detailContent{display:flex;flex-direction:column;gap:0}#detailContent h2{font-size:15px;font-weight:600;margin:0}#detailContent h2 small{font-size:11px;color:#91a096;margin-left:10px}
 .inspect-layout{display:grid;grid-template-columns:minmax(0,0.82fr) minmax(0,1.18fr);align-items:start}
-.output-pane{padding:22px 24px;min-width:0;position:sticky;top:16px}
+.output-pane{padding:22px 24px;min-width:0;position:sticky;top:16px;display:flex;flex-direction:column;gap:22px}
 .input-pane{padding:22px 24px;min-width:0;border-left:0.5px solid #2b352e;display:flex;flex-direction:column;gap:22px}
 .pane-title{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
 .result-stage{box-sizing:border-box;width:100%;height:380px;border-radius:10px;padding:16px;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;background:radial-gradient(ellipse at 50% 25%,rgba(76,227,154,0.08),transparent 65%),#090f0b;border:0.5px solid #2b3c2f;text-align:center;color:#91a096;overflow-wrap:anywhere}
@@ -1134,7 +1134,7 @@ body{background:#0d120f;color:#e3e9e5}
 .output-meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
 .output-meta span{display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border-radius:5px;background:#0d1510;border:0.5px solid #2b352e;color:#91a096;font-size:11px;font-variant-numeric:tabular-nums}
 .factor-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;flex-wrap:wrap}
-.factor-header h2,.factor-header h3{margin:0!important;font-size:14px;font-weight:650}
+#detailContent .factor-header h2,#detailContent .factor-header h3,.factor-header h2,.factor-header h3{margin:0!important;font-size:14px;font-weight:650;line-height:1.4}
 .factor-header h3 small{font-size:11px;font-weight:400;color:#91a096;margin-left:6px}
 .factor-quota{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;font-family:"SFMono-Regular",Consolas,monospace;font-variant-numeric:tabular-nums;border:0.5px solid rgba(76,227,154,0.28);background:rgba(76,227,154,0.1);color:var(--green)}
 .factor-quota.empty{border-color:var(--line);background:rgba(244,241,232,0.04);color:var(--muted)}
