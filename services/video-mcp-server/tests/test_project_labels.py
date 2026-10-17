@@ -24,14 +24,15 @@ class ProjectLabelsTest(unittest.TestCase):
         calls = []
         def handler(request):
             body = json.loads(request.content)
-            self.assertFalse(body['require_write'])
+            self.assertNotIn('require_write', body)
+            self.assertTrue(body.get('cursor', 'initial'))
             self.assertEqual(request.headers['x-user-id'], 'user-a')
             self.assertEqual(request.headers['x-organization-id'], 'org-a')
-            calls.append(body['cursor'])
+            calls.append(body.get('cursor', ''))
             return httpx.Response(200, json={'items': [
-                {'project_id': 'a' if not body['cursor'] else 'b', 'name': '最后一块冰', 'category': 'creative_video'},
+                {'project_id': 'a' if not body.get('cursor', '') else 'b', 'name': '最后一块冰', 'category': 'creative_video'},
                 {'project_id': 'unrelated', 'name': '不应返回', 'category': 'music'}],
-                'next_cursor': 'page2' if not body['cursor'] else ''})
+                'next_cursor': 'page2' if not body.get('cursor', '') else ''})
         with httpx.Client(transport=httpx.MockTransport(handler)) as client:
             items = project_options(client, ['b', 'a', 'missing'])
         self.assertEqual(calls, ['', 'page2'])

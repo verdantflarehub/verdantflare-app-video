@@ -27,10 +27,14 @@ def project_options(client, project_ids):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
+                # Project rejects explicit empty optional fields; omitted require_write defaults to false.
+                body = {'limit': 100}
+                if cursor:
+                    body['cursor'] = cursor
                 response = client.post(url + '/internal/v1/project/list', headers={
                     'Authorization': 'Bearer ' + token, 'X-User-Id': actor['user_id'],
                     'X-Organization-Id': actor['organization_id'], 'X-Request-Id': request_id(),
-                }, json={'require_write': False, 'limit': 100, 'cursor': cursor}, timeout=min(5, remaining))
+                }, json=body, timeout=min(5, remaining))
                 response.raise_for_status()
                 data = response.json()
                 for item in data.get('items', []):
