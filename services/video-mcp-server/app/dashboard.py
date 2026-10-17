@@ -21,6 +21,7 @@ from .resources import Resources
 from .tasks import TaskConflict, TaskNotFound, TaskRecord, TaskStore
 from .collection import public_collection
 from . import titles
+from .project_labels import project_options
 
 _PACKAGE_FRONTEND = Path(__file__).parent.parent / "frontend"
 _WORKSPACE_FRONTEND = Path.cwd() / "services" / "video-mcp-server" / "frontend"
@@ -221,6 +222,8 @@ class Dashboard:
             visible.append(record)
         records = visible
         projects = sorted({r.project_id for r in records})
+        options = project_options(self.executor.client, projects)
+        project_labels = {item["id"]: item["label"] for item in options}
         channels = [{"id": c, "label": channel_label(c)} for c in sorted({task_channel(r) for r in records})]
         rows = [public_task(r, self.executor.tasks) for r in records]
         channel = query.get("channel", "all")
@@ -233,7 +236,8 @@ class Dashboard:
         search = query.get("q", "").casefold()
         if search:
             rows = [r for r in rows if search in " ".join(str(r[k]) for k in (
-                "title", "prompt", "project_id", "idempotency_key", "video_task_id")).casefold()]
+                "title", "prompt", "project_id", "idempotency_key", "video_task_id")).casefold()
+                    or search in project_labels.get(r["project_id"], "").casefold()]
         counts = {s: sum(r["status"] == s for r in rows) for s in (
             "queued", "running", "succeeded", "failed", "cancelled")}
         status_filter = query.get("status", "all")
@@ -243,7 +247,7 @@ class Dashboard:
                    for r in rows if r["status"] == "succeeded"]
         elapsed = [value for value in elapsed if value is not None]
         return {"tasks": rows[(page-1)*size:page*size], "total": len(rows), "page": page,
-                "page_size": size, "projects": projects, "channels": channels, "counts": counts,
+                "page_size": size, "projects": projects, "project_options": options, "channels": channels, "counts": counts,
                 "completion_times": [r["completed_at"] for r in rows if r["status"] == "succeeded"],
                 "average_elapsed_seconds": round(sum(elapsed)/len(elapsed), 1) if elapsed else None,
                 "services": dict(self.services), "grok_capability": self.executor.grok.capability(),

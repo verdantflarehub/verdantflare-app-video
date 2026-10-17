@@ -19,6 +19,21 @@ from app.tasks import TaskStore
 
 
 class DashboardTest(unittest.TestCase):
+    def test_project_title_and_category_search_preserve_id_filter(self):
+        self.tasks.create(project_id='demo', idempotency_key='project-label',
+                          request={'route': 'h3', 'prompt': 'plain'}, input_digest='label',
+                          runtime_task_id='label', status='failed')
+        options = [{'id': 'demo', 'title': '最后一块冰', 'category': 'creative_video',
+                    'category_label': '创意视频制作', 'label': '创意视频制作 · 最后一块冰'}]
+        with mock.patch('app.dashboard.project_options', return_value=options):
+            for term in ('最后一块冰', '创意视频制作'):
+                result = self.client.get('/api/dashboard', params={'q': term, 'project_id': 'demo'}, headers=self.headers).json()
+                self.assertEqual(result['total'], 1)
+                self.assertEqual(result['projects'], ['demo'])
+                self.assertEqual(result['project_options'], options)
+            result = self.client.get('/api/dashboard', params={'q': '最后一块冰', 'project_id': 'other'}, headers=self.headers).json()
+            self.assertEqual(result['total'], 0)
+
     def test_catalog_endpoint_matches_capabilities_and_remains_read_only(self):
         response = self.client.get('/api/model-catalog',headers=self.headers)
         self.assertEqual(response.status_code,200)

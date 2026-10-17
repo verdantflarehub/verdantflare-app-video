@@ -377,13 +377,14 @@ function render(data) {
     $("filterChannel").add(new Option(channel, channel));
   $("filterChannel").value = channel;
   const project = $("filterProject").value;
+  const projectOptions = data.project_options || (data.projects || []).map((id, i) => ({id, label: `未分类 · 历史项目 ${i + 1}（名称不可用）`}));
   $("filterProject").innerHTML =
     '<option value="all">全部项目</option>' +
-    data.projects
-      .map((v) => `<option value="${escapeHTML(v)}">项目 ${escapeHTML(v)}</option>`)
+    projectOptions
+      .map((v) => `<option value="${escapeHTML(v.id)}">${escapeHTML(v.label)}</option>`)
       .join("");
-  if (project !== "all" && !data.projects.includes(project))
-    $("filterProject").add(new Option(`项目 ${project}`, project));
+  if (project !== "all" && !projectOptions.some((item) => item.id === project))
+    $("filterProject").add(new Option("原选项目（名称不可用）", project));
   $("filterProject").value = project;
   $("emptyState").hidden = data.tasks.length > 0;
   $("emptyState").textContent = data.total
