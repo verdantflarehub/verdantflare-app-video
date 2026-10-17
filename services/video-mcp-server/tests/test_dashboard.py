@@ -137,6 +137,37 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual(self.client.get('/api/dashboard?service=h3-sol', headers=self.headers).json()['total'], 0)
         self.assertEqual(self.client.get('/api/dashboard?page=bad', headers=self.headers).status_code, 400)
 
+    def test_channel_project_search_counts_and_pagination(self):
+        for i, route in enumerate(('h3', 'h3-sol', 'h3-vdn', 'h3-singularity', 'fal', 'higgsfield', 'grok')):
+            self.tasks.create(project_id='demo', idempotency_key=f'channel-{i}',
+                              request={'route': route, 'prompt': 'needle'}, input_digest=str(i),
+                              runtime_task_id=str(i), status='queued' if i == 0 else 'failed')
+        self.tasks.create(project_id='other', idempotency_key='other', request={'route': 'h3', 'prompt': 'needle'},
+                          input_digest='other', runtime_task_id='other', status='queued')
+        with mock.patch.object(self.executor.fal, 'authorize_record'), \
+             mock.patch.object(self.executor.higgsfield, 'authorize_record'):
+            data = self.client.get('/api/dashboard?channel=local&project_id=demo&q=needle&status=failed&page=2&page_size=2', headers=self.headers).json()
+            self.assertEqual(data['total'], 3)
+            self.assertEqual(len(data['tasks']), 1)
+            self.assertEqual(data['counts']['queued'], 1)
+            self.assertEqual(data['counts']['failed'], 3)
+            self.assertEqual({c['id'] for c in data['channels']}, {'local', 'fal', 'higgsfield', 'grok'})
+            self.assertEqual(data['projects'], ['demo', 'other'])
+            for channel in ('fal', 'higgsfield', 'grok'):
+                result = self.client.get(f'/api/dashboard?channel={channel}&project_id=demo', headers=self.headers).json()
+                self.assertEqual(result['total'], 1)
+                self.assertEqual(result['tasks'][0]['presentation']['channel_id'], channel)
+            result = self.client.get('/api/dashboard?channel=local&service=fal', headers=self.headers).json()
+            self.assertEqual(result['total'], 0)
+            result = self.client.get('/api/dashboard?channel=unknown', headers=self.headers).json()
+            self.assertEqual(result['total'], 0)
+        with mock.patch.object(self.executor.fal, 'authorize_record', side_effect=PermissionError), \
+             mock.patch.object(self.executor.higgsfield, 'authorize_record', side_effect=PermissionError):
+            result = self.client.get('/api/dashboard?channel=fal', headers=self.headers).json()
+            self.assertEqual(result['total'], 0)
+            self.assertNotIn('fal', {c['id'] for c in result['channels']})
+            self.assertNotIn('higgsfield', {c['id'] for c in result['channels']})
+
     def test_sol_rejected_without_fallback_and_inputs_are_strict(self):
         self.assertEqual(self.client.post('/api/tasks', json={**self.payload,'route':'h3-sol'}, headers=self.headers).status_code, 409)
         self.assertEqual(len(self.calls), 0)

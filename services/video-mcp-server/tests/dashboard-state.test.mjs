@@ -7,12 +7,13 @@ import vm from 'node:vm';
 const script = readFileSync(new URL('../frontend/dashboard.js', import.meta.url), 'utf8');
 function setup() {
   const listeners = new Map(), microtasks = [], messages = [];
-  const node = () => ({ value: '', hidden: true, classList: { contains: () => false, toggle() {}, add() {}, remove() {} },
+  const node = () => ({ value: '', options: [], add(option) { this.options.push(option) }, hidden: true, classList: { contains: () => false, toggle() {}, add() {}, remove() {} },
     elements: { route: { addEventListener() {} } }, addEventListener() {} });
   const nodes = new Map();
   const context = vm.createContext({
     window: { studioEmbedded: true, studioNavigate: path => messages.push(path), addEventListener: (type, fn) => listeners.set('window:' + type, fn) },
-    document: { getElementById: id => { if (!nodes.has(id)) nodes.set(id, node()); return nodes.get(id) }, addEventListener: (type, fn) => listeners.set(type, fn) },
+    Option: function(text, value) { this.text = text; this.value = value },
+    document: { querySelectorAll: () => [], getElementById: id => { if (!nodes.has(id)) nodes.set(id, node()); return nodes.get(id) }, addEventListener: (type, fn) => listeners.set(type, fn) },
     location: { pathname: '/dashboard', hash: '#tasks', search: '' }, URLSearchParams, URL,
     queueMicrotask: fn => microtasks.push(fn), setTimeout: () => 1, clearTimeout() {},
   });
@@ -80,4 +81,35 @@ test('task detail HTML and CSS match prototype v1.3 two-pane inspector, 380px st
   assert.match(css, /\.result-stage video\{[^}]*max-height:348px[^}]*object-fit:contain[^}]*aspect-ratio:auto/);
   assert.match(css, /\.inspect-layout\{display:grid;grid-template-columns:minmax\(0,0\.82fr\) minmax\(0,1\.18fr\);align-items:start\}/);
   assert.match(css, /\.ref-video-grid\{display:grid!important;grid-template-columns:repeat\(3,minmax\(0,1fr\)\);gap:12px;width:100%\}/);
+});
+
+
+test('channel and project query and saved state use the selected values', () => {
+  const app = setup();
+  app.run('$("filterChannel").value = "higgsfield"; $("filterProject").value = "project-two"; $("searchInput").value = " needle "; page = 3; status = "failed";');
+  const params = new URLSearchParams(app.run('query().toString()'));
+  assert.equal(params.get('channel'), 'higgsfield');
+  assert.equal(params.get('project_id'), 'project-two');
+  assert.equal(params.get('q'), 'needle');
+  assert.equal(params.get('page'), '3');
+  assert.equal(params.has('service'), false);
+  const state = app.run('window.studioViewState()');
+  assert.equal(state.channel, 'higgsfield');
+  assert.equal(state.project, 'project-two');
+  app.run('refresh = () => {}; filter()');
+  assert.equal(app.run('page'), 1);
+});
+
+
+test('return from details restores channels, projects and legacy local engines', () => {
+  for (const saved of [{ channel: 'higgsfield' }, { engine: 'h3-vdn' }, { channel: 'future-channel' }]) {
+    const app = setup();
+    app.run('refresh = () => {};');
+    app.listeners.get('window:studio-restore')({ detail: { ...saved, project: 'project-two', page: 2, status: 'failed' } });
+    const state = app.run('window.studioViewState()');
+    assert.equal(state.channel, saved.channel || 'local');
+    assert.equal(state.project, 'project-two');
+    assert.equal(state.page, 2);
+    assert.equal(state.status, 'failed');
+  }
 });

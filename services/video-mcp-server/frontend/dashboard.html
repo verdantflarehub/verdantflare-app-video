@@ -45,16 +45,16 @@
 <section aria-labelledby="tasksHeading" class="market-wrap business-section" data-business-view="tasks" id="view-tasks">
 <h1 id="tasksHeading">任务</h1>
 
-<p class="business-muted">平均处理耗时（包含排队）：<span id="metricLatency">—</span> · 数量按项目、模型和关键词汇总。</p>
+<p class="business-muted">平均处理耗时（包含排队）：<span id="metricLatency">—</span> · 数量按渠道、项目和关键词汇总。</p>
 <div class="market-toolbar">
 <label class="market-search"><span>任务名称 / 提示词</span><input id="searchInput" placeholder="搜索名称、提示词或任务编号…" type="search"/></label>
 <div class="market-selects">
-<label><span>推理服务</span><select id="filterEngine">
-<option value="all">全部服务</option>
-<option value="h3">h3</option>
-<option value="h3-sol">h3-sol</option>
-<option value="h3-vdn">h3-vdn</option>
-<option value="fal">fal</option><option disabled value="grok">Grok · 检查中</option>
+<label><span>渠道</span><select id="filterChannel">
+<option value="all">全部渠道</option>
+<option value="local">本地</option>
+<option value="higgsfield">Higgsfield</option>
+<option value="fal">fal.ai</option>
+<option value="grok">xAI</option>
 </select></label><label><span>所属项目</span><select id="filterProject">
 <option value="all">全部项目</option>
 </select></label>

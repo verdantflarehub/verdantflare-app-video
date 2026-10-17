@@ -249,7 +249,7 @@ function query() {
     page,
     page_size: 24,
     status,
-    service: $("filterEngine").value,
+    channel: $("filterChannel").value,
     project_id: $("filterProject").value,
     q: $("searchInput").value.trim(),
   });
@@ -369,13 +369,22 @@ function render(data) {
   $("metricFailed").textContent = data.counts.failed;
   $("metricCompleted").textContent = data.counts.succeeded;
   $("metricLatency").textContent = seconds(data.average_elapsed_seconds);
+  const channel = $("filterChannel").value;
+  const channels = data.channels || [];
+  $("filterChannel").innerHTML = '<option value="all">全部渠道</option>' +
+    channels.map((item) => `<option value="${escapeHTML(item.id)}">${escapeHTML(item.label)}</option>`).join("");
+  if (channel !== "all" && !channels.some((item) => item.id === channel))
+    $("filterChannel").add(new Option(channel, channel));
+  $("filterChannel").value = channel;
   const project = $("filterProject").value;
   $("filterProject").innerHTML =
     '<option value="all">全部项目</option>' +
     data.projects
-      .map((v) => `<option value="${escapeHTML(v)}">未命名项目</option>`)
+      .map((v) => `<option value="${escapeHTML(v)}">项目 ${escapeHTML(v)}</option>`)
       .join("");
-  $("filterProject").value = data.projects.includes(project) ? project : "all";
+  if (project !== "all" && !data.projects.includes(project))
+    $("filterProject").add(new Option(`项目 ${project}`, project));
+  $("filterProject").value = project;
   $("emptyState").hidden = data.tasks.length > 0;
   $("emptyState").textContent = data.total
     ? "此页没有任务，请返回上一页。"
@@ -559,7 +568,7 @@ $("searchInput").addEventListener("input", () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(filter, 250);
 });
-["filterEngine", "filterProject"].forEach((id) =>
+["filterChannel", "filterProject"].forEach((id) =>
   $(id).addEventListener("change", filter),
 );
 $("prevPage").addEventListener("click", () => {
@@ -701,7 +710,7 @@ if (window.studioEmbedded) {
       ? null
       : {
           project: $("filterProject").value,
-          engine: $("filterEngine").value,
+          channel: $("filterChannel").value,
           q: $("searchInput").value,
           status,
           page,
@@ -728,8 +737,13 @@ if (window.studioEmbedded) {
       }
       if (typeof state.q === "string")
         $("searchInput").value = state.q.slice(0, 512);
-      if (["all", "h3", "h3-sol", "h3-vdn", "fal"].includes(state.engine))
-        $("filterEngine").value = state.engine;
+      const savedChannel = state.channel ?? state.engine;
+      const channel = ["h3", "h3-sol", "h3-vdn", "h3-singularity"].includes(savedChannel) ? "local" : savedChannel;
+      if (typeof channel === "string" && channel.length <= 128) {
+        if (![...$("filterChannel").options].some((option) => option.value === channel))
+          $("filterChannel").add(new Option(channel, channel));
+        $("filterChannel").value = channel;
+      }
       if (
         [
           "all",

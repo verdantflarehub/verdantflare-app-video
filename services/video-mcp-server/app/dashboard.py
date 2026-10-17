@@ -71,12 +71,25 @@ class TitleUpdate(BaseModel):
     expected_title_revision: int = Field(ge=0)
 
 
+def task_channel(record):
+    route = record.request.get("route") or record.runtime_route or record.service
+    local = {"h3", "h3-sol", "h3-vdn", "h3-singularity", "minimax-h3-sol-ref2va",
+             "h3-latent-upscale", "sr", "interpolate", "depth"}
+    return "local" if route in local else route or "unknown"
+
+
+def channel_label(channel):
+    return {"local": "本地", "higgsfield": "Higgsfield", "fal": "fal.ai",
+            "grok": "xAI", "unknown": "未记录渠道"}.get(channel, channel)
+
+
 def task_presentation(record):
     """UI labels only: keep provider identifiers and stored requests unchanged."""
     local = {"h3", "h3-sol", "h3-vdn", "h3-singularity"}
     generating = record.service in local | {"fal", "grok", "higgsfield"}
     route = record.request.get("route") or record.runtime_route or record.service
-    local_channel = route in local or (record.service == "h3-sol" and route == "minimax-h3-sol-ref2va")
+    channel = task_channel(record)
+    local_channel = channel == "local"
     model = record.request.get("model")
     if not model and record.service in local:
         model = "minimax-h3-ref2va"  # Historical H3 contract, never a provider fallback.
@@ -91,10 +104,9 @@ def task_presentation(record):
     if not mode and (record.service in local or model == "minimax-h3-ref2va"):
         mode = "ref2va"
     code, explanation = modes.get(mode, (None, None)) if generating else (None, None)
-    return {"is_generation": generating,
+    return {"is_generation": generating, "channel_id": channel,
             "model_label": models.get(model, model or "未记录模型") if generating else None,
-            "channel_label": ("本地" if local_channel else
-                              {"higgsfield": "Higgsfield", "fal": "fal.ai", "grok": "xAI"}.get(route, route or "未记录渠道")) if generating else None,
+            "channel_label": channel_label(channel) if generating else None,
             "channel_icon": ("local" if local_channel else "higgsfield" if route == "higgsfield" else None) if generating else None,
             "generation_code": code, "generation_label": explanation}
 
@@ -209,7 +221,11 @@ class Dashboard:
             visible.append(record)
         records = visible
         projects = sorted({r.project_id for r in records})
+        channels = [{"id": c, "label": channel_label(c)} for c in sorted({task_channel(r) for r in records})]
         rows = [public_task(r, self.executor.tasks) for r in records]
+        channel = query.get("channel", "all")
+        if channel != "all":
+            rows = [r for r in rows if r["presentation"]["channel_id"] == channel]
         for key in ("project_id", "service"):
             value = query.get(key, "all")
             if value != "all":
@@ -227,7 +243,7 @@ class Dashboard:
                    for r in rows if r["status"] == "succeeded"]
         elapsed = [value for value in elapsed if value is not None]
         return {"tasks": rows[(page-1)*size:page*size], "total": len(rows), "page": page,
-                "page_size": size, "projects": projects, "counts": counts,
+                "page_size": size, "projects": projects, "channels": channels, "counts": counts,
                 "completion_times": [r["completed_at"] for r in rows if r["status"] == "succeeded"],
                 "average_elapsed_seconds": round(sum(elapsed)/len(elapsed), 1) if elapsed else None,
                 "services": dict(self.services), "grok_capability": self.executor.grok.capability(),
