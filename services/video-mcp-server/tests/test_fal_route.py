@@ -240,6 +240,43 @@ class FalRouteTest(unittest.TestCase):
             self.assertEqual(executor.fal._download("https://v3.fal.media/files/result.mp4"), video)
         self.assertEqual(len(calls), 1)
 
+    def test_result_proxy_is_limited_to_fal_media_without_provider_credentials(self) -> None:
+        calls = []
+        def proxied(request):
+            calls.append(request)
+            self.assertEqual(request.url.host, "v3.fal.media")
+            self.assertNotIn("Authorization", request.headers)
+            self.assertNotIn("Range", request.headers)
+            return httpx.Response(200, content=b"video", headers={"content-type": "video/mp4"})
+        with httpx.Client(transport=httpx.MockTransport(lambda request: self.fail("direct result request"))) as direct:
+            proxy = httpx.Client(transport=httpx.MockTransport(proxied))
+            executor = VideoExecutor(self.artifacts, self.tasks, direct)
+            with mock.patch.dict(os.environ, {"FAL_RESULT_PROXY_URL": "http://openclash.openclash.svc.cluster.local:1081"}):
+                with mock.patch("app.providers.fal.httpx.Client", return_value=proxy) as build:
+                    self.assertEqual(executor.fal._download("https://v3.fal.media/files/result.mp4"), b"video")
+            self.assertEqual(build.call_args.kwargs["proxy"], "http://openclash.openclash.svc.cluster.local:1081")
+            self.assertFalse(build.call_args.kwargs["trust_env"])
+        self.assertEqual(len(calls), 1)
+
+    def test_result_proxy_failure_does_not_fall_back_to_direct(self) -> None:
+        def unavailable(request):
+            raise httpx.ConnectError("proxy unavailable", request=request)
+        with httpx.Client(transport=httpx.MockTransport(lambda request: self.fail("direct fallback"))) as direct:
+            proxy = httpx.Client(transport=httpx.MockTransport(unavailable))
+            executor = VideoExecutor(self.artifacts, self.tasks, direct)
+            with mock.patch.dict(os.environ, {"FAL_RESULT_PROXY_URL": "http://openclash.openclash.svc.cluster.local:1081"}):
+                with mock.patch("app.providers.fal.httpx.Client", return_value=proxy):
+                    with self.assertRaisesRegex(FalError, "result_download_failed"):
+                        executor.fal._download("https://v3.fal.media/files/result.mp4")
+
+    def test_result_proxy_rejects_public_and_credentialed_origins(self) -> None:
+        with httpx.Client(transport=httpx.MockTransport(lambda request: self.fail("unexpected network"))) as direct:
+            executor = VideoExecutor(self.artifacts, self.tasks, direct)
+            for value in ("http://public.example:1081", "http://user:pass@openclash.openclash.svc.cluster.local:1081"):
+                with self.subTest(value=value), mock.patch.dict(os.environ, {"FAL_RESULT_PROXY_URL": value}):
+                    with self.assertRaisesRegex(FalError, "result_download_failed"):
+                        executor.fal._download("https://v3.fal.media/files/result.mp4")
+
     def test_result_download_rejects_truncation_partial_responses_and_trickle_overrun(self) -> None:
         for status, body, headers, expected in [
             (200, b"abc", {"content-type": "video/mp4", "content-length": "4"}, "result_integrity_failed"),

@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+from contextlib import nullcontext
 from decimal import Decimal, InvalidOperation
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
@@ -563,37 +564,59 @@ class FalAdapter:
             raise FalError("result_download_failed")
         return value
 
+    @staticmethod
+    def _result_proxy_url() -> str | None:
+        value = os.environ.get("FAL_RESULT_PROXY_URL", "").strip()
+        if not value:
+            return None
+        parsed = urlsplit(value)
+        try:
+            port = parsed.port
+        except ValueError as error:
+            raise FalError("result_download_failed") from error
+        if (parsed.scheme != "http" or not parsed.hostname
+                or not parsed.hostname.lower().endswith(".svc.cluster.local")
+                or port is None or parsed.username or parsed.password
+                or parsed.path not in {"", "/"} or parsed.query or parsed.fragment):
+            raise FalError("result_download_failed")
+        return value
+
     def _download(self, url: str) -> bytes:
         source = self._allowed_result_url(url)
+        proxy = self._result_proxy_url()
         deadline = time.monotonic() + 300
         try:
-            # The CDN's parallel Range path can stall while a normal GET succeeds.
-            # Keep one stream and bound both idle reads and the overall transfer.
-            with self.executor.client.stream(
-                "GET", source, headers={"Accept": "video/*", "Accept-Encoding": "identity"},
-                timeout=httpx.Timeout(connect=10, read=30, write=10, pool=10),
-            ) as response:
-                if response.status_code != 200:
-                    raise FalError("result_download_failed")
-                content_type = response.headers.get("content-type", "").split(";", 1)[0].strip()
-                if content_type not in {"video/mp4", "application/octet-stream"}:
-                    raise FalError("result_integrity_failed")
-                declared = response.headers.get("content-length")
-                if declared is not None and (not declared.isdecimal() or not 0 < int(declared) <= MAX_ARTIFACT_BYTES):
-                    raise FalError("result_integrity_failed")
-                maximum = int(declared) if declared is not None else MAX_ARTIFACT_BYTES
-                data = bytearray()
-                for chunk in response.iter_bytes():
+            # Only fal media uses this managed egress. The shared MCP client and
+            # provider submission/status requests retain their existing routes.
+            client_scope = (httpx.Client(proxy=proxy, trust_env=False, follow_redirects=False)
+                            if proxy else nullcontext(self.executor.client))
+            with client_scope as client:
+                # Parallel Range transfers stalled on this CDN; use one full GET.
+                with client.stream(
+                    "GET", source, headers={"Accept": "video/*", "Accept-Encoding": "identity"},
+                    timeout=httpx.Timeout(connect=10, read=30, write=10, pool=10),
+                ) as response:
+                    if response.status_code != 200:
+                        raise FalError("result_download_failed")
+                    content_type = response.headers.get("content-type", "").split(";", 1)[0].strip()
+                    if content_type not in {"video/mp4", "application/octet-stream"}:
+                        raise FalError("result_integrity_failed")
+                    declared = response.headers.get("content-length")
+                    if declared is not None and (not declared.isdecimal() or not 0 < int(declared) <= MAX_ARTIFACT_BYTES):
+                        raise FalError("result_integrity_failed")
+                    maximum = int(declared) if declared is not None else MAX_ARTIFACT_BYTES
+                    data = bytearray()
+                    for chunk in response.iter_bytes():
+                        if time.monotonic() > deadline:
+                            raise FalError("result_download_failed")
+                        data.extend(chunk)
+                        if len(data) > maximum:
+                            raise FalError("result_integrity_failed")
                     if time.monotonic() > deadline:
                         raise FalError("result_download_failed")
-                    data.extend(chunk)
-                    if len(data) > maximum:
+                    if not data or (declared is not None and len(data) != maximum):
                         raise FalError("result_integrity_failed")
-                if time.monotonic() > deadline:
-                    raise FalError("result_download_failed")
-                if not data or (declared is not None and len(data) != maximum):
-                    raise FalError("result_integrity_failed")
-                return bytes(data)
+                    return bytes(data)
         except httpx.HTTPError as error:
             raise FalError("result_download_failed") from error
 
