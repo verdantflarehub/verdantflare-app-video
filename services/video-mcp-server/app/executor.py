@@ -51,6 +51,17 @@ def serialized(method):
     return invoke
 
 
+def task_serialized(method):
+    @wraps(method)
+    def invoke(self, video_task_id, *args, **kwargs):
+        # Status reads remain responsive while this task's result is downloading.
+        with self.tasks.task_lock(video_task_id, blocking=method.__name__ != "status") as acquired:
+            if not acquired:
+                return self.tasks.get(video_task_id)
+            return method(self, video_task_id, *args, **kwargs)
+    return invoke
+
+
 class VideoExecutor:
     def __init__(self, artifacts: ArtifactStore, tasks: TaskStore, client: httpx.Client | None = None) -> None:
         from .catalog import ModelCatalog
@@ -98,6 +109,8 @@ class VideoExecutor:
         self.higgsfield = HiggsfieldAdapter(self)
         from .delivery import Delivery
         self.delivery = Delivery(self)
+        from .collection import ResultCollector
+        self.collector = ResultCollector(self)
 
     def _load_routes(self) -> dict[str, dict[str, object]]:
         raw = os.environ.get("H3_RUNTIME_ROUTES", "")
@@ -524,7 +537,7 @@ class VideoExecutor:
         return self.tasks.update(reserved, runtime_task_id=runtime_task_id,
                                  dispatched_at=datetime.now(UTC).isoformat())
 
-    @serialized
+    @task_serialized
     def status(self, video_task_id: str) -> TaskRecord:
         record = self.tasks.get(video_task_id)
         if record.service == "higgsfield":
@@ -617,7 +630,7 @@ class VideoExecutor:
         return self.tasks.update(record, status=mapped, error=error, execution_instance_id=identity,
                                  runtime_stage=stage, runtime_metrics=metrics or None)
 
-    @serialized
+    @task_serialized
     def result(self, video_task_id: str) -> TaskRecord:
         record = self.tasks.get(video_task_id)
         if record.service == "higgsfield":

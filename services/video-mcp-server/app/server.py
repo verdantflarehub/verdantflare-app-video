@@ -25,6 +25,7 @@ from . import __version__, titles
 from .executor import ExecutionError, VideoExecutor
 from .dashboard import Dashboard
 from .registry import EtcdRegistry
+from .collection import public_collection
 from .tasks import TaskConflict, TaskNotFound, TaskStore
 from .delivery import CALLER, normalize as normalize_postprocess, authorize
 
@@ -490,6 +491,7 @@ def video_status(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
     return _result({**titles.project(executor.tasks, record), "task_id": record.video_task_id, "video_task_id": record.video_task_id, "status": record.status,
                     "created_at": record.created_at, "updated_at": record.updated_at, "error": record.error,
                     "timing": record.timing, "runtime_metrics": record.runtime_metrics, "delivery": record.delivery,
+                    "collection": public_collection(record),
                     "service": record.service, "runtime_route": record.runtime_route,
                     "execution_instance_id": record.execution_instance_id, "stage": record.runtime_stage,
                     "needs_attention": record.runtime_stage == "submission_unknown",
@@ -650,12 +652,17 @@ async def lifespan(app: Starlette):
             except Exception:
                 logging.getLogger(__name__).warning("Delivery reconciliation deferred")
             await asyncio.sleep(2)
+    async def collection_poll():
+        while True:
+            await asyncio.to_thread(executor.collector.sync)
+            await asyncio.sleep(2)
     async with mcp.session_manager.run():
         dashboard.recover_incomplete_submissions()
-        pollers = [asyncio.create_task(coro) for coro in (dashboard.poll(), dashboard.resources.poll_protocol(), delivery_poll())]
+        pollers = [asyncio.create_task(coro) for coro in (dashboard.poll(), dashboard.resources.poll_protocol(), delivery_poll(), collection_poll())]
         try:
             yield
         finally:
+            executor.collector.close()
             await registry.stop()
             for poller in pollers:
                 poller.cancel()

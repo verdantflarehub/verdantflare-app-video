@@ -65,7 +65,7 @@ class MemberDashboard:
         # This rejected supplier combination remains unavailable in the webpage.
         if inputs.model == 'grok_video_v15_lite' and inputs.references.images:
             raise MemberError('image_to_video_not_verified')
-        values = inputs.model_dump(exclude={'title', 'idempotency_key', 'route'})
+        values = inputs.model_dump(exclude={'title', 'idempotency_key', 'route', 'channel_account_id', 'budget_limit'})
         request, digest = self.adapter.normalize(**values)
         return inputs, request, digest
 
@@ -115,7 +115,7 @@ class MemberDashboard:
             marker = titles.PROVIDED_TITLE.set(title)
             try:
                 record = self.adapter.generate(idempotency_key=inputs.idempotency_key,
-                    price_ceiling=current['credits'], **inputs.model_dump(exclude={'title','idempotency_key','route'}))
+                    price_ceiling=current['credits'], **inputs.model_dump(exclude={'title','idempotency_key','route','channel_account_id','budget_limit'}))
             finally:
                 titles.PROVIDED_TITLE.reset(marker)
             return public_task(record, self.executor.tasks)

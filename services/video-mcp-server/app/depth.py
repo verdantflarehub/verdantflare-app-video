@@ -4,7 +4,7 @@ import json
 import os
 import httpx
 from .artifacts import require_project_id
-from .executor import ExecutionError, serialized
+from .executor import ExecutionError, serialized, task_serialized
 from .tasks import TaskConflict
 
 
@@ -66,7 +66,7 @@ class DepthExecutor:
             error = {'code': code, 'message': 'Depth conversion failed'}
         return self.tasks.update(record, status=status, error=error)
 
-    @serialized
+    @task_serialized
     def status(self, video_task_id):
         record = self.tasks.get(video_task_id)
         if record.service != 'depth':
@@ -99,7 +99,7 @@ class DepthExecutor:
         except httpx.HTTPError as exc:
             raise ExecutionError('Depth result download failed; retry this task ID') from exc
 
-    @serialized
+    @task_serialized
     def result(self, video_task_id):
         record = self.status(video_task_id)
         if record.status != 'succeeded':

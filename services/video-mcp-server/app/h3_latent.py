@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import sqlite3
 import httpx
-from .executor import ExecutionError, serialized
+from .executor import ExecutionError, serialized, task_serialized
 from .tasks import TaskConflict
 from .archive import ArchiveError, S3Archive
 from .artifacts import ArtifactError
@@ -196,7 +196,7 @@ class H3LatentExecutor:
             media={**result['media'], 'preview_artifact_id': state['artifacts']['preview'], 'source_video_task_id': result['source_video_task_id']},
             runtime_metrics=result.get('runtime_metrics'))
 
-    @serialized
+    @task_serialized
     def status(self, task_id):
         record = self.tasks.get(task_id)
         if record.service != self.service:

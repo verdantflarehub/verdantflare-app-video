@@ -10,7 +10,7 @@ import uuid
 
 import httpx
 
-from .executor import ExecutionError, serialized
+from .executor import ExecutionError
 
 CALLER = ContextVar('video_verified_caller', default=None)
 OPTION = {'interpolate': {'profile': 'rife_2x'}}
@@ -103,8 +103,15 @@ class Delivery:
                          total_seconds=max(0, (now-datetime.fromisoformat(record.created_at)).total_seconds()))
         return self.tasks.update(record, delivery=value)
 
-    @serialized
     def tick(self, task_id):
+        # Keep workflow coordination separate from result locks: submitting a
+        # child acquires the identity lock, so never hold a parent result lock.
+        with self.tasks.task_lock(task_id, purpose="delivery", blocking=False) as acquired:
+            if acquired:
+                return self._tick(task_id)
+            return self.tasks.get(task_id)
+
+    def _tick(self, task_id):
         parent = self.tasks.get(task_id)
         if not parent.request.get('postprocess') or (parent.delivery or {}).get('status') in ('succeeded', 'failed'):
             return parent

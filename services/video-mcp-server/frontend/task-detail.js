@@ -296,7 +296,7 @@ async function refreshTaskDetail(id, version) {
     detailRendered = true;
   }
   if (task.status === "succeeded") {
-    if ((task.artifact || task.content_ref) && !resultArtifact) await loadTaskResult(task, version);
+    if ((task.artifact || task.content_ref) && (task.content_ref?.version_id || task.artifact?.artifact_id) !== resultArtifact) await loadTaskResult(task, version);
     else if (!task.artifact && !task.content_ref && !resultLoading && !resultArtifact && !$("videoArea").children.length) {
       showResultLoader(task, version, true);
     }

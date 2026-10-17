@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import fcntl
 import os
 import re
 import tempfile
@@ -79,6 +80,32 @@ class TaskStore:
             finally:
                 self._local.connection = None
                 db.close()
+
+    @contextmanager
+    def task_lock(self, task_id: str, *, blocking: bool = True, purpose: str = "execution"):
+        """Reentrant per-task, cross-process lock; never holds the identity DB lock."""
+        if not TASK_ID_PATTERN.fullmatch(task_id):
+            raise ValueError("video_task_id is invalid")
+        self.ensure_ready()
+        key = (task_id, purpose)
+        held = getattr(self._local, "task_locks", None)
+        if held is None:
+            held = self._local.task_locks = set()
+        if key in held:
+            yield True
+            return
+        with (self.root / f".{task_id}.{purpose}.lock").open("a") as stream:
+            try:
+                fcntl.flock(stream, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+            except BlockingIOError:
+                yield False
+                return
+            held.add(key)
+            try:
+                yield True
+            finally:
+                held.remove(key)
+                fcntl.flock(stream, fcntl.LOCK_UN)
 
     @classmethod
     def from_environment(cls) -> "TaskStore":
@@ -188,6 +215,10 @@ class TaskStore:
         return record.model_copy(update={"timing": timing})
 
     def update(self, record: TaskRecord, **values: object) -> TaskRecord:
+        with self.task_lock(record.video_task_id, purpose="write"):
+            return self._update_current(self.get(record.video_task_id), **values)
+
+    def _update_current(self, record: TaskRecord, **values: object) -> TaskRecord:
         now = datetime.now(UTC).isoformat()
         if not record.completed_at:
             if record.status in {"succeeded", "failed", "cancelled"}:

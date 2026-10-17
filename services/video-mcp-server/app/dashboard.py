@@ -19,6 +19,7 @@ from .artifacts import ArtifactError, ArtifactNotFound
 from .executor import ExecutionError
 from .resources import Resources
 from .tasks import TaskConflict, TaskNotFound, TaskRecord, TaskStore
+from .collection import public_collection
 from . import titles
 
 _PACKAGE_FRONTEND = Path(__file__).parent.parent / "frontend"
@@ -134,7 +135,7 @@ def public_task(record, store=None):
             "seed": record.request.get("seed", None if record.service in {"fal", "grok"} else 7),
             "status": record.status, "created_at": record.created_at, "updated_at": record.updated_at,
             "completed_at": record.completed_at or (record.updated_at if record.status in {"succeeded", "failed", "cancelled"} else None),
-            "artifact_id": record.artifact_id, "media": record.media, "error": record.error,
+            "artifact_id": record.artifact_id, "media": record.media, "error": record.error, "collection": public_collection(record),
             "input_digest": record.input_digest, "execution_instance_id": record.execution_instance_id, "association_source": "runtime" if record.execution_instance_id else None, "runtime_stage": record.runtime_stage,
             "dispatched_at": record.dispatched_at, "timing": record.timing, "runtime_metrics": record.runtime_metrics}
 
@@ -143,7 +144,6 @@ class Dashboard:
     def __init__(self, executor):
         self.executor = executor
         self.resources = Resources()
-        self.result_lock = threading.Lock()
         self.services = {"h3": "unknown", "h3-sol": "not_connected", "fal": "not_connected", "mcp": "ready"}
         self.sync_errors = 0
         self.synced_at = None
@@ -324,14 +324,13 @@ class Dashboard:
                 value = await run_in_threadpool(self.detail, request.path_params["task_id"])
             elif action.endswith("/result"):
                 def result():
-                    with self.result_lock:
-                        record = self.executor.tasks.get(request.path_params["task_id"])
-                        if record.service == "higgsfield":
-                            self.executor.higgsfield.authorize_record(record)
-                        if record.service == "fal":
-                            self.executor.fal.authorize_record(record)
-                        self.executor.result(request.path_params["task_id"])
-                        return self.detail(request.path_params["task_id"])
+                    record = self.executor.tasks.get(request.path_params["task_id"])
+                    if record.service == "higgsfield":
+                        self.executor.higgsfield.authorize_record(record)
+                    if record.service == "fal":
+                        self.executor.fal.authorize_record(record)
+                    self.executor.result(request.path_params["task_id"])
+                    return self.detail(request.path_params["task_id"])
                 value = await run_in_threadpool(result)
             else:
                 body = bytearray()
