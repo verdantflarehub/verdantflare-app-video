@@ -174,3 +174,11 @@ class CollectionTest(unittest.TestCase):
         artifact = self.executor.artifacts.get(rec.artifact_id, 'demo')
         self.assertEqual(self.executor.artifacts.content_path(artifact).read_bytes(), b'validated-video')
         self.assertEqual(len(attempts), 2)
+
+    def test_status_during_dispatch_reads_snapshot_without_polling_provider(self):
+        rec = self.tasks.update(self.task(), status='queued', runtime_task_id='')
+        with patch.object(self.executor.fal, 'status') as status, ThreadPoolExecutor(1) as pool:
+            with self.executor._lock, self.tasks.exclusive():
+                snapshot = pool.submit(self.executor.status, rec.video_task_id).result(1)
+                self.assertEqual(snapshot.status, 'queued')
+            status.assert_not_called()

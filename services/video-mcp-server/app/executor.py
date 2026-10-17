@@ -54,6 +54,12 @@ def serialized(method):
 def task_serialized(method):
     @wraps(method)
     def invoke(self, video_task_id, *args, **kwargs):
+        # Submission still owns the global identity lock. A newly written task
+        # must not be polled before its dispatch receipt has been persisted.
+        if method.__name__ == "status":
+            if not self._lock.acquire(blocking=False):
+                return self.tasks.get(video_task_id)
+            self._lock.release()
         # Status reads remain responsive while this task's result is downloading.
         with self.tasks.task_lock(video_task_id, blocking=method.__name__ != "status") as acquired:
             if not acquired:

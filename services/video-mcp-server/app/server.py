@@ -654,7 +654,10 @@ async def lifespan(app: Starlette):
             await asyncio.sleep(2)
     async def collection_poll():
         while True:
-            await asyncio.to_thread(executor.collector.sync)
+            try:
+                await asyncio.to_thread(executor.collector.sync)
+            except Exception:
+                logging.getLogger(__name__).warning("Result reconciliation deferred")
             await asyncio.sleep(2)
     async with mcp.session_manager.run():
         dashboard.recover_incomplete_submissions()
