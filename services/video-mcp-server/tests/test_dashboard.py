@@ -251,3 +251,111 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual(data["error"]["code"], "runtime_unavailable")
         self.assertEqual(self.tasks.get(data["video_task_id"]).error, data["error"])
         self.assertNotIn("private-secret", str(data))
+
+    def test_thumbnail_extracts_only_from_succeeded_result_videos_with_cache_and_safe_errors(self):
+        import subprocess
+        video_art = self.artifacts.create_from_chunks(
+            project_id="demo", operation="test", filename="result.mp4",
+            media_type="video/mp4", chunks=[b"fake-mp4-content"],
+        )
+        local_task = self.tasks.create(
+            project_id="demo", idempotency_key="thumb-local",
+            request={"route": "h3-singularity", "prompt": "local video",
+                     "references": {"images": [{"artifact_id": self.image.artifact_id, "purpose": "identity"}]}},
+            input_digest="thumb-local", runtime_task_id="rt-local", status="succeeded",
+        )
+        self.tasks.update(local_task, artifact_id=video_art.artifact_id)
+
+        fal_task = self.tasks.create(
+            project_id="demo", idempotency_key="thumb-fal",
+            request={"route": "fal", "prompt": "fal video"},
+            input_digest="thumb-fal", runtime_task_id="rt-fal", status="succeeded",
+        )
+        self.tasks.update(fal_task, delivery={"final_artifact_id": video_art.artifact_id})
+
+        hf_file = Path(self.temp.name) / "hf_result.mp4"
+        hf_file.write_bytes(b"fake-hf-mp4")
+        hf_task = self.tasks.create(
+            project_id="demo", idempotency_key="thumb-hf",
+            request={"route": "higgsfield", "prompt": "hf video"},
+            input_digest="thumb-hf", runtime_task_id="rt-hf", status="succeeded",
+        )
+        self.tasks.update(hf_task, media={"sha256": "b" * 64, "width": 720, "height": 1280, "frame_rate": 24})
+
+        # Queued/failed tasks with input reference images must NEVER impersonate result thumbnails.
+        queued_with_ref = self.tasks.create(
+            project_id="demo", idempotency_key="thumb-queued-ref",
+            request={"route": "h3", "prompt": "queued",
+                     "references": {"images": [{"artifact_id": self.image.artifact_id, "purpose": "identity"}]}},
+            input_digest="thumb-q", runtime_task_id="rt-q", status="queued",
+        )
+        failed_with_ref = self.tasks.create(
+            project_id="demo", idempotency_key="thumb-failed-ref",
+            request={"route": "h3", "prompt": "failed",
+                     "references": {"images": [{"artifact_id": self.image.artifact_id, "purpose": "identity"}]}},
+            input_digest="thumb-f", runtime_task_id="rt-f", status="failed",
+        )
+        non_video_result = self.tasks.create(
+            project_id="demo", idempotency_key="thumb-image-art",
+            request={"route": "h3", "prompt": "wrong media"},
+            input_digest="thumb-img", runtime_task_id="rt-img", status="succeeded",
+        )
+        self.tasks.update(non_video_result, artifact_id=self.image.artifact_id)
+
+        ffmpeg_calls = []
+        def fake_ffmpeg(cmd, **kwargs):
+            ffmpeg_calls.append(cmd)
+            Path(cmd[-1]).write_bytes(b"\xff\xd8\xff\xe0JFIF-test-frame")
+            return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+        with mock.patch("app.dashboard.subprocess.run", side_effect=fake_ffmpeg), \
+             mock.patch.object(self.executor.fal, "authorize_record"), \
+             mock.patch.object(self.executor.higgsfield, "authorize_record"), \
+             mock.patch.object(self.executor.higgsfield, "content_path", return_value=hf_file):
+            for tid in (queued_with_ref.video_task_id, failed_with_ref.video_task_id, non_video_result.video_task_id):
+                res = self.client.get(f"/api/tasks/{tid}/thumbnail", headers=self.headers)
+                self.assertEqual(res.status_code, 404)
+                self.assertEqual(res.json(), {"error": "preview_unavailable"})
+            self.assertEqual(len(ffmpeg_calls), 0)
+
+            res_local = self.client.get(f"/api/tasks/{local_task.video_task_id}/thumbnail", headers=self.headers)
+            self.assertEqual(res_local.status_code, 200)
+            self.assertEqual(res_local.headers["content-type"], "image/jpeg")
+            self.assertTrue(res_local.content.startswith(b"\xff\xd8"))
+            self.assertEqual(len(ffmpeg_calls), 1)
+
+            # Second request and fal task sharing same video digest hit disk cache without re-running ffmpeg.
+            res_local_cached = self.client.get(f"/api/tasks/{local_task.video_task_id}/thumbnail", headers=self.headers)
+            res_fal = self.client.get(f"/api/tasks/{fal_task.video_task_id}/thumbnail", headers=self.headers)
+            self.assertEqual(res_local_cached.status_code, 200)
+            self.assertEqual(res_fal.status_code, 200)
+            self.assertEqual(len(ffmpeg_calls), 1)
+
+            res_hf = self.client.get(f"/api/tasks/{hf_task.video_task_id}/thumbnail", headers=self.headers)
+            self.assertEqual(res_hf.status_code, 200)
+            self.assertTrue(res_hf.content.startswith(b"\xff\xd8"))
+            self.assertEqual(len(ffmpeg_calls), 2)
+
+        # Permission denied must return 403 and never leak file paths or existence.
+        with mock.patch.object(self.executor.fal, "authorize_record", side_effect=PermissionError("org mismatch")):
+            denied = self.client.get(f"/api/tasks/{fal_task.video_task_id}/thumbnail", headers=self.headers)
+            self.assertEqual(denied.status_code, 403)
+            self.assertEqual(denied.json(), {"error": "permission_denied"})
+
+        # Extraction failure on corrupt file returns 422 without leaking paths or stderr.
+        corrupt_art = self.artifacts.create_from_chunks(
+            project_id="demo", operation="test", filename="corrupt.mp4",
+            media_type="video/mp4", chunks=[b"corrupt-mp4-bytes"],
+        )
+        corrupt_task = self.tasks.create(
+            project_id="demo", idempotency_key="thumb-corrupt",
+            request={"route": "h3-singularity", "prompt": "corrupt"},
+            input_digest="thumb-c", runtime_task_id="rt-c", status="succeeded",
+        )
+        self.tasks.update(corrupt_task, artifact_id=corrupt_art.artifact_id)
+        with mock.patch("app.dashboard.subprocess.run", side_effect=subprocess.CalledProcessError(1, ["ffmpeg"], stderr=b"/secret/path/corrupt.mp4")):
+            failed_extract = self.client.get(f"/api/tasks/{corrupt_task.video_task_id}/thumbnail", headers=self.headers)
+            self.assertEqual(failed_extract.status_code, 422)
+            self.assertEqual(failed_extract.json(), {"error": "preview_extraction_failed"})
+            self.assertNotIn("secret", failed_extract.text)
+

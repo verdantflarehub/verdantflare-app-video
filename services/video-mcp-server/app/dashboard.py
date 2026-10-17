@@ -136,7 +136,7 @@ def public_task(record, store=None):
             "seed": record.request.get("seed", None if record.service in {"fal", "grok"} else 7),
             "status": record.status, "created_at": record.created_at, "updated_at": record.updated_at,
             "completed_at": record.completed_at or (record.updated_at if record.status in {"succeeded", "failed", "cancelled"} else None),
-            "artifact_id": record.artifact_id, "media": record.media, "error": record.error, "collection": public_collection(record),
+            "artifact_id": (record.delivery or {}).get("final_artifact_id") or record.artifact_id, "media": record.media, "error": record.error, "collection": public_collection(record),
             "input_digest": record.input_digest, "execution_instance_id": record.execution_instance_id, "association_source": "runtime" if record.execution_instance_id else None, "runtime_stage": record.runtime_stage,
             "dispatched_at": record.dispatched_at, "timing": record.timing, "runtime_metrics": record.runtime_metrics}
 
@@ -145,6 +145,7 @@ class Dashboard:
     def __init__(self, executor):
         self.executor = executor
         self.resources = Resources()
+        self.result_lock = threading.Lock()
         self.services = {"h3": "unknown", "h3-sol": "not_connected", "fal": "not_connected", "mcp": "ready"}
         self.sync_errors = 0
         self.synced_at = None
@@ -269,41 +270,86 @@ class Dashboard:
                     value["references"].append({"kind": kind, "purpose": item["purpose"], **artifact.model_dump()})
                 except (ArtifactError, ValueError):
                     value["references"].append({"kind": kind, "purpose": item["purpose"], "unavailable": True})
-        if record.artifact_id:
-            value["artifact"] = self.executor.artifacts.get(record.artifact_id, record.project_id).model_dump()
+        artifact_id = (record.delivery or {}).get("final_artifact_id") or record.artifact_id
+        if artifact_id:
+            value["artifact"] = self.executor.artifacts.get(artifact_id, record.project_id).model_dump()
         if record.service == "higgsfield" and record.status == "succeeded":
             value.update(self.executor.higgsfield.public_result(record))
         return value
 
     def thumbnail(self, task_id):
         record = self.executor.tasks.get(task_id)
-        native = record.service == "higgsfield" and record.status == "succeeded"
         if record.service == "higgsfield":
             self.executor.higgsfield.authorize_record(record)
         if record.service == "fal":
             self.executor.fal.authorize_record(record)
-        reference = record.request.get("references", {}).get("images", [])
-        artifact_id = record.artifact_id or (reference[0]["artifact_id"] if reference else None)
-        if not artifact_id and not native:
+        if record.status != "succeeded":
             return JSONResponse({"error": "preview_unavailable"}, status_code=404)
+        native = record.service == "higgsfield"
+        artifact_id = (record.delivery or {}).get("final_artifact_id") or record.artifact_id
         if native:
-            source_path = self.executor.higgsfield.content_path(record)
-            digest = record.media["sha256"]
+            digest = (record.media or {}).get("sha256")
+            if not digest:
+                return JSONResponse({"error": "preview_unavailable"}, status_code=404)
+            try:
+                source_path = self.executor.higgsfield.content_path(record)
+            except (ArtifactNotFound, FileNotFoundError):
+                return JSONResponse({"error": "preview_unavailable"}, status_code=404)
+            except (ExecutionError, ArtifactError, OSError, ValueError):
+                return JSONResponse({"error": "preview_extraction_failed"}, status_code=422)
         else:
-            artifact = self.executor.artifacts.get(artifact_id, record.project_id)
-            source_path = self.executor.artifacts.content_path(artifact)
-            digest = artifact.sha256
+            if not artifact_id:
+                return JSONResponse({"error": "preview_unavailable"}, status_code=404)
+            try:
+                artifact = self.executor.artifacts.get(artifact_id, record.project_id)
+                if not (artifact.media_type or "").startswith("video/"):
+                    return JSONResponse({"error": "preview_unavailable"}, status_code=404)
+                source_path = self.executor.artifacts.content_path(artifact)
+                digest = artifact.sha256
+            except (ArtifactNotFound, FileNotFoundError):
+                return JSONResponse({"error": "preview_unavailable"}, status_code=404)
+            except (ArtifactError, OSError, ValueError):
+                return JSONResponse({"error": "preview_extraction_failed"}, status_code=422)
+        if not Path(source_path).is_file():
+            return JSONResponse({"error": "preview_unavailable"}, status_code=404)
         directory = self.executor.artifacts.root / "previews"
-        directory.mkdir(exist_ok=True)
+        directory.mkdir(parents=True, exist_ok=True)
         output = directory / f"{digest}.jpg"
         with self.result_lock:
-            if not output.exists():
-                with tempfile.NamedTemporaryFile(suffix=".jpg", dir=directory) as temporary:
-                    subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-y", "-i",
-                                    str(source_path),
-                                    "-frames:v", "1", "-vf", "scale=480:320:force_original_aspect_ratio=decrease",
-                                    temporary.name], check=True, capture_output=True, timeout=30)
-                    output.write_bytes(Path(temporary.name).read_bytes())
+            valid_cached = False
+            if output.is_file():
+                try:
+                    cached = output.read_bytes()
+                    valid_cached = len(cached) > 4 and cached.startswith(b"\xff\xd8")
+                except OSError:
+                    valid_cached = False
+            if not valid_cached:
+                temp_path = None
+                try:
+                    with tempfile.NamedTemporaryFile(suffix=".jpg", dir=directory, delete=False) as temporary:
+                        temp_path = Path(temporary.name)
+                    subprocess.run(
+                        [
+                            "ffmpeg", "-v", "error", "-nostdin", "-y", "-i",
+                            str(source_path),
+                            "-frames:v", "1", "-vf", "scale=480:320:force_original_aspect_ratio=decrease",
+                            str(temp_path),
+                        ],
+                        check=True,
+                        capture_output=True,
+                        timeout=30,
+                    )
+                    extracted = temp_path.read_bytes()
+                    if len(extracted) <= 4 or not extracted.startswith(b"\xff\xd8"):
+                        raise ValueError("Invalid JPEG preview")
+                    temp_path.replace(output)
+                    temp_path = None
+                except (subprocess.SubprocessError, OSError, ValueError):
+                    output.unlink(missing_ok=True)
+                    return JSONResponse({"error": "preview_extraction_failed"}, status_code=422)
+                finally:
+                    if temp_path is not None:
+                        temp_path.unlink(missing_ok=True)
         return FileResponse(output, media_type="image/jpeg", headers={"Cache-Control": "private, no-store"})
 
     async def endpoint(self, request: Request):

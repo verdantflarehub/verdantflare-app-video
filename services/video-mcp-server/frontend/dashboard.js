@@ -114,10 +114,17 @@ let token = "",
   status = "all",
   total = 0,
   busy = false,
+  loadingMore = false,
+  loadMoreError = "",
+  loadedTasks = [],
+  sentinelIntersecting = false,
+  scrollObserver = null,
   timer,
   searchTimer,
   listReady = false;
 const thumbnails = new Map();
+const thumbnailRequests = new Map();
+const thumbnailFailures = new Map();
 let modalTask = null,
   modalUrls = [],
   restoreFocus = null,
@@ -186,8 +193,13 @@ function closeModal(id) {
 }
 function invalidate() {
   listReady = false;
+  loadingMore = false;
+  loadMoreError = "";
+  loadedTasks = [];
   thumbnails.forEach((v) => URL.revokeObjectURL(v.url));
   thumbnails.clear();
+  thumbnailRequests.clear();
+  thumbnailFailures.clear();
   authorized = false;
   clearTimeout(timer);
   revision++;
@@ -199,6 +211,8 @@ function invalidate() {
   $("emptyState").hidden = false;
   $("emptyState").textContent = "请连接 MCP 以查看任务。";
   $("pageLabel").textContent = "0 个任务";
+  if ($("loadMoreBtn")) $("loadMoreBtn").hidden = true;
+  if ($("retryLoadMoreBtn")) $("retryLoadMoreBtn").hidden = true;
   [
     "metricQueued",
     "metricRunning",
@@ -235,6 +249,7 @@ async function api(path, options = {}) {
       404: "任务或素材不存在。",
       409: path.endsWith("/title") ? "名称已被修改，请核对最新名称后重试。" : "幂等键冲突或所选服务尚未接入。",
       413: "请求内容过大。",
+      422: "视频首帧提取失败，请稍后重试。",
       502: "推理或素材服务暂时不可用。提交结果不确定时请先查询原任务，不要更换幂等键重发。",
       503: "服务尚未配置访问 Token。",
     };
@@ -244,9 +259,9 @@ async function api(path, options = {}) {
   }
   return options.blob ? response.blob() : response.json();
 }
-function query() {
+function query(targetPage = page) {
   return new URLSearchParams({
-    page,
+    page: targetPage,
     page_size: 24,
     status,
     channel: $("filterChannel").value,
@@ -254,8 +269,66 @@ function query() {
     q: $("searchInput").value.trim(),
   });
 }
-const thumbnailRequests = new Map();
-const previewKey = (task) => `${task.video_task_id}:${task.artifact_id || ""}`;
+const hasResultPreview = (task) =>
+  task?.status === "succeeded" &&
+  Boolean(
+    task.artifact_id ||
+      (task.service === "higgsfield" && task.media?.sha256),
+  );
+const previewKey = (task) =>
+  `${task.video_task_id}:${task.status}:${task.artifact_id || task.media?.sha256 || ""}`;
+const thumbPlaceholderText = (task) => {
+  if (hasResultPreview(task)) return "正在加载首帧…";
+  if (task.status === "succeeded") return "结果视频待取回";
+  if (task.status === "running") return "生成中 · 完成后提取首帧";
+  if (task.status === "queued") return "排队中 · 待生成结果";
+  if (task.status === "failed") return "任务失败 · 无结果视频";
+  if (task.status === "cancelled") return "任务已取消 · 无结果视频";
+  return "暂无结果首帧";
+};
+const thumbPlaceholderHTML = (task) => {
+  const key = previewKey(task);
+  if (hasResultPreview(task) && thumbnailFailures.has(key)) {
+    return `<span class="thumb-placeholder thumb-error" data-thumb-status="error"><span>首帧提取失败</span><button type="button" class="button thumb-retry-btn" data-thumb-retry="${escapeHTML(task.video_task_id)}">重试首帧</button></span>`;
+  }
+  return `<span class="thumb-placeholder" data-thumb-status="${hasResultPreview(task) ? "loading" : escapeHTML(task.status)}">${escapeHTML(thumbPlaceholderText(task))}</span>`;
+};
+function applyCardThumbnail(task) {
+  const gallery = $("galleryContainer");
+  if (!gallery?.children) return;
+  const card = [...gallery.children].find(
+    (el) => el.dataset?.task === task.video_task_id,
+  );
+  const key = previewKey(task);
+  if (!card || card.dataset.previewKey !== key) return;
+  const cached = thumbnails.get(task.video_task_id);
+  if (cached && cached.key === key) {
+    let img = card.querySelector(".card-thumb-wrap > img");
+    if (!img) {
+      img = document.createElement("img");
+      img.className = "card-thumb-img";
+      const slot = card.querySelector(".card-thumb-wrap > span");
+      if (slot) slot.replaceWith(img);
+      else card.querySelector(".card-thumb-wrap")?.prepend(img);
+    }
+    if (img.getAttribute("src") !== cached.url) img.src = cached.url;
+    img.alt = "生成视频首帧";
+    return;
+  }
+  const wrap = card.querySelector(".card-thumb-wrap");
+  if (!wrap) return;
+  const template = document.createElement("template");
+  template.innerHTML = thumbPlaceholderHTML(task);
+  const nextSpan = template.content.firstElementChild;
+  const currentMedia = wrap.querySelector(":scope > img, :scope > span");
+  if (currentMedia && nextSpan) {
+    if (currentMedia.tagName === "IMG" || currentMedia.outerHTML !== nextSpan.outerHTML)
+      currentMedia.replaceWith(nextSpan);
+  } else if (nextSpan) {
+    wrap.prepend(nextSpan);
+  }
+}
+const THUMBNAIL_CONCURRENCY = 4;
 async function previews(tasks) {
   const active = new Set(tasks.map((t) => t.video_task_id));
   for (const [id, item] of thumbnails)
@@ -264,52 +337,124 @@ async function previews(tasks) {
       thumbnails.delete(id);
     }
   const version = revision;
+  const pendingTasks = [];
   for (const task of tasks) {
     if (version !== revision || !authorized) return;
+    if (!hasResultPreview(task)) {
+      applyCardThumbnail(task);
+      continue;
+    }
     const key = previewKey(task);
-    let cached = thumbnails.get(task.video_task_id);
-    if (!cached || cached.artifact !== task.artifact_id) {
+    const cached = thumbnails.get(task.video_task_id);
+    if (cached && cached.key === key) {
+      applyCardThumbnail(task);
+      continue;
+    }
+    if (thumbnailFailures.has(key)) {
+      applyCardThumbnail(task);
+      continue;
+    }
+    pendingTasks.push(task);
+  }
+  if (!pendingTasks.length || document.hidden || !authorized) return;
+  let cursor = 0;
+  async function worker() {
+    while (cursor < pendingTasks.length) {
+      if (version !== revision || !authorized || document.hidden) return;
+      const task = pendingTasks[cursor++];
+      const key = previewKey(task);
       if (!thumbnailRequests.has(key)) {
-        const request = api(`/api/tasks/${task.video_task_id}/thumbnail`, {
+        const request = api(`/api/tasks/${encodeURIComponent(task.video_task_id)}/thumbnail`, {
           blob: true,
         })
           .then((blob) => {
-            const card = [...$("galleryContainer").children].find(
-              (el) => el.dataset.task === task.video_task_id,
-            );
-            if (
-              version !== revision ||
-              !authorized ||
-              card?.dataset.previewKey !== key
-            )
+            if (version !== revision || !authorized || !blob || !blob.size)
               return null;
             const old = thumbnails.get(task.video_task_id);
             const item = {
               url: URL.createObjectURL(blob),
-              artifact: task.artifact_id,
+              key,
+              artifact: task.artifact_id || task.media?.sha256 || "",
             };
             thumbnails.set(task.video_task_id, item);
+            thumbnailFailures.delete(key);
             if (old) URL.revokeObjectURL(old.url);
             return item;
           })
-          .catch(() => null)
+          .catch((err) => {
+            if (version === revision && authorized) {
+              thumbnailFailures.set(key, {
+                failedAt: Date.now(),
+                status: err?.status || 0,
+              });
+            }
+            return null;
+          })
           .finally(() => thumbnailRequests.delete(key));
         thumbnailRequests.set(key, request);
       }
-      cached = await thumbnailRequests.get(key);
+      await thumbnailRequests.get(key);
+      if (version === revision && authorized) applyCardThumbnail(task);
     }
-    if (!cached || version !== revision || !authorized) continue;
-    const card = [...$("galleryContainer").children].find(
-      (el) => el.dataset.task === task.video_task_id,
-    );
-    if (!card || card.dataset.previewKey !== key) continue;
-    let img = card.querySelector(".card-thumb-wrap > img");
-    if (!img) {
-      img = document.createElement("img");
-      card.querySelector(".card-thumb-wrap > span").replaceWith(img);
+  }
+  await Promise.all(
+    Array.from(
+      { length: Math.min(THUMBNAIL_CONCURRENCY, pendingTasks.length) },
+      () => worker(),
+    ),
+  );
+}
+function retryThumbnail(taskId) {
+  const task = loadedTasks.find((t) => t.video_task_id === taskId);
+  if (!task) return Promise.resolve();
+  thumbnailFailures.delete(previewKey(task));
+  applyCardThumbnail(task);
+  return previews([task]);
+}
+function mergeTaskBatches(batches) {
+  const seen = new Set();
+  const merged = [];
+  for (const list of batches) {
+    for (const item of list || []) {
+      if (!item?.video_task_id || seen.has(item.video_task_id)) continue;
+      seen.add(item.video_task_id);
+      merged.push(item);
     }
-    if (img.getAttribute("src") !== cached.url) img.src = cached.url;
-    img.alt = task.artifact_id ? "生成视频首帧" : "参考素材预览";
+  }
+  return merged;
+}
+const hasMoreTasks = () =>
+  total > 0 && loadedTasks.length < total && page * 24 < total;
+function updatePagerUI() {
+  const loadedCount = loadedTasks.length;
+  const canLoadMore = hasMoreTasks();
+  if ($("prevPage")) {
+    $("prevPage").hidden = true;
+    $("prevPage").disabled = page <= 1;
+  }
+  if ($("nextPage")) {
+    $("nextPage").hidden = true;
+    $("nextPage").disabled = !canLoadMore;
+  }
+  if ($("loadMoreBtn")) {
+    $("loadMoreBtn").hidden = !canLoadMore || loadingMore || Boolean(loadMoreError);
+    $("loadMoreBtn").disabled = loadingMore || !canLoadMore;
+  }
+  if ($("retryLoadMoreBtn")) {
+    $("retryLoadMoreBtn").hidden = !loadMoreError || loadingMore;
+    $("retryLoadMoreBtn").disabled = loadingMore;
+  }
+  if (!$("pageLabel")) return;
+  if (loadingMore) {
+    $("pageLabel").textContent = `正在加载更多任务…（已加载 ${loadedCount} / 共 ${total} 个任务）`;
+  } else if (loadMoreError) {
+    $("pageLabel").textContent = `加载更多失败：${loadMoreError}（已保留 ${loadedCount} / 共 ${total} 个任务）`;
+  } else if (canLoadMore) {
+    $("pageLabel").textContent = `已加载 ${loadedCount} / 共 ${total} 个任务 · 向下滚动自动加载`;
+  } else if (total > 0) {
+    $("pageLabel").textContent = `已加载全部 ${total} 个任务`;
+  } else {
+    $("pageLabel").textContent = "0 个任务";
   }
 }
 // Keep task and image nodes across polling; update only changed metadata.
@@ -341,10 +486,9 @@ function reconcileGallery(html, tasks) {
           el.textContent = nextTimes[i].textContent;
       });
       const placeholder = card.querySelector(".card-thumb-wrap > span");
-      if (placeholder)
-        placeholder.textContent = next.querySelector(
-          ".card-thumb-wrap > span",
-        ).textContent;
+      const nextPlaceholder = next.querySelector(".card-thumb-wrap > span");
+      if (placeholder && nextPlaceholder && placeholder.outerHTML !== nextPlaceholder.outerHTML)
+        placeholder.replaceWith(nextPlaceholder.cloneNode(true));
     } else card = next;
     card.dataset.previewKey = previewKey(task);
     if (gallery.children[index] !== card)
@@ -354,6 +498,7 @@ function reconcileGallery(html, tasks) {
 }
 function render(data) {
   total = data.total;
+  loadedTasks = data.tasks || [];
   try {
     grokCapability = data.grok_capability;
     const option = $("dispatchForm").elements.route.querySelector('option[value="grok"]');
@@ -386,34 +531,32 @@ function render(data) {
   if (project !== "all" && !projectOptions.some((item) => item.id === project))
     $("filterProject").add(new Option("原选项目（名称不可用）", project));
   $("filterProject").value = project;
-  $("emptyState").hidden = data.tasks.length > 0;
+  $("emptyState").hidden = loadedTasks.length > 0;
   $("emptyState").textContent = data.total
     ? "此页没有任务，请返回上一页。"
     : "暂无符合条件的任务。可调整筛选，或新建运镜任务。";
   const badge = (t) =>
     `<span class="badge-status ${t.status === "succeeded" ? "completed" : escapeHTML(t.status)}">${t.runtime_stage === "submission_unknown" ? "提交待确认" : t.runtime_stage === "collect_retry" ? "回收重试中" : escapeHTML(taskStatusLabel(t))}</span>`;
-  const galleryHTML = data.tasks
+  const galleryHTML = loadedTasks
     .map(
       (t) =>
-        `<article class="model-card" tabindex="0" role="button" data-task="${escapeHTML(t.video_task_id)}" aria-label="查看 ${escapeHTML(taskDisplayName(t))}"><div class="card-thumb-wrap"><span>${t.status === "succeeded" ? "▶" : t.status === "running" ? "◌" : "◇"}</span>${taskIdentity(t)}<div class="card-badges">${badge(t)}</div><div class="card-times"><span title="开始时间">${date(t.created_at)}</span><span title="${t.service === "higgsfield" ? generationTimeHint : "排队 / 运行"}">${elapsed(t)}</span></div></div><div class="card-body"><div><div class="card-title-row"><span title="${escapeHTML(taskDisplayName(t))}">${escapeHTML(taskDisplayName(t))}</span></div><p class="card-prompt">${escapeHTML(taskPrompt(t))}</p></div><div class="card-footer"><div class="model-tags">${taskTags(t)}</div><span class="card-footer-action">查看</span></div></div></article>`,
+        `<article class="model-card" tabindex="0" role="button" data-task="${escapeHTML(t.video_task_id)}" aria-label="查看 ${escapeHTML(taskDisplayName(t))}"><div class="card-thumb-wrap">${thumbPlaceholderHTML(t)}${taskIdentity(t)}<div class="card-badges">${badge(t)}</div><div class="card-times"><span title="开始时间">${date(t.created_at)}</span><span title="${t.service === "higgsfield" ? generationTimeHint : "排队 / 运行"}">${elapsed(t)}</span></div></div><div class="card-body"><div><div class="card-title-row"><span title="${escapeHTML(taskDisplayName(t))}">${escapeHTML(taskDisplayName(t))}</span></div><p class="card-prompt">${escapeHTML(taskPrompt(t))}</p></div><div class="card-footer"><div class="model-tags">${taskTags(t)}</div><span class="card-footer-action">查看</span></div></div></article>`,
     )
     .join("");
-  reconcileGallery(galleryHTML, data.tasks);
-  const tableHTML = data.tasks
+  reconcileGallery(galleryHTML, loadedTasks);
+  const tableHTML = loadedTasks
     .map(
       (t) =>
-        `<tr><td title="${escapeHTML(taskDisplayName(t))}">${escapeHTML(taskDisplayName(t))}</td><td>${taskTableIdentity(t)}</td><td>${escapeHTML(t.prompt.slice(0, 100))}</td><td>${escapeHTML(t.duration_seconds)}s · ${escapeHTML(t.aspect_ratio)}</td><td>${elapsed(t)}</td><td>${badge(t)}</td><td><button class="button" data-task="${escapeHTML(t.video_task_id)}">${t.status === "succeeded" ? "回放" : "详情"}</button></td></tr>`,
+        `<tr><td title="${escapeHTML(taskDisplayName(t))}">${escapeHTML(taskDisplayName(t))}</td><td>${taskTableIdentity(t)}</td><td>${escapeHTML((t.prompt || "").slice(0, 100))}</td><td>${escapeHTML(t.duration_seconds)}s · ${escapeHTML(t.aspect_ratio)}</td><td>${elapsed(t)}</td><td>${badge(t)}</td><td><button class="button" data-task="${escapeHTML(t.video_task_id)}">${t.status === "succeeded" ? "回放" : "详情"}</button></td></tr>`,
     )
     .join("");
   if ($("taskRows").innerHTML !== tableHTML)
     $("taskRows").innerHTML = tableHTML;
-  previews(data.tasks);
+  previews(loadedTasks);
   listReady = true;
+  setupScrollAppend();
+  updatePagerUI();
   if (window.studioEmbedded) window.studioNavigate("/dashboard" + (location.hash || "#tasks"));
-  $("pageLabel").textContent =
-    `第 ${page} / ${Math.max(1, Math.ceil(total / 24))} 页 · ${total} 个任务`;
-  $("prevPage").disabled = page <= 1;
-  $("nextPage").disabled = page * 24 >= total;
   notice(
     data.sync_errors
       ? `${data.sync_errors} 个任务暂未同步，保留最后已知状态。最后同步：${date(data.synced_at)}`
@@ -425,7 +568,7 @@ async function refresh() {
   clearTimeout(timer);
   if (/^#(?:create|higgsfield(?:-task-[a-zA-Z0-9_-]+)?)$/.test(location.hash)) return;
   if (!authorized || document.hidden) return;
-  if (busy) {
+  if (busy || loadingMore) {
     timer = setTimeout(refresh, 500);
     return;
   }
@@ -436,9 +579,19 @@ async function refresh() {
     if (detailTaskId) {
       await refreshTaskDetail(decodeURIComponent(detailTaskId), version);
     } else {
-      const data = await api(`/api/dashboard?${query()}`);
+      const firstPage = await api(`/api/dashboard?${query(1)}`);
       if (version !== revision) return;
-      render(data);
+      const maxPage = Math.max(1, Math.ceil((firstPage.total || 0) / 24));
+      const targetPages = Math.min(Math.max(1, page), maxPage);
+      const batches = [firstPage.tasks || []];
+      for (let p = 2; p <= targetPages; p++) {
+        const nextData = await api(`/api/dashboard?${query(p)}`);
+        if (version !== revision) return;
+        batches.push(nextData.tasks || []);
+      }
+      page = targetPages;
+      const merged = mergeTaskBatches(batches);
+      render({ ...firstPage, tasks: merged });
     }
     $("pollState").textContent = "2s 自动刷新";
   } catch (error) {
@@ -452,12 +605,83 @@ async function refresh() {
     }
   } finally {
     busy = false;
-    if (authorized) timer = setTimeout(refresh, 2000);
+    if (authorized && !document.hidden) timer = setTimeout(refresh, 2000);
   }
+}
+async function loadMore() {
+  if (
+    !authorized ||
+    document.hidden ||
+    detailTaskId ||
+    !listReady ||
+    loadingMore ||
+    !hasMoreTasks()
+  )
+    return;
+  if (busy) {
+    setTimeout(loadMore, 120);
+    return;
+  }
+  clearTimeout(timer);
+  loadingMore = true;
+  loadMoreError = "";
+  updatePagerUI();
+  const version = revision;
+  const nextPageNum = page + 1;
+  try {
+    const data = await api(`/api/dashboard?${query(nextPageNum)}`);
+    if (version !== revision || !authorized) return;
+    page = nextPageNum;
+    total = data.total;
+    loadedTasks = mergeTaskBatches([loadedTasks, data.tasks || []]);
+    loadingMore = false;
+    loadMoreError = "";
+    render({ ...data, tasks: loadedTasks });
+    if (scrollObserver && $("scrollSentinel") && hasMoreTasks()) {
+      scrollObserver.unobserve($("scrollSentinel"));
+      scrollObserver.observe($("scrollSentinel"));
+    }
+  } catch (error) {
+    if (version === revision && authorized) {
+      loadingMore = false;
+      loadMoreError = error.message || "加载更多任务失败，请重试。";
+      updatePagerUI();
+    }
+  } finally {
+    if (version === revision) loadingMore = false;
+    if (authorized && !document.hidden) timer = setTimeout(refresh, 2000);
+  }
+}
+function setupScrollAppend() {
+  if (scrollObserver || typeof IntersectionObserver !== "function") return;
+  const sentinel = $("scrollSentinel");
+  const footer = $("taskListFooter");
+  if (!sentinel && !footer) return;
+  scrollObserver = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (entry.target === sentinel || entry.target === footer) {
+          sentinelIntersecting = entry.isIntersecting;
+        }
+      }
+      if (sentinelIntersecting && !loadMoreError) {
+        loadMore();
+      }
+    },
+    { root: null, rootMargin: "240px 0px", threshold: 0 },
+  );
+  if (sentinel) scrollObserver.observe(sentinel);
+  if (footer) scrollObserver.observe(footer);
 }
 function filter() {
   page = 1;
   revision++;
+  loadingMore = false;
+  loadMoreError = "";
+  loadedTasks = [];
+  $("galleryContainer")?.replaceChildren();
+  $("taskRows")?.replaceChildren();
+  updatePagerUI();
   refresh();
 }
 async function mediaURL(id, taskId) {
@@ -485,7 +709,14 @@ function dispatch() {
   openModal("dispatchModal");
 }
 document.addEventListener("click", (event) => {
-  const target = event.target.closest("button,a,article");
+  const retryBtn = event.target?.closest?.("button[data-thumb-retry]");
+  if (retryBtn) {
+    event.preventDefault();
+    event.stopPropagation();
+    retryThumbnail(retryBtn.dataset.thumbRetry);
+    return;
+  }
+  const target = event.target?.closest?.("button,a,article");
   if (target?.dataset.action === "token") openModal("tokenModal");
   if (target?.dataset.action === "dispatch") dispatch();
   if (target?.dataset.action === "refresh") refresh();
@@ -510,7 +741,7 @@ document.addEventListener("click", (event) => {
       );
     filter();
   }
-  if (event.target.classList.contains("modal-backdrop"))
+  if (event.target?.classList?.contains("modal-backdrop"))
     closeModal(event.target.id);
 });
 document.addEventListener("keydown", (event) => {
@@ -580,11 +811,40 @@ $("prevPage").addEventListener("click", () => {
   }
 });
 $("nextPage").addEventListener("click", () => {
-  if (page * 24 < total) {
-    page++;
-    revision++;
-    refresh();
-  }
+  loadMore();
+});
+$("loadMoreBtn")?.addEventListener("click", () => {
+  loadMore();
+});
+$("retryLoadMoreBtn")?.addEventListener("click", () => {
+  loadMoreError = "";
+  loadMore();
+});
+window.addEventListener("scroll", () => {
+  if (
+    !authorized ||
+    document.hidden ||
+    detailTaskId ||
+    loadingMore ||
+    loadMoreError ||
+    !hasMoreTasks()
+  )
+    return;
+  if (
+    window.innerHeight + window.scrollY >=
+    document.documentElement.scrollHeight - 320
+  )
+    loadMore();
+});
+window.addEventListener("pagehide", () => {
+  clearTimeout(timer);
+  clearTimeout(searchTimer);
+  scrollObserver?.disconnect();
+  scrollObserver = null;
+  thumbnails.forEach((v) => URL.revokeObjectURL(v.url));
+  thumbnails.clear();
+  thumbnailRequests.clear();
+  clearMedia();
 });
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) refresh();

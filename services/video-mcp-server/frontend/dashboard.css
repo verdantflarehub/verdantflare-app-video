@@ -1195,3 +1195,8 @@ html[data-page="task"] [data-action="dispatch"] { display: none !important; }
 .result-load-target{position:absolute;inset:0;width:100%;height:100%;border:0;border-radius:inherit;background:transparent;color:inherit;font:inherit;cursor:pointer}
 .result-load-target:focus-visible{outline:2px solid currentColor;outline-offset:-4px}
 .result-load-target:disabled{cursor:progress}
+.card-thumb-wrap .thumb-placeholder{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:16px;text-align:center;font-size:12px;line-height:1.5;color:var(--muted);max-width:86%}
+.card-thumb-wrap .thumb-placeholder.thumb-error{color:var(--rose)}
+.card-thumb-wrap .thumb-retry-btn{min-height:28px;padding:0 12px;font-size:11px;position:relative;z-index:2}
+.scroll-sentinel{width:100%;height:4px}
+
