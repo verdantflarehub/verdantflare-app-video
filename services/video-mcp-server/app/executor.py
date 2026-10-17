@@ -157,7 +157,7 @@ class VideoExecutor:
     def catalog_view(self) -> dict[str, object]:
         """Project adapter facts beside the immutable supplier catalog."""
         from copy import deepcopy
-        from .providers.fal import FAL_MODEL_ID, FAL_PUBLIC_MODEL
+        from .providers.fal import FAL_MODEL_ID, FAL_PUBLIC_MODEL, FAL_SD2_MODEL_ID, FAL_SD2_PUBLIC_MODEL
 
         catalog = deepcopy(self.catalog.snapshot())
         fal_channel = next((channel for channel in catalog.get("channels", []) if channel["id"] == "fal"), None)
@@ -167,6 +167,9 @@ class VideoExecutor:
                 model["id"]: ({"state": "adapter_connected_unverified" if connected else "adapter_disconnected",
                                "route": "fal", "model": FAL_PUBLIC_MODEL}
                               if model.get("upstream_model_id") == FAL_MODEL_ID
+                              else {"state": "adapter_connected_unverified" if connected else "adapter_disconnected",
+                                    "route": "fal", "model": FAL_SD2_PUBLIC_MODEL}
+                              if model.get("upstream_model_id") == FAL_SD2_MODEL_ID
                               else {"state": "catalog_only"})
                 for model in fal_channel["models"]}}
         return catalog
@@ -212,9 +215,16 @@ class VideoExecutor:
                     except (httpx.HTTPError, ValueError, AttributeError):
                         routes[-1]["readiness"] = "unreachable"
         routes.append(self.grok.capability())
+        routes.append({"route": "fal", "model": "bytedance-seedance-2.0-reference-to-video",
+                       "configured": self.fal.connected(), "readiness": "not_checked",
+                       "limit_scope": "adapter", "duration_seconds": {"minimum": 4, "maximum": 15},
+                       "aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+                       "resolutions": ["480p", "720p"]})
         routes.extend(self.higgsfield.capabilities())
         return {"catalog": self.catalog_view(), "default_model": "minimax-h3-ref2va", "default_route": self.runtime_route,
-                "models": [{"model": "minimax-h3-ref2va"}, {"model": self.grok.model, "routes": ["grok"]},
+                "models": [{"model": "minimax-h3-ref2va"},
+                           {"model": "bytedance-seedance-2.0-reference-to-video", "routes": ["fal"]},
+                           {"model": self.grok.model, "routes": ["grok"]},
                            *[{"model": item["model"], "routes": ["higgsfield"]} for item in self.higgsfield.capabilities()]],
                 "model_specification": {"aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
                                         "omni_adaptive": True},
@@ -412,16 +422,19 @@ class VideoExecutor:
             return self.grok.generate(project_id=project_id, idempotency_key=idempotency_key,
                 model=model, prompt=prompt, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
                 references=references, quality_profile=quality_profile, mode=mode, resolution=resolution)
-        if mode is not None or resolution is not None:
-            raise ValueError("unsupported_parameter")
         model = model or "minimax-h3-ref2va"
         aspect_ratio = aspect_ratio or "16:9"
         quality_profile = quality_profile or "du-0"
         if route == "fal":
+            if mode not in {None, "reference_to_video"} or quality_profile != "du-0":
+                raise ValueError("unsupported_parameter")
             return self.fal.generate(project_id=project_id, idempotency_key=idempotency_key,
                                      model=model, prompt=prompt, duration_seconds=duration_seconds,
                                      aspect_ratio=aspect_ratio, references=references,
-                                     channel_account_id=channel_account_id, budget_limit=budget_limit)
+                                     channel_account_id=channel_account_id, budget_limit=budget_limit,
+                                     resolution=resolution)
+        if mode is not None or resolution is not None:
+            raise ValueError("unsupported_parameter")
         request, digest = self._normalize(project_id, model, prompt, duration_seconds, aspect_ratio,
                                           references, route, quality_profile)
         request, digest = self.delivery.prepare(request, digest, postprocess, check=False)

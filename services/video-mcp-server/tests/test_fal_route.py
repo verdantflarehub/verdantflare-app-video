@@ -200,6 +200,31 @@ class FalRouteTest(unittest.TestCase):
             self.assertEqual([request.method for request in calls], ["POST", "GET", "GET", "GET"])
             client.close()
 
+    def test_seedance_reference_request_is_distinct_from_h3(self) -> None:
+        seen = []
+        def handler(request):
+            seen.append(request)
+            if request.method == "POST":
+                body = json.loads(request.content)
+                self.assertEqual(body["model_id"], "bytedance/seedance-2.0/reference-to-video")
+                self.assertEqual(body["payload"]["resolution"], "720p")
+                self.assertEqual(body["payload"]["duration"], 5)
+                self.assertTrue(body["payload"]["generate_audio"])
+                self.assertTrue(body["payload"]["image_urls"][0].startswith("data:image/png;base64,"))
+                self.assertIn("@Image1", body["payload"]["prompt"])
+                self.assertNotIn("reference_image_urls", body["payload"])
+                return httpx.Response(200, json={"call_id": "11111111-1111-4111-8111-111111111111",
+                                                 "state": "queued", "accepted": True})
+            return httpx.Response(200, json={"state": "completed", "accepted": True})
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            executor = VideoExecutor(self.artifacts, self.tasks, client)
+            record = executor.generate(**self.inputs(idempotency_key="seedance-1",
+                model="bytedance-seedance-2.0-reference-to-video", aspect_ratio="16:9",
+                resolution="720p", mode="reference_to_video"))
+            self.assertEqual(record.runtime_version, "fal-channel-v1")
+            self.assertEqual(record.request["model"], "bytedance-seedance-2.0-reference-to-video")
+            self.assertEqual(len(seen), 1)
+
     def test_result_download_uses_one_full_request_without_credentials_or_ranges(self) -> None:
         video = b"video" * 70000
         calls = []

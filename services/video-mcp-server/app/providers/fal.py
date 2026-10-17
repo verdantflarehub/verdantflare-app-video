@@ -21,6 +21,8 @@ from ..tasks import TaskConflict, TaskRecord
 
 FAL_PUBLIC_MODEL = "minimax-h3-ref2va"
 FAL_MODEL_ID = "minimax/h3/reference-to-video"
+FAL_SD2_PUBLIC_MODEL = "bytedance-seedance-2.0-reference-to-video"
+FAL_SD2_MODEL_ID = "bytedance/seedance-2.0/reference-to-video"
 FAL_QUEUE_MODEL_ID = "minimax/h3"
 FAL_RUNTIME_VERSION = "video-fal-adapter-v0.2.2"
 FAL_GATEWAY_RUNTIME_VERSION = "video-fal-gateway-v0.1.0"
@@ -180,9 +182,9 @@ class FalAdapter:
         aspect_ratio: str,
         references: dict[str, list[dict[str, str]]],
     ) -> tuple[dict[str, object], str]:
-        if model != FAL_PUBLIC_MODEL:
-            raise ValueError(f"model must be {FAL_PUBLIC_MODEL} for route fal")
-        if not prompt.strip() or not 5 <= duration_seconds <= 15:
+        if model not in {FAL_PUBLIC_MODEL, FAL_SD2_PUBLIC_MODEL}:
+            raise ValueError("model is not enabled for route fal")
+        if not prompt.strip() or not (4 if model == FAL_SD2_PUBLIC_MODEL else 5) <= duration_seconds <= 15:
             raise ValueError("prompt or duration_seconds is invalid for route fal")
         images = references.get("images", [])
         videos = references.get("videos", [])
@@ -196,6 +198,10 @@ class FalAdapter:
             raise ValueError("fal reference-to-video requires at least one reference")
         if aspect_ratio not in FAL_ASPECT_RATIOS:
             raise ValueError("aspect_ratio is invalid for fal reference-to-video")
+        if model == FAL_SD2_PUBLIC_MODEL and aspect_ratio == "adaptive":
+            raise ValueError("adaptive aspect ratio is not supported for fal Seedance")
+        if model == FAL_SD2_PUBLIC_MODEL and not (images or videos):
+            raise ValueError("fal Seedance needs an image or video reference")
 
         normalized: dict[str, list[dict[str, str]]] = {"images": [], "videos": [], "audios": []}
         for kind, items, prefix in (
@@ -227,19 +233,21 @@ class FalAdapter:
     def _payload(self, record: TaskRecord) -> dict[str, object]:
         request = record.request
         references = request["references"]
+        sd2 = request["model"] == FAL_SD2_PUBLIC_MODEL
         payload: dict[str, object] = {
             "duration": request["duration_seconds"],
-            "resolution": self.resolution,
-            "enable_safety_checker": True,
-            "sync_mode": False,
-            "prompt_expansion_mode": "disabled",
+            "resolution": request.get("resolution", "720p") if sd2 else self.resolution,
             "aspect_ratio": request["aspect_ratio"],
         }
+        if sd2:
+            payload["generate_audio"] = True
+        else:
+            payload.update(enable_safety_checker=True, sync_mode=False, prompt_expansion_mode="disabled")
         tags: list[str] = []
         mapping = (
-            ("images", "Image", "reference_image_urls", MAX_FAL_IMAGE_BYTES, False),
-            ("videos", "Video", "reference_video_urls", MAX_FAL_VIDEO_BYTES, True),
-            ("audios", "Audio", "reference_audio_urls", MAX_FAL_AUDIO_BYTES, True),
+            ("images", "Image", "image_urls" if sd2 else "reference_image_urls", 30 * 1024 * 1024 if sd2 else MAX_FAL_IMAGE_BYTES, False),
+            ("videos", "Video", "video_urls" if sd2 else "reference_video_urls", 50 * 1024 * 1024 - 1 if sd2 else MAX_FAL_VIDEO_BYTES, True),
+            ("audios", "Audio", "audio_urls" if sd2 else "reference_audio_urls", MAX_FAL_AUDIO_BYTES, True),
         )
         for kind, label, field, maximum, timed in mapping:
             values: list[str] = []
@@ -249,7 +257,8 @@ class FalAdapter:
                 value, reference_duration = self._artifact_data_uri(artifact, maximum, timed=timed)
                 values.append(value)
                 combined_duration += reference_duration or 0.0
-                tags.append(f"{label} {index} is the approved {item['purpose']} reference")
+                tags.append(f"@{label}{index} is the approved {item['purpose']} reference" if sd2 else
+                            f"{label} {index} is the approved {item['purpose']} reference")
             if timed and combined_duration > 15:
                 raise ArtifactError(f"combined fal {kind} duration exceeds 15 seconds")
             if values:
@@ -269,6 +278,7 @@ class FalAdapter:
         references: dict[str, list[dict[str, str]]],
         channel_account_id: str | None = None,
         budget_limit: str | None = None,
+        resolution: str | None = None,
     ) -> TaskRecord:
         request, digest = self.normalize(
             project_id=project_id,
@@ -278,6 +288,12 @@ class FalAdapter:
             aspect_ratio=aspect_ratio,
             references=references,
         )
+        if model == FAL_SD2_PUBLIC_MODEL:
+            if resolution not in {None, "480p", "720p"}:
+                raise ValueError("unsupported fal Seedance resolution")
+            request["resolution"] = resolution or "720p"
+        elif resolution is not None:
+            raise ValueError("resolution is not supported for fal H3")
         if channel_account_id is not None:
             try:
                 request['channel_account_id'] = str(uuid.UUID(channel_account_id))
@@ -341,7 +357,8 @@ class FalAdapter:
                 self.gateway_url + "/v1/calls",
                 headers=self._gateway_headers(str(request["organization_id"])),
                 json={"idempotency_key": record.video_task_id, "task_id": record.video_task_id,
-                      "model_id": self.model_id, "capability": "video", "payload": payload,
+                      "model_id": FAL_SD2_MODEL_ID if model == FAL_SD2_PUBLIC_MODEL else self.model_id,
+                      "capability": "video", "payload": payload,
                       "account_id": request.get('channel_account_id'), "budget_limit": request.get('budget_limit')},
                 timeout=75,
             )
