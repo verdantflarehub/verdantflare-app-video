@@ -259,7 +259,7 @@ class FalRouteTest(unittest.TestCase):
                 yield b"b"
         with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=Trickle(), headers={"content-type": "video/mp4"}))) as client:
             executor = VideoExecutor(self.artifacts, self.tasks, client)
-            with mock.patch("app.providers.fal.time.monotonic", side_effect=[0, 10, 91]):
+            with mock.patch("app.providers.fal.time.monotonic", side_effect=[0, 10, 301]):
                 with self.assertRaisesRegex(FalError, "result_download_failed"):
                     executor.fal._download("https://v3.fal.media/files/result.mp4")
     def test_channel_timeout_recovers_by_original_operation_without_resubmit(self):

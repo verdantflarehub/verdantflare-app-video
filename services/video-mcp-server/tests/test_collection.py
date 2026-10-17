@@ -182,3 +182,10 @@ class CollectionTest(unittest.TestCase):
                 snapshot = pool.submit(self.executor.status, rec.video_task_id).result(1)
                 self.assertEqual(snapshot.status, 'queued')
             status.assert_not_called()
+
+    def test_slow_but_progressing_cdn_stream_can_finish_after_ninety_seconds(self):
+        clock = iter((0, 100, 100))
+        with httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(
+                200, content=b'video', headers={'content-type': 'video/mp4'}))) as client:
+            with patch.object(self.executor, 'client', client), patch('app.providers.fal.time.monotonic', side_effect=lambda: next(clock, 100)):
+                self.assertEqual(self.executor.fal._download('https://v3.fal.media/result.mp4'), b'video')

@@ -565,13 +565,13 @@ class FalAdapter:
 
     def _download(self, url: str) -> bytes:
         source = self._allowed_result_url(url)
-        deadline = time.monotonic() + 90
+        deadline = time.monotonic() + 300
         try:
             # The CDN's parallel Range path can stall while a normal GET succeeds.
             # Keep one stream and bound both idle reads and the overall transfer.
             with self.executor.client.stream(
                 "GET", source, headers={"Accept": "video/*", "Accept-Encoding": "identity"},
-                timeout=httpx.Timeout(connect=10, read=15, write=10, pool=10),
+                timeout=httpx.Timeout(connect=10, read=30, write=10, pool=10),
             ) as response:
                 if response.status_code != 200:
                     raise FalError("result_download_failed")
