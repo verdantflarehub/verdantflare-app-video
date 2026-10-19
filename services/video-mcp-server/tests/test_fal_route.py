@@ -110,6 +110,12 @@ class FalRouteTest(unittest.TestCase):
             directory["capabilities"][0]["execution_state"] = "catalog_only"
             directory["capabilities"].append(dict(capability))
             self.assertIsNone(adapter.channel_capabilities())
+            directory["capabilities"] = [dict(capability, card_group="camera-controls",
+                card_title="镜头控制", input_summary="图像", output_summary="视频",
+                source_url="https://fal.ai/models/minimax/h3-max/camera-controls/api")]
+            self.assertIsNotNone(adapter.channel_capabilities())
+            directory["capabilities"][0]["source_url"] = "https://example.com/unsafe"
+            self.assertIsNone(adapter.channel_capabilities())
 
     def test_submit_poll_and_result_preserve_provider_boundary(self) -> None:
         calls: list[httpx.Request] = []

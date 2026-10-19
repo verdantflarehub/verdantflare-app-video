@@ -116,6 +116,28 @@ class FalAdapter:
             if item["model_id"] == "minimax/h3-max" and item["execution_state"] != "catalog_only":
                 # A directory file cannot silently enable a paid adapter.
                 return None
+            card_fields = ("card_group", "card_title", "input_summary", "output_summary")
+            if any(field in item for field in card_fields):
+                if (not all(isinstance(item.get(field), str) and item[field] and len(item[field]) <= 160
+                            for field in card_fields)
+                        or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", item["card_group"])):
+                    return None
+            source = item.get("source_url")
+            if source is not None:
+                if not isinstance(source, str):
+                    return None
+                parsed = urlsplit(source)
+                try:
+                    source_port = parsed.port
+                except ValueError:
+                    return None
+                expected = {"/models/" + item["endpoint_id"] + "/api"}
+                if item["model_id"] == "minimax/h3":
+                    expected.add("/minimax-h3")
+                if (parsed.scheme != "https" or parsed.hostname != "fal.ai"
+                        or source_port not in {None, 443} or parsed.username
+                        or parsed.password or parsed.query or parsed.fragment or parsed.path not in expected):
+                    return None
         return data
 
     def _gateway_headers(self, organization_id: str) -> dict[str, str]:
