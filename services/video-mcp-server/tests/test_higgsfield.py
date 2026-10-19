@@ -14,8 +14,9 @@ from app.artifacts import ArtifactStore
 from app.delivery import CALLER
 from app.executor import VideoExecutor
 from app.dashboard import Dashboard
-from app.higgsfield_authority import authorize as native_authorize
-from app.providers.higgsfield_artifact import collect, source, uuid7
+from app.artifact_authority import authorize as native_authorize
+from app.providers.higgsfield_artifact import collect
+from app.artifact_output import source, uuid7
 from app.tasks import TaskStore, TaskConflict
 
 ORG = "0199abcd-0000-7000-8000-000000000001"
@@ -243,7 +244,7 @@ class HiggsfieldTest(unittest.TestCase):
         try:
             with patch.dict(os.environ, {"VIDEO_ARTIFACT_SERVICE_URL": "http://artifact.internal",
                      "VIDEO_ARTIFACT_SERVICE_TOKEN": "synthetic-artifact-" + "x" * 32}), \
-                 patch("app.providers.higgsfield_artifact.httpx.Client",
+                 patch("app.artifact_output.httpx.Client",
                      side_effect=lambda **kwargs: client_type(transport=httpx.MockTransport(reply), **kwargs)):
                 yield
         finally:

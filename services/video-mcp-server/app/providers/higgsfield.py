@@ -75,7 +75,7 @@ class HiggsfieldAdapter:
         return dict(actor)
 
     def project_request(self, operation, body, actor=None):
-        from .higgsfield_artifact import uuid7
+        from ..artifact_output import uuid7
         actor = self.authorize_member(actor)
         if operation not in {"open", "list"}:
             raise ValueError("unsupported_project_operation")
@@ -322,7 +322,7 @@ class HiggsfieldAdapter:
 
     def content_path(self, record):
         """Authorize the fixed central version before serving its verified cache."""
-        from .higgsfield_artifact import source, uuid7
+        from ..artifact_output import source, uuid7
         actor = self.authorize_record(record)
         if record.status != "succeeded":
             raise ValueError("higgsfield_result_not_ready")
