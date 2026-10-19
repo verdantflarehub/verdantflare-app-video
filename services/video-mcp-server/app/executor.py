@@ -115,6 +115,8 @@ class VideoExecutor:
         self.fal = FalAdapter(self)
         from .providers.grok import GrokVideoAdapter
         self.grok = GrokVideoAdapter(self)
+        from .providers.google import GoogleVideoAdapter
+        self.google = GoogleVideoAdapter(self)
         from .providers.higgsfield import HiggsfieldAdapter
         self.higgsfield = HiggsfieldAdapter(self)
         from .delivery import Delivery
@@ -145,7 +147,7 @@ class VideoExecutor:
 
     @staticmethod
     def _service_for_route(route: str) -> str:
-        return ("grok" if route == "grok" else "fal" if route == "fal" else
+        return ("google" if route == "google" else "grok" if route == "grok" else "fal" if route == "fal" else
                 "h3-vdn" if route == "h3-vdn" else
                 "h3-sol" if route.startswith("h3-sol") else
                 "h3-singularity" if route == "h3-singularity" else "h3")
@@ -241,6 +243,7 @@ class VideoExecutor:
                     except (httpx.HTTPError, ValueError, AttributeError):
                         routes[-1]["readiness"] = "unreachable"
         routes.append(self.grok.capability())
+        routes.append(self.google.capability())
         routes.append({"route": "fal", "model": "bytedance-seedance-2.0-reference-to-video",
                        "configured": self.fal.connected(), "readiness": "not_checked",
                        "limit_scope": "adapter", "duration_seconds": {"minimum": 4, "maximum": 15},
@@ -253,6 +256,7 @@ class VideoExecutor:
                 "models": [{"model": "minimax-h3-ref2va"},
                            {"model": "bytedance-seedance-2.0-reference-to-video", "routes": ["fal"]},
                            {"model": self.grok.model, "routes": ["grok"]},
+                           {"model": self.google.model, "routes": ["google"]},
                            *[{"model": item["model"], "routes": ["higgsfield"]} for item in self.higgsfield.capabilities()]],
                 "model_specification": {"aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
                                         "omni_adaptive": True},
@@ -438,7 +442,7 @@ class VideoExecutor:
         if not idempotency_key.strip() or len(idempotency_key) > 128:
             raise ValueError("idempotency_key is invalid")
         route = route or self.runtime_route
-        if route != 'fal' and (channel_account_id is not None or budget_limit is not None):
+        if route not in {'fal', 'grok', 'google'} and (channel_account_id is not None or budget_limit is not None):
             raise ValueError('channel_budget_not_supported')
         from .delivery import normalize, authorize
         normalize(postprocess, route)
@@ -449,7 +453,13 @@ class VideoExecutor:
         if route == "grok":
             return self.grok.generate(project_id=project_id, idempotency_key=idempotency_key,
                 model=model, prompt=prompt, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
-                references=references, quality_profile=quality_profile, mode=mode, resolution=resolution)
+                references=references, quality_profile=quality_profile, mode=mode, resolution=resolution,
+                channel_account_id=channel_account_id, budget_limit=budget_limit)
+        if route == "google":
+            return self.google.generate(project_id=project_id, idempotency_key=idempotency_key,
+                model=model, prompt=prompt, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
+                references=references, quality_profile=quality_profile, mode=mode, resolution=resolution,
+                channel_account_id=channel_account_id, budget_limit=budget_limit)
         model = model or "minimax-h3-ref2va"
         aspect_ratio = aspect_ratio or "16:9"
         quality_profile = quality_profile or "du-0"
@@ -595,6 +605,8 @@ class VideoExecutor:
             return self.higgsfield.status(record)
         if record.service == "grok":
             return self.grok.status(record)
+        if record.service == "google":
+            return self.google.status(record)
         if (record.service == "h3-singularity" and not record.runtime_task_id
             and (record.status in {"queued", "running"} or (record.error or {}).get("code") == "submission_unconfirmed")):
             url, headers, _, _ = self.runtime(self._record_route(record))
@@ -688,6 +700,8 @@ class VideoExecutor:
             return self.higgsfield.result(record)
         if record.service == "grok":
             return self.grok.result(record)
+        if record.service == "google":
+            return self.google.result(record)
         if record.service == "fal":
             from .providers.fal import FalError
             try:

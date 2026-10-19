@@ -24,32 +24,43 @@ from ..tasks import TaskConflict
 from ..artifacts import ArtifactNotFound
 
 RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4"]
-MODELS = {"grok-imagine-video", "grok-imagine-video-1.5"}
+MODELS = {"grok-imagine-video", "grok-imagine-video-1.5", "grok-imagine-video-1.5-lite"}
 VERSION = "grok-video-v1"
+CHANNEL_VERSION = "grok-channel-v1"
 
 
 class GrokVideoAdapter:
     def __init__(self, executor):
         self.executor = executor
+        self.channel_url = (os.getenv("VIDEO_GROK_CHANNEL_URL") or os.getenv("IMAGE_GROK_CHANNEL_URL") or "").rstrip("/")
+        self.channel_token = (os.getenv("VIDEO_GROK_CHANNEL_TOKEN") or os.getenv("IMAGE_GROK_CHANNEL_TOKEN") or "").strip()
+        self.channel_mode = bool(self.channel_url and len(self.channel_token) >= 32)
         self.base = os.getenv("XAI_BASE_URL", "https://api.x.ai/v1").rstrip("/")
         self.key = os.getenv("XAI_API_KEY", "")
-        self.model = os.getenv("XAI_VIDEO_MODEL", "grok-imagine-video-1.5")
-        self.enabled = os.getenv("XAI_VIDEO_ENABLED", "false").lower() == "true"
-        self.profile = hashlib.sha256((self.base + "\0" + self.key).encode()).hexdigest()
+        self.model = os.getenv("XAI_VIDEO_MODEL", "grok-imagine-video" if self.channel_mode else "grok-imagine-video-1.5")
+        self.enabled = self.channel_mode or (os.getenv("XAI_VIDEO_ENABLED", "false").lower() == "true")
+        profile_seed = (self.channel_url + "\0" + CHANNEL_VERSION) if self.channel_mode else (self.base + "\0" + self.key)
+        self.profile = hashlib.sha256(profile_seed.encode()).hexdigest()
         self.download_client = httpx.Client(follow_redirects=False, timeout=120)
         self.hosts = {"vidgen.x.ai", "assets.grok.com", urlsplit(self.base).hostname}
         self.hosts.update(x.strip() for x in os.getenv("XAI_RESULT_HOSTS", "").split(",") if x.strip())
 
     def configured(self):
+        if self.channel_mode:
+            p = urlsplit(self.channel_url)
+            return bool(p.scheme in {"http", "https"} and p.hostname and not
+                        (p.username or p.password or p.query or p.fragment) and self.model in MODELS)
         p = urlsplit(self.base)
         return bool(self.key and p.scheme == "https" and p.hostname and not
                     (p.username or p.password or p.query or p.fragment) and self.model in MODELS)
 
     def capability(self):
         return {"route": "grok", "provider": "xai", "model": self.model,
+                "models": sorted(MODELS) if self.channel_mode else [self.model],
                 "enabled": self.enabled, "configured": self.configured(),
                 "readiness": "not_checked", "verification_status": "not_recorded",
-                "adapter_version": VERSION, "modes": ["text_to_video", "image_to_video"],
+                "adapter_version": CHANNEL_VERSION if self.channel_mode else VERSION,
+                "modes": ["text_to_video", "image_to_video"],
                 "duration_seconds": {"minimum": 1, "maximum": 15}, "aspect_ratios": RATIOS,
                 "resolutions": ["480p", "720p"], "limit_scope": "adapter",
                 "poll": True, "callback": False, "cancel": False, "progress": "optional",
@@ -90,7 +101,7 @@ class GrokVideoAdapter:
         if quality_profile is not None:
             raise ValueError("unsupported_parameter")
         model = model or self.model
-        if model != self.model:
+        if (model not in MODELS) if self.channel_mode else (model != self.model):
             raise ValueError("model_route_mismatch")
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("invalid_prompt")
@@ -134,8 +145,25 @@ class GrokVideoAdapter:
         digest = "sha256:" + hashlib.sha256(json.dumps(request, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         return request, digest
 
-    def generate(self, *, idempotency_key, **kwargs):
+    def _resolve_actor(self, project_id):
+        from ..delivery import CALLER, authorize
+        caller = CALLER.get() or {}
+        if caller.get("user_id") and caller.get("organization_id") and os.environ.get("VIDEO_PROJECT_SERVICE_URL") and os.environ.get("VIDEO_PROJECT_SERVICE_TOKEN"):
+            return authorize(self.executor.client, project_id)
+        org_id = str(caller.get("organization_id") or os.environ.get("CHANNEL_DISCOVERY_SCOPE_ID") or os.environ.get("STATION_ORGANIZATION_ID") or "01a0fbf9-0a33-7c31-90d0-a51e3b0a9781").strip()
+        user_id = str(caller.get("user_id") or "video-mcp").strip()
+        return {"organization_id": org_id, "user_id": user_id}
+
+    def generate(self, *, idempotency_key, channel_account_id=None, budget_limit=None, **kwargs):
         request, digest = self.normalize(**kwargs)
+        actor = None
+        provider_state = {}
+        if self.channel_mode:
+            actor = self._resolve_actor(request["project_id"])
+            provider_state["organization_id"] = actor["organization_id"]
+            if channel_account_id is not None:
+                provider_state["channel_account_id"] = str(channel_account_id)
+            provider_state["budget_limit"] = str(budget_limit or os.getenv("VIDEO_GROK_DEFAULT_BUDGET_LIMIT", "2"))
         with self.locked():
             old = self.executor.tasks.find_idempotency(request["project_id"], idempotency_key)
             if old:
@@ -145,9 +173,16 @@ class GrokVideoAdapter:
             if not self.enabled or not self.configured():
                 raise ValueError("provider_not_configured")
             rec = self.executor.tasks.create(project_id=request["project_id"], idempotency_key=idempotency_key,
-                input_digest=digest, request=request, runtime_task_id="", status="queued")
-            return self.executor.tasks.update(rec, service="grok", runtime_route="grok",
-                runtime_version=VERSION, runtime_stage="prepared", provider_state={})
+                input_digest=digest, request=request, runtime_task_id="", status="queued", authority=actor)
+            rec = self.executor.tasks.update(rec, service="grok", runtime_route="grok",
+                runtime_version=CHANNEL_VERSION if self.channel_mode else VERSION,
+                runtime_stage="prepared", provider_state=provider_state)
+            if self.channel_mode:
+                try:
+                    return self.submit(rec)
+                except (OSError, ValueError):
+                    return self.error(rec, "source_integrity_failed", terminal=True)
+            return rec
 
     def save(self, rec, **values):
         return self.executor.tasks.update(rec, **values)
@@ -159,10 +194,64 @@ class GrokVideoAdapter:
             error={"code": code, "message": code}, provider_state=state,
             runtime_stage=stage or ("failed" if terminal else rec.runtime_stage))
 
+    def _channel_headers(self, rec):
+        state = rec.provider_state or {}
+        org = state.get("organization_id") or (rec.authority or {}).get("organization_id") or ""
+        return {"Authorization": "Bearer " + self.channel_token,
+                "X-Organization-Id": str(org), "X-Caller-Id": "video-mcp"}
+
     def submit(self, rec):
         p = rec.request
         if not self.enabled:
             return rec  # Disabling the channel stops undispatched work only.
+        if self.channel_mode:
+            state = dict(rec.provider_state or {})
+            payload = {
+                "prompt": p["prompt"],
+                "duration": p["duration_seconds"],
+                "resolution": p["resolution"],
+                "aspect_ratio": p["aspect_ratio"],
+                "mode": p["mode"],
+            }
+            if p["mode"] == "image_to_video":
+                data, info = self.source(rec.project_id, p["references"]["images"][0]["artifact_id"])
+                if info != p["source"]:
+                    return self.error(rec, "source_integrity_failed", terminal=True)
+                payload["image"] = {"mime_type": info["mime"], "data": base64.b64encode(data).decode()}
+            rec = self.save(rec, status="running", runtime_stage="submitting")
+            try:
+                r = self.executor.client.post(self.channel_url + "/v1/calls",
+                    headers=self._channel_headers(rec),
+                    json={
+                        "idempotency_key": rec.video_task_id,
+                        "task_id": rec.video_task_id,
+                        "model_id": p["model"],
+                        "capability": "video",
+                        "payload": payload,
+                        "account_id": state.get("channel_account_id"),
+                        "budget_limit": state.get("budget_limit") or "2",
+                    }, timeout=60)
+                if r.status_code in {400, 401, 403, 404, 409, 422}:
+                    code = "provider_rejected"
+                    try:
+                        code = r.json().get("error") or code
+                    except Exception:
+                        pass
+                    return self.error(rec, code, terminal=True)
+                if not r.is_success:
+                    return self.error(rec, f"provider_http_{r.status_code}", stage="submission_unknown")
+                body = r.json()
+                call_id = body["call_id"]
+                if body.get("accepted") is False or body.get("state") in {"rejected", "failed"}:
+                    return self.error(rec, body.get("error") or "provider_rejected", terminal=True)
+                if body.get("accepted") is None or body.get("state") == "acceptance_unknown":
+                    return self.save(rec, runtime_task_id=call_id, runtime_stage="submission_unknown",
+                                     dispatched_at=datetime.now(UTC).isoformat(),
+                                     error={"code": "submission_unknown", "message": "submission_unknown"})
+            except (httpx.HTTPError, ValueError, KeyError, TypeError):
+                return self.error(rec, "submission_unknown", stage="submission_unknown")
+            return self.save(rec, runtime_task_id=call_id, runtime_stage="remote_pending",
+                dispatched_at=datetime.now(UTC).isoformat(), error=None)
         payload = {"model": p["model"], "prompt": p["prompt"], "duration": p["duration_seconds"], "resolution": p["resolution"]}
         if p["mode"] == "image_to_video":
             data, info = self.source(rec.project_id, p["references"]["images"][0]["artifact_id"])
@@ -204,6 +293,8 @@ class GrokVideoAdapter:
                     return self.submit(rec)
                 except (OSError, ValueError):
                     return self.error(rec, "source_integrity_failed", terminal=True)
+            if self.channel_mode:
+                return self._channel_status(rec, state)
             if not rec.runtime_task_id:
                 return self.error(rec, (rec.error or {}).get("code", "submission_unknown"), stage="submission_unknown", delay=300)
             output = self.output_path(rec)
@@ -249,6 +340,77 @@ class GrokVideoAdapter:
                 return self.collect(self.save(rec, runtime_stage="collecting", provider_state=state))
             except (httpx.HTTPError, ValueError, TypeError, KeyError, OSError):
                 return self.error(rec, "provider_protocol_error")
+
+    def _channel_status(self, rec, state):
+        output = self.output_path(rec)
+        if output.exists() and state.get("result_sha256"):
+            return self._channel_collect(rec, state)
+        try:
+            path = ("/v1/calls/" + quote(rec.runtime_task_id, safe="")) if rec.runtime_task_id else ("/v1/calls/by-idempotency/" + quote(rec.video_task_id, safe=""))
+            r = self.executor.client.get(self.channel_url + path, headers=self._channel_headers(rec), timeout=30)
+            if r.status_code == 404 and not rec.runtime_task_id:
+                return self.error(rec, "submission_unknown", stage="submission_unknown", delay=60)
+            r.raise_for_status()
+            data = r.json()
+            if not rec.runtime_task_id and isinstance(data.get("call_id"), str):
+                rec = self.save(rec, runtime_task_id=data["call_id"])
+            cstate = data.get("state")
+            if data.get("accepted") is False or cstate in {"rejected", "failed"}:
+                return self.error(rec, data.get("error") or "provider_rejected", terminal=True)
+            if cstate in {"acceptance_unknown", "queued", "in_queue", "in_progress"}:
+                state["poll_count"] = int(state.get("poll_count", 0)) + 1
+                delay = min(10, 2 ** min(3, state["poll_count"]))
+                state["next_poll_at"] = time.time() + delay
+                return self.save(rec, provider_state=state, status="running", error=None, runtime_stage="remote_pending")
+            if cstate != "completed":
+                return self.error(rec, "provider_protocol_error")
+            state.update(next_poll_at=0, progress=100)
+            return self._channel_collect(self.save(rec, runtime_stage="collecting", provider_state=state), state)
+        except (httpx.HTTPError, ValueError, TypeError, KeyError, OSError):
+            return self.error(rec, "provider_protocol_error")
+
+    def _channel_collect(self, rec, state):
+        output = self.output_path(rec)
+        try:
+            if not output.exists() or not state.get("result_sha256"):
+                pending = output.with_suffix(".part")
+                digest, count = hashlib.sha256(), 0
+                with self.executor.client.stream("GET", self.channel_url + "/v1/calls/" + quote(rec.runtime_task_id, safe="") + "/result",
+                                                 headers=self._channel_headers(rec), timeout=120) as response:
+                    response.raise_for_status()
+                    with pending.open("wb") as f:
+                        for chunk in response.iter_bytes():
+                            count += len(chunk)
+                            if count > 1024 ** 3:
+                                raise ValueError("result_size_exceeded")
+                            digest.update(chunk)
+                            f.write(chunk)
+                        f.flush()
+                        os.fsync(f.fileno())
+                if not count:
+                    raise ValueError("result_integrity_failed")
+                os.replace(pending, output)
+                state["result_sha256"] = digest.hexdigest()
+                rec = self.save(rec, provider_state=state)
+            with output.open("rb") as stream:
+                if hashlib.file_digest(stream, "sha256").hexdigest() != state["result_sha256"]:
+                    return self.error(rec, "result_integrity_failed", terminal=True)
+            media = self.probe(output)
+            artifact_id = "art_" + hashlib.sha256(rec.video_task_id.encode()).hexdigest()[:32]
+            try:
+                asset = self.executor.artifacts.get(artifact_id, rec.project_id)
+                if asset.sha256 != state["result_sha256"]:
+                    raise ValueError("result_integrity_failed")
+            except ArtifactNotFound:
+                with output.open("rb") as f:
+                    asset = self.executor.artifacts.create_from_chunks(project_id=rec.project_id,
+                        operation="grok", filename="grok.mp4", media_type="video/mp4", artifact_id=artifact_id,
+                        chunks=iter(lambda: f.read(1024 * 1024), b""), expected_sha256=state["result_sha256"])
+            state["next_poll_at"] = 0
+            return self.save(rec, status="succeeded", artifact_id=asset.artifact_id, media=media,
+                             runtime_stage="completed", provider_state=state, error=None)
+        except (OSError, ValueError, KeyError, TypeError, StopIteration, ZeroDivisionError, httpx.HTTPError, subprocess.SubprocessError):
+            return self.error(rec, "result_collection_failed", stage="collect_retry")
 
     def output_path(self, rec):
         return self.executor.tasks.root / (rec.video_task_id + ".grok.mp4")

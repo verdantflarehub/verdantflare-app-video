@@ -179,3 +179,109 @@ class GrokRouteTest(unittest.TestCase):
                     ex.grok.result_request(url, 'remote-1')
         self.assertEqual(len(downloads), 1)
         self.assertEqual(sum(r.method == 'POST' for r in self.calls), 1)
+
+
+class GrokChannelRouteTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.token = 'g' * 32
+        self.env = patch.dict('os.environ', {
+            'VIDEO_GROK_CHANNEL_URL': 'http://grok-channel:8001',
+            'VIDEO_GROK_CHANNEL_TOKEN': self.token,
+            'XAI_API_KEY': '',
+        })
+        self.env.start()
+        self.calls = []
+
+    def tearDown(self):
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def test_grok_channel_submit_status_and_content(self):
+        call_id = '11111111-2222-3333-4444-555555555555'
+        def handler(r: httpx.Request):
+            self.calls.append(r)
+            self.assertEqual(r.headers.get('Authorization'), 'Bearer ' + self.token)
+            if r.method == 'POST' and r.url.path == '/v1/calls':
+                return httpx.Response(200, json={
+                    'call_id': call_id,
+                    'accepted': True,
+                    'state': 'in_progress',
+                })
+            if r.method == 'GET' and r.url.path == f'/v1/calls/{call_id}':
+                return httpx.Response(200, json={
+                    'call_id': call_id,
+                    'accepted': True,
+                    'state': 'completed',
+                })
+            if r.method == 'GET' and r.url.path == f'/v1/calls/{call_id}/result':
+                return httpx.Response(200, content=b'grok-channel-mp4', headers={'content-type': 'video/mp4'})
+            return httpx.Response(404)
+
+        ex = VideoExecutor(ArtifactStore(self.root), TaskStore(self.root),
+                           httpx.Client(transport=httpx.MockTransport(handler)))
+        ex.grok.probe = lambda p: {'duration_ms': 5000, 'frame_rate': 30, 'width': 1280, 'height': 720}
+        task = ex.generate(project_id='demo', idempotency_key='grok-ch-1', route='grok',
+                           model='grok-imagine-video', prompt='Neon city', duration_seconds=5,
+                           aspect_ratio='16:9', references={})
+        self.assertEqual(task.runtime_task_id, call_id)
+        state = dict(task.provider_state or {})
+        state['next_poll_at'] = 0
+        ex.tasks.update(task, provider_state=state)
+        task = ex.status(task.video_task_id)
+        self.assertEqual(task.status, 'succeeded')
+        self.assertTrue(task.artifact_id)
+
+
+class GoogleChannelRouteTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.token = 'v' * 32
+        self.env = patch.dict('os.environ', {
+            'VIDEO_GOOGLE_CHANNEL_URL': 'http://google-channel:8001',
+            'VIDEO_GOOGLE_CHANNEL_TOKEN': self.token,
+        })
+        self.env.start()
+        self.calls = []
+
+    def tearDown(self):
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def test_google_channel_submit_status_and_content(self):
+        call_id = '22222222-3333-4444-5555-666666666666'
+        def handler(r: httpx.Request):
+            self.calls.append(r)
+            self.assertEqual(r.headers.get('Authorization'), 'Bearer ' + self.token)
+            if r.method == 'POST' and r.url.path == '/v1/calls':
+                return httpx.Response(200, json={
+                    'call_id': call_id,
+                    'accepted': True,
+                    'state': 'in_progress',
+                })
+            if r.method == 'GET' and r.url.path == f'/v1/calls/{call_id}':
+                return httpx.Response(200, json={
+                    'call_id': call_id,
+                    'accepted': True,
+                    'state': 'completed',
+                })
+            if r.method == 'GET' and r.url.path == f'/v1/calls/{call_id}/result':
+                return httpx.Response(200, content=b'google-veo-mp4', headers={'content-type': 'video/mp4'})
+            return httpx.Response(404)
+
+        ex = VideoExecutor(ArtifactStore(self.root), TaskStore(self.root),
+                           httpx.Client(transport=httpx.MockTransport(handler)))
+        ex.grok.probe = lambda p: {'duration_ms': 4000, 'frame_rate': 24, 'width': 1280, 'height': 720}
+        task = ex.generate(project_id='demo', idempotency_key='google-ch-1', route='google',
+                           model='veo-3.1-lite-generate-preview', prompt='Ocean waves', duration_seconds=4,
+                           aspect_ratio='16:9', references={})
+        self.assertEqual(task.runtime_task_id, call_id)
+        state = dict(task.provider_state or {})
+        state['next_poll_at'] = 0
+        ex.tasks.update(task, provider_state=state)
+        task = ex.status(task.video_task_id)
+        self.assertEqual(task.status, 'succeeded')
+        self.assertTrue(task.artifact_id)
+

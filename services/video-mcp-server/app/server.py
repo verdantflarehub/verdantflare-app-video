@@ -399,6 +399,13 @@ def video_preflight(project_id: str, prompt: str, references: dict[str, list[dic
         return _result({"status": "validated", "generation_verified": False, "input_digest": digest,
             "resolved_output": {k: request[k] for k in ("mode", "resolution", "duration_seconds", "aspect_ratio")},
             "reference_mapping": request["references"], "prompt": request["prompt"]})
+    if selected == "google":
+        request, digest = executor.google.normalize(project_id=require_project_id(project_id),
+            prompt=prompt, model=model, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
+            references=references, mode=mode, resolution=resolution, quality_profile=quality_profile)
+        return _result({"status": "validated", "generation_verified": False, "input_digest": digest,
+            "resolved_output": {k: request[k] for k in ("model", "mode", "resolution", "duration_seconds", "aspect_ratio")},
+            "reference_mapping": request["references"], "prompt": request["prompt"]})
     if selected != "h3-singularity":
         raise ValueError("video.preflight currently supports h3-singularity")
     executor.runtime(selected)

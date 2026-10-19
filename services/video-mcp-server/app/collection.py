@@ -30,11 +30,11 @@ class ResultCollector:
 
     @staticmethod
     def eligible(record):
-        # Grok/Higgsfield already collect as part of their own authorized state
+        # Grok/Google/Higgsfield already collect as part of their own authorized state
         # machine; never duplicate their central Artifact or delivery workflow.
         needs_preview = record.service in {"depth", "sr", "interpolate"} and not (record.media or {}).get("preview_artifact_id")
         return (record.status == "succeeded" and (not record.artifact_id or needs_preview)
-                and record.service not in {"higgsfield", "grok", "h3-latent-upscale"})
+                and record.service not in {"higgsfield", "grok", "google", "h3-latent-upscale"})
 
     def sync(self):
         with self.lock:

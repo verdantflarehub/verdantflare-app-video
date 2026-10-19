@@ -82,13 +82,13 @@ def task_channel(record):
 
 def channel_label(channel):
     return {"local": "本地", "higgsfield": "Higgsfield", "fal": "fal.ai",
-            "grok": "xAI", "unknown": "未记录渠道"}.get(channel, channel)
+            "grok": "xAI", "google": "Google", "unknown": "未记录渠道"}.get(channel, channel)
 
 
 def task_presentation(record):
     """UI labels only: keep provider identifiers and stored requests unchanged."""
     local = {"h3", "h3-sol", "h3-vdn", "h3-singularity"}
-    generating = record.service in local | {"fal", "grok", "higgsfield"}
+    generating = record.service in local | {"fal", "grok", "google", "higgsfield"}
     route = record.request.get("route") or record.runtime_route or record.service
     channel = task_channel(record)
     local_channel = channel == "local"
@@ -98,7 +98,10 @@ def task_presentation(record):
     models = {"minimax-h3-ref2va": "MiniMax H3", "minimax-h3": "MiniMax H3",
               "wan3_0": "Wan 3.0", "grok_video_v15_lite": "Grok Imagine 1.5 Lite",
               "grok-imagine-video": "Grok Imagine", "seedance_2_5": "Seedance 2.5",
-              "seedance_2_5_draft": "Seedance 2.5 Draft"}
+              "seedance_2_5_draft": "Seedance 2.5 Draft",
+              "veo-3.1-lite-generate-preview": "Veo 3.1 Lite",
+              "veo-3.1-fast-generate-preview": "Veo 3.1 Fast",
+              "veo-3.1-generate-preview": "Veo 3.1"}
     modes = {"text_to_video": ("T2V", "文生视频"), "image_to_video": ("I2V", "图生视频"),
              "first_last_frame_to_video": ("F2V", "首尾帧视频"),
              "reference_to_video": ("R2V", "参考生视频"), "ref2va": ("R2V", "参考生视频")}
@@ -133,7 +136,7 @@ def public_task(record, store=None):
             "prompt": record.request.get("prompt", ""),
             "duration_seconds": record.request.get("duration_seconds"),
             "aspect_ratio": record.request.get("aspect_ratio"),
-            "seed": record.request.get("seed", None if record.service in {"fal", "grok"} else 7),
+            "seed": record.request.get("seed", None if record.service in {"fal", "grok", "google"} else 7),
             "status": record.status, "created_at": record.created_at, "updated_at": record.updated_at,
             "completed_at": record.completed_at or (record.updated_at if record.status in {"succeeded", "failed", "cancelled"} else None),
             "artifact_id": (record.delivery or {}).get("final_artifact_id") or record.artifact_id, "media": record.media, "error": record.error, "collection": public_collection(record),
@@ -162,6 +165,7 @@ class Dashboard:
 
     def sync(self):
         self.services["grok"] = "configured" if self.executor.grok.configured() and self.executor.grok.enabled else "not_connected"
+        self.services["google"] = "configured" if self.executor.google.configured() and self.executor.google.enabled else "not_connected"
         self.services["fal"] = "configured" if self.executor.fal.connected() else "not_connected"
         try:
             response = self.executor.client.get(f"{self.executor.runtime_url}/health", timeout=5)
@@ -177,7 +181,7 @@ class Dashboard:
         errors = 0
         for record in self.records():
             channel_pending = record.service == 'fal' and self.executor.fal._channel_record(record)
-            if record.status in {"queued", "running"} and (record.runtime_task_id or channel_pending or record.service in {"depth", "sr", "interpolate", "h3-singularity", "grok", "higgsfield"}):
+            if record.status in {"queued", "running"} and (record.runtime_task_id or channel_pending or record.service in {"depth", "sr", "interpolate", "h3-singularity", "grok", "google", "higgsfield"}):
                 try:
                     self.executor.status(record.video_task_id)
                 except (ExecutionError, OSError, ValueError):
@@ -189,7 +193,7 @@ class Dashboard:
         for record in self.records():
             if record.service == 'fal' and self.executor.fal._channel_record(record):
                 continue  # The channel ledger resolves unknown acceptance by the original operation key.
-            if record.status == "queued" and not record.runtime_task_id and record.service not in {"depth", "sr", "interpolate", "grok", "higgsfield"}:
+            if record.status == "queued" and not record.runtime_task_id and record.service not in {"depth", "sr", "interpolate", "grok", "google", "higgsfield"}:
                 self.executor.tasks.update(record, status="queued" if record.service == "h3-singularity" else "failed", error={
                     "code": "submission_unconfirmed",
                     "message": "Submission interrupted; do not resubmit automatically"})
@@ -398,10 +402,10 @@ class Dashboard:
                     value = artifact.model_dump()
                 else:
                     inputs = Submission.model_validate_json(body)
-                    service = ("higgsfield" if inputs.route == "higgsfield" else "grok" if inputs.route == "grok" else "fal" if inputs.route == "fal" else
+                    service = ("higgsfield" if inputs.route == "higgsfield" else "google" if inputs.route == "google" else "grok" if inputs.route == "grok" else "fal" if inputs.route == "fal" else
                                "h3-sol" if inputs.route.startswith("h3-sol") else
                                "h3-singularity" if inputs.route == "h3-singularity" else "h3")
-                    if service not in {"h3", "h3-sol", "h3-singularity", "fal", "grok", "higgsfield"}:
+                    if service not in {"h3", "h3-sol", "h3-singularity", "fal", "grok", "google", "higgsfield"}:
                         return JSONResponse({"error": "service_not_connected"}, status_code=409)
                     if service == "fal" and not self.executor.fal.connected():
                         return JSONResponse({"error": "service_not_connected"}, status_code=409)
