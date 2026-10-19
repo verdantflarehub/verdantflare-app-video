@@ -20,6 +20,7 @@ from urllib.parse import unquote, urlsplit
 import httpx
 
 from .artifacts import MAX_ARTIFACT_BYTES, ArtifactRecord, ArtifactStore, require_filename, require_project_id
+from .gpu_lease import GpuCoordinator, LeaseBusy
 from .tasks import TaskConflict, TaskRecord, TaskStore
 
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -30,6 +31,8 @@ MEDIA_TYPES = {
 }
 H3_DURATION_TOLERANCE_MS = 1000
 MAX_INLINE_IMAGE_BYTES = 3 * 1024 * 1024
+LOCAL_H3_SERVICES = {"h3", "h3-vdn", "h3-sol", "h3-singularity"}
+TERMINAL_TASK_STATUS = {"succeeded", "failed", "cancelled", "canceled"}
 
 
 class ExecutionError(RuntimeError):
@@ -101,6 +104,7 @@ class VideoExecutor:
         if os.environ.get('VIDEO_PROJECT_CA_FILE'):
             trust.load_verify_locations(os.environ['VIDEO_PROJECT_CA_FILE'])
         self.client = client or httpx.Client(timeout=httpx.Timeout(connect=10, read=3600, write=600, pool=10), follow_redirects=False, verify=trust)
+        self.gpu = GpuCoordinator.from_environment()
         from .depth import DepthExecutor
         self.depth = DepthExecutor(self)
         from .processing import ProcessingExecutor
@@ -522,12 +526,21 @@ class VideoExecutor:
             payload["project_id"] = project_id
         if service in {"h3-sol", "h3-vdn", "h3-singularity"}:
             payload["idempotency_key"] = reserved.video_task_id
+        acquired = False
+        submitted = False
+        if self.gpu.enabled and service in LOCAL_H3_SERVICES:
+            try:
+                self.gpu.acquire_for_queue()
+            except LeaseBusy as error:
+                raise ExecutionError("waiting_gpu_lease") from error
+            acquired = True
         try:
             response = self.client.post(f"{runtime_url}/v1/videos", json=payload, headers=runtime_headers)
             response.raise_for_status()
             runtime_task_id = response.json()["id"]
             if not isinstance(runtime_task_id, str) or not runtime_task_id.strip():
                 raise ValueError("Invalid runtime task id")
+            submitted = True
         except (httpx.ConnectError, httpx.ConnectTimeout):
             return self.tasks.update(reserved, status="failed", error={
                 "code": "runtime_unavailable", "message": "H3 runtime is unreachable; generation was not submitted"})
@@ -540,8 +553,35 @@ class VideoExecutor:
         except (httpx.HTTPError, KeyError, ValueError, TypeError):
             return self.tasks.update(reserved, status="queued" if service == "h3-singularity" else "failed", error={"code": "submission_unconfirmed",
                               "message": "Runtime submission could not be confirmed; do not resubmit automatically"})
+        finally:
+            if acquired and not submitted:
+                self.gpu.release()
         return self.tasks.update(reserved, runtime_task_id=runtime_task_id,
                                  dispatched_at=datetime.now(UTC).isoformat())
+
+    def reconcile_gpu(self) -> None:
+        if not self.gpu.enabled:
+            return
+        if self._local_h3_active():
+            try:
+                self.gpu.renew()
+            except Exception:
+                pass
+            return
+        self.gpu.release()
+
+    def _local_h3_active(self) -> bool:
+        root = getattr(self.tasks, "root", None)
+        if root is None or not root.exists():
+            return False
+        for path in root.glob("video_task_*.json"):
+            try:
+                record = TaskRecord.model_validate_json(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if record.service in LOCAL_H3_SERVICES and record.status not in TERMINAL_TASK_STATUS and record.runtime_task_id:
+                return True
+        return False
 
     @task_serialized
     def status(self, video_task_id: str) -> TaskRecord:

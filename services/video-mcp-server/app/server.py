@@ -659,9 +659,16 @@ async def lifespan(app: Starlette):
             except Exception:
                 logging.getLogger(__name__).warning("Result reconciliation deferred")
             await asyncio.sleep(2)
+    async def gpu_poll():
+        while True:
+            try:
+                await asyncio.to_thread(executor.reconcile_gpu)
+            except Exception:
+                logging.getLogger(__name__).warning("GPU lease reconciliation deferred")
+            await asyncio.sleep(20)
     async with mcp.session_manager.run():
         dashboard.recover_incomplete_submissions()
-        pollers = [asyncio.create_task(coro) for coro in (dashboard.poll(), dashboard.resources.poll_protocol(), delivery_poll(), collection_poll())]
+        pollers = [asyncio.create_task(coro) for coro in (dashboard.poll(), dashboard.resources.poll_protocol(), delivery_poll(), collection_poll(), gpu_poll())]
         try:
             yield
         finally:
