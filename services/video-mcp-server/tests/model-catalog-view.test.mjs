@@ -99,6 +99,7 @@ test('fal H3 Max displays discovered endpoints without claiming paid execution',
   const capabilities = names.map((display_name, index) => ({
     capability_id:`video.h3max.${index}`, model_id:'minimax/h3-max', display_name,
     endpoint_id:`minimax/h3-max/${index}`, execution_state:'catalog_only',
+    source_url:`https://fal.ai/models/minimax/h3-max/${index}/api`,
     protocol:index===2||index===8?'websocket':'queue',
     output_resolutions:index===5?['480p','768p']:index===6?['480P','768P','1080P','2K']:['480P','768P','1080P']
   }));
@@ -116,6 +117,7 @@ test('fal H3 Max displays discovered endpoints without claiming paid execution',
   assert.match(html, /Lip Sync Max[\s\S]*最高输出：2K/);
   assert.match(html, /12 个端点已纳入只读能力目录 · 暂不可提交/);
   assert.doesNotMatch(html, /12 个端点已接入执行适配/);
+  assert.doesNotMatch(html, /官方 Schema|href="https:\/\/fal\.ai\//);
   const second = {...model,id:'fal-h3max-camera',display_name:'MiniMax H3 Max · Camera Controls',
     upstream_model_id:'minimax/h3-max/camera-controls'};
   view.set({...data,snapshot_id:'with-second-entry',

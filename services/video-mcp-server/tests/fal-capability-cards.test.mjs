@@ -5,7 +5,7 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../frontend/resources.js', import.meta.url), 'utf8');
 const code = source.slice(source.indexOf('const FalCapabilityCards ='), source.indexOf('// Tool descriptions'));
-const context = vm.createContext({ URL });
+const context = vm.createContext({});
 vm.runInContext(code, context);
 const cards = snapshot => vm.runInContext('FalCapabilityCards.cardsFrom(snapshot)', Object.assign(context, { snapshot }));
 const render = snapshot => vm.runInContext('FalCapabilityCards.render(snapshot)', Object.assign(context, { snapshot }));
@@ -26,21 +26,25 @@ test('fal cards follow the channel directory and group modes by model', () => {
   const snapshot = { channel_capabilities: { fal: { schema_version: 1, channel_id: 'fal',
     capabilities: [h3Text, h3Ref, maxText, camera] } } };
   assert.equal(cards(snapshot).length, 3);
-  assert.equal(cards(snapshot)[0].endpoints.length, 2);
-  assert.match(render(snapshot), /3 张卡/);
-  assert.match(render(snapshot), /1\/2 个端点已接入适配/);
+  assert.equal(cards(snapshot)[0].inputs.size, 1);
+  const html = render(snapshot);
+  assert.match(html, /fal\.ai 补充能力/);
+  assert.match(html, /标准视频生成/);
+  assert.match(html, /<dt>输入<\/dt>/);
+  assert.match(html, /<dt>输出<\/dt>/);
+  assert.doesNotMatch(html, /已接入适配|仅目录资料|API 页面|href=|endpoint-state/);
   snapshot.channel_capabilities.fal.capabilities.pop();
   assert.equal(cards(snapshot).length, 2);
   assert.doesNotMatch(render(snapshot), /镜头控制/);
 });
 
-test('unavailable directory does not invent cards and unsafe URLs are not linked', () => {
+test('unavailable directory does not invent cards and capability text remains escaped', () => {
   assert.match(render(null), /目录暂不可读/);
   const entry = capability('minimax/h3-max', 'recast', 'recast', '<script>');
-  entry.source_url = 'https://example.com/redirect';
   const snapshot = { channel_capabilities: { fal: { schema_version: 1, channel_id: 'fal',
     capabilities: [entry] } } };
   const html = render(snapshot);
   assert.match(html, /&lt;script&gt;/);
+  assert.doesNotMatch(html, /minimax\/h3-max\/recast|fal\.ai\/models/);
   assert.doesNotMatch(html, /href=/);
 });
