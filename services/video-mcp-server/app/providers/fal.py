@@ -78,6 +78,46 @@ class FalAdapter:
     def connected(self) -> bool:
         return bool(self.gateway_url and self.gateway_token)
 
+    def channel_capabilities(self) -> dict | None:
+        """Read the channel's declared directory; never use it to authorize a call."""
+        if not self.connected():
+            return None
+        try:
+            with httpx.Client(timeout=3, follow_redirects=False, trust_env=False) as client:
+                response = client.get(self.gateway_url + "/v1/capabilities", headers={
+                    "Authorization": "Bearer " + self.gateway_token,
+                    "X-Caller-Id": "video-mcp",
+                })
+            if response.status_code != 200 or len(response.content) > 256 * 1024:
+                return None
+            data = response.json()
+        except (httpx.HTTPError, ValueError, TypeError):
+            return None
+        if (not isinstance(data, dict) or data.get("schema_version") != 1
+                or data.get("channel_id") != "fal" or not isinstance(data.get("version"), str)
+                or not isinstance(data.get("capabilities"), list)
+                or len(data["capabilities"]) > 64):
+            return None
+        seen = set()
+        for item in data["capabilities"]:
+            if not isinstance(item, dict):
+                return None
+            capability_id = item.get("capability_id")
+            if (not isinstance(capability_id, str) or capability_id in seen
+                    or item.get("type") != "video"
+                    or item.get("execution_state") not in {"catalog_only", "adapter_connected_unverified"}
+                    or not isinstance(item.get("model_id"), str)
+                    or not isinstance(item.get("endpoint_id"), str)
+                    or not item["endpoint_id"].startswith(item["model_id"] + "/")
+                    or not isinstance(item.get("display_name"), str)
+                    or not isinstance(item.get("output_resolutions", []), list)):
+                return None
+            seen.add(capability_id)
+            if item["model_id"] == "minimax/h3-max" and item["execution_state"] != "catalog_only":
+                # A directory file cannot silently enable a paid adapter.
+                return None
+        return data
+
     def _gateway_headers(self, organization_id: str) -> dict[str, str]:
         if not self.gateway_url or not self.gateway_token or not organization_id:
             raise FalError("fal_gateway_not_configured")

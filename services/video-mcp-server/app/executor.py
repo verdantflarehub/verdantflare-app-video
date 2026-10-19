@@ -186,6 +186,9 @@ class VideoExecutor:
         fal_channel = next((channel for channel in catalog.get("channels", []) if channel["id"] == "fal"), None)
         if fal_channel is not None:
             connected = self.fal.connected()
+            discovered = self.fal.channel_capabilities()
+            catalog["channel_capabilities"] = {"fal": discovered if discovered is not None else
+                {"schema_version": 1, "channel_id": "fal", "state": "unavailable", "capabilities": []}}
             catalog["execution"] = {"fal": {
                 model["id"]: ({"state": "adapter_connected_unverified" if connected else "adapter_disconnected",
                                "route": "fal", "model": FAL_PUBLIC_MODEL}
@@ -244,7 +247,9 @@ class VideoExecutor:
                        "aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
                        "resolutions": ["480p", "720p"]})
         routes.extend(self.higgsfield.capabilities())
-        return {"catalog": self.catalog_view(), "default_model": "minimax-h3-ref2va", "default_route": self.runtime_route,
+        catalog = self.catalog_view()
+        return {"catalog": catalog, "channel_capabilities": catalog.get("channel_capabilities", {}),
+                "default_model": "minimax-h3-ref2va", "default_route": self.runtime_route,
                 "models": [{"model": "minimax-h3-ref2va"},
                            {"model": "bytedance-seedance-2.0-reference-to-video", "routes": ["fal"]},
                            {"model": self.grok.model, "routes": ["grok"]},

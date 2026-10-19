@@ -60,6 +60,27 @@ class DashboardTest(unittest.TestCase):
             with mock.patch.object(self.executor.fal, 'connected', return_value=False):
                 self.assertEqual(self.executor.catalog_view()['execution']['fal']['h3-ref']['state'],'adapter_disconnected')
 
+    def test_mcp_capabilities_exposes_channel_directory_without_enabling_generation(self):
+        catalog = {'state':'ready', 'snapshot_id':'approved-digest', 'channels':[
+            {'id':'fal', 'models':[{'id':'h3max-ref',
+                'upstream_model_id':'minimax/h3-max/reference-to-video'}]}],
+            'groups':[], 'conflicts':[]}
+        directory = {'schema_version':1, 'channel_id':'fal', 'version':'declared-digest',
+            'capabilities':[{'capability_id':'video.h3max.camera_controls', 'type':'video',
+                'model_id':'minimax/h3-max', 'endpoint_id':'minimax/h3-max/camera-controls',
+                'display_name':'Camera Controls', 'execution_state':'catalog_only'}]}
+        with (mock.patch.object(self.executor.catalog, 'snapshot', return_value=catalog),
+              mock.patch.object(self.executor.fal, 'channel_capabilities', return_value=directory)):
+            response = self.client.get('/api/model-catalog', headers=self.headers)
+            self.assertEqual(response.status_code, 200)
+            value = response.json()
+            self.assertEqual(value['channel_capabilities']['fal'], directory)
+            self.assertEqual(value['execution']['fal']['h3max-ref']['state'], 'catalog_only')
+            mcp_capabilities = self.executor.capabilities()
+            self.assertEqual(mcp_capabilities['catalog']['channel_capabilities']['fal'], directory)
+            self.assertEqual(mcp_capabilities['channel_capabilities']['fal'], directory)
+            self.assertNotIn('channel_capabilities', catalog)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)

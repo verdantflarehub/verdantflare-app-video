@@ -44,6 +44,8 @@
   };
   const familyOf = entry => {
     const {model, channel} = entry;
+    if (channel.id === 'fal' && String(model.upstream_model_id || '').startsWith('minimax/h3-max/'))
+      return 'fal:minimax/h3-max:MiniMax H3 Max';
     const match = String(model.upstream_model_id || '').match(/^(.*)\/(text-to-video|image-to-video|reference-to-video)$/);
     const mode = { 'text-to-video':'text_to_video', 'image-to-video':'image_to_video', 'reference-to-video':'reference_to_video' }[match?.[2]];
     const base = String(model.display_name || '').split(' · ');
@@ -68,6 +70,16 @@
     }
     return result;
   };
+  const discoveredFor = (data, entry) => {
+    if (entry.channel.id !== 'fal' || !String(entry.model.upstream_model_id || '').startsWith('minimax/h3-max/')) return [];
+    const directory = data.channel_capabilities?.fal;
+    return Array.isArray(directory?.capabilities)
+      ? directory.capabilities.filter(item => item.model_id === 'minimax/h3-max') : [];
+  };
+  const highestResolution = values => [...values].sort((a,b) => {
+    const rank = value => value === '2K' ? 2000 : Number.parseInt(value,10) || 0;
+    return rank(b) - rank(a);
+  })[0];
   const deriveSpecs = entries => {
     const profiles = entries.map(profileFor);
     const caps = [...new Map(entries.map(modeFor).map(mode => modeToCap[mode]).filter(Boolean).map(pair => [pair[0],pair])).values()];
@@ -183,7 +195,8 @@
     set(data) {
       if (data.state === 'error') { this.data = null; this.failure(); return; }
       if (this.data?.snapshot_id === data.snapshot_id &&
-          JSON.stringify(this.data.execution || {}) === JSON.stringify(data.execution || {})) return;
+          JSON.stringify(this.data.execution || {}) === JSON.stringify(data.execution || {}) &&
+          JSON.stringify(this.data.channel_capabilities || {}) === JSON.stringify(data.channel_capabilities || {})) return;
       this.data = data;
       const option = (value,label) => `<option value="${esc(value)}">${esc(label)}</option>`;
       this.root.innerHTML = `<div class="catalog-toolbar"><label>查看方式<select data-catalog-filter="view">${option('channels','按渠道查看')}${option('models','按模型查看')}</select></label><label class="catalog-search">搜索模型<input type="search" data-catalog-filter="query" placeholder="模型名称、用途或模型 ID" /></label><label>业务<select data-catalog-filter="business">${option('all','全部业务')}${Object.entries(business).map(([id,label])=>option(id,label)).join('')}</select></label><label>渠道<select data-catalog-filter="channel">${option('all','全部渠道')}${data.channels.map(c=>option(c.id,c.display_name)).join('')}</select></label></div><p class="business-muted" data-catalog-count></p><div data-catalog-results></div>`;
@@ -206,22 +219,28 @@
       const entry = entries[0];
       const model = entry.model;
       const info = deriveSpecs(entries);
+      const discovered = discoveredFor(this.data, entry);
+      const h3MaxDirectory = discovered.length > 0;
       const familyKey = familyOf(entry);
       const family = entries.length > 1 && familyKey && entries.every(e => familyOf(e) === familyKey);
-      const title = family ? model.display_name.split(' · ')[0] : model.display_name;
-      const upstreamId = family ? model.upstream_model_id.slice(0, model.upstream_model_id.lastIndexOf('/')) : model.upstream_model_id;
-      const description = family ? `${info.caps.map(([,label]) => label).join("、")}；各模式参数如下。` : descriptionFor(entry);
+      const title = h3MaxDirectory ? 'MiniMax H3 Max' : family ? model.display_name.split(' · ')[0] : model.display_name;
+      const upstreamId = h3MaxDirectory ? 'minimax/h3-max' : family ? model.upstream_model_id.slice(0, model.upstream_model_id.lastIndexOf('/')) : model.upstream_model_id;
+      const description = h3MaxDirectory ? `${discovered.length} 项 fal.ai 能力；各端点的输出档位和接入状态见详情。` : family ? `${info.caps.map(([,label]) => label).join("、")}；各模式参数如下。` : descriptionFor(entry);
       const connected = entries.filter(e => this.data.execution?.fal?.[e.model.id]?.state === 'adapter_connected_unverified').length;
       const catalogOnly = entries.filter(e => this.data.execution?.fal?.[e.model.id]?.state === 'catalog_only').length;
-      const summary = family && entry.channel.id === 'fal' ? `<p class="catalog-execution">${connected} 个端点已接入执行适配 · ${catalogOnly} 个仅目录收录</p>` : '';
-      const capPills = info.caps.map(([code, label]) => `<span class="cap-pill"><strong>${esc(code)}</strong> ${esc(label)}</span>`).join('');
+      const summary = h3MaxDirectory ? `<p class="catalog-execution">${discovered.length} 个端点已纳入只读能力目录 · 暂不可提交</p>` : family && entry.channel.id === 'fal' ? `<p class="catalog-execution">${connected} 个端点已接入执行适配 · ${catalogOnly} 个仅目录收录</p>` : '';
+      const capPills = h3MaxDirectory ? discovered.map(item => `<span class="cap-pill">${esc(item.display_name)}</span>`).join('') : info.caps.map(([code, label]) => `<span class="cap-pill"><strong>${esc(code)}</strong> ${esc(label)}</span>`).join('');
       const videoInput = info.videoInput ? `<div class="model-quota-strip"><div class="model-quota-row"><span>视频参考输入</span><strong>${esc(info.videoInput)}</strong></div></div>` : '';
       const ratios = info.ratios ? `<dt>支持画幅</dt><dd>${esc(info.ratios)}</dd>` : '';
       const audioRow = info.audioDesc ? `<dt>音频输入 / 输出</dt><dd>${esc(info.audioDesc)}</dd>` : '';
-      const output = [info.maxRes,info.dur].filter(Boolean);
+      const output = h3MaxDirectory ? ['各端点规格见详情'] : [info.maxRes,info.dur].filter(Boolean);
       const outputLabel = entry.channel.id === 'fal' ? '供应商视频输出' : '视频输出';
       const outputFooter = output.length ? `<div class="model-foot"><span class="business-muted">${outputLabel}</span><div class="tags model-tags" aria-label="输出规格胶囊">${output.map(value=>`<span>${esc(value)}</span>`).join('')}</div></div>` : '';
-      return `<article class="business-card catalog-card" data-catalog-card><div class="model-head"><div><span class="business-muted">${esc(business[model.business_type] || model.business_type)}</span><h3>${esc(title)}</h3></div></div><p class="model-id-line">模型 ID：<code>${esc(upstreamId ?? "待核实")}</code></p><p class="model-desc">${esc(description)}</p><div class="model-cap-row">${capPills}</div>${inputGuidance(entries) || videoInput}<dl class="model-params">${ratios}${audioRow}</dl>${summary || (entries.length===1?this.executionStatus(entry):'')}${outputFooter}<details data-catalog-entry="${esc(group.id)}" ${this.open.has(group.id)?'open':''}><summary>能力规格与审核状态</summary><div class="catalog-detail">${entries.map(e=>`<section><h4>${esc(e.model.display_name)}</h4><p class="model-id-line">端点 ID：<code>${esc(e.model.upstream_model_id ?? '待核实')}</code></p><p class="model-desc">${esc(descriptionFor(e))}</p>${this.executionStatus(e)}<p class="business-muted">${esc(review[e.model.identity_review])} · ${esc(e.model.billing_modes.map(b=>billing[b]).join(' / '))}</p>${profiles(e.model.team_profiles,'团队适配范围',e.channel.id === 'fal')}${profiles(e.model.supplier_profiles,'供应商声明范围',e.channel.id === 'fal')}</section>`).join('')}</div></details></article>`;
+      const discoveredDetails = h3MaxDirectory ? discovered.map(item => {
+        const source = (() => { try { const url = new URL(item.source_url); return url.protocol === 'https:' && url.hostname === 'fal.ai' ? `<a href="${esc(url.href)}" target="_blank" rel="noopener noreferrer">官方 Schema</a>` : ''; } catch { return ''; } })();
+        return `<section><h4>${esc(item.display_name)}</h4><p class="model-id-line">端点 ID：<code>${esc(item.endpoint_id)}</code></p><p class="business-muted">最高输出：${esc(highestResolution(item.output_resolutions || []) || '未记录')} · ${item.protocol === 'websocket' ? '交互会话' : '异步任务'} · 仅目录收录，暂不可提交 ${source}</p></section>`;
+      }).join('') : '';
+      return `<article class="business-card catalog-card" data-catalog-card><div class="model-head"><div><span class="business-muted">${esc(business[model.business_type] || model.business_type)}</span><h3>${esc(title)}</h3></div></div><p class="model-id-line">模型 ID：<code>${esc(upstreamId ?? "待核实")}</code></p><p class="model-desc">${esc(description)}</p><div class="model-cap-row">${capPills}</div>${h3MaxDirectory ? '' : inputGuidance(entries) || videoInput}<dl class="model-params">${h3MaxDirectory ? '' : ratios + audioRow}</dl>${summary || (entries.length===1?this.executionStatus(entry):'')}${outputFooter}<details data-catalog-entry="${esc(group.id)}" ${this.open.has(group.id)?'open':''}><summary>能力规格与审核状态</summary><div class="catalog-detail">${discoveredDetails || entries.map(e=>`<section><h4>${esc(e.model.display_name)}</h4><p class="model-id-line">端点 ID：<code>${esc(e.model.upstream_model_id ?? '待核实')}</code></p><p class="model-desc">${esc(descriptionFor(e))}</p>${this.executionStatus(e)}<p class="business-muted">${esc(review[e.model.identity_review])} · ${esc(e.model.billing_modes.map(b=>billing[b]).join(' / '))}</p>${profiles(e.model.team_profiles,'团队适配范围',e.channel.id === 'fal')}${profiles(e.model.supplier_profiles,'供应商声明范围',e.channel.id === 'fal')}</section>`).join('')}</div></details></article>`;
     }
     renderResults() {
       if (!this.data) return;
@@ -230,7 +249,7 @@
       const filtered = this.data.groups.map(group=>({group,entries:group.entries.map(e=>lookup.get(`${e.channel_id}/${e.entry_id}`)).filter(e=>{
         if (!e) return false;
         const {model,channel} = e, f = this.filters;
-        return (f.channel==='all'||f.channel===channel.id) && (f.business==='all'||f.business===model.business_type) && `${model.display_name} ${model.description} ${model.upstream_model_id ?? ""}`.toLowerCase().includes(f.query.toLowerCase().trim());
+        return (f.channel==='all'||f.channel===channel.id) && (f.business==='all'||f.business===model.business_type) && `${model.display_name} ${model.description} ${model.upstream_model_id ?? ""} ${discoveredFor(this.data, e).map(item => `${item.display_name} ${item.endpoint_id}`).join(' ')}`.toLowerCase().includes(f.query.toLowerCase().trim());
       })})).filter(row=>row.entries.length);
       const visible = displayRows(filtered);
       this.root.querySelector('[data-catalog-count]').textContent = `${visible.length} 个模型卡片 · ${filtered.reduce((sum,row)=>sum+row.entries.length,0)} 条目录能力 · ${this.data.channels.length} 个渠道${this.data.conflicts.length ? ' · 部分模型身份资料冲突，已分开展示' : ''}`;

@@ -11,7 +11,7 @@ import httpx
 
 from app.artifacts import ArtifactStore
 from app.executor import VideoExecutor
-from app.providers.fal import FalError
+from app.providers.fal import FalAdapter, FalError
 from app.tasks import TaskStore
 
 
@@ -82,6 +82,34 @@ class FalRouteTest(unittest.TestCase):
         }
         value.update(updates)
         return value
+
+    def test_channel_directory_is_read_only_and_fail_closed(self) -> None:
+        capability = {
+            "capability_id": "video.h3max.camera_controls", "type": "video",
+            "model_id": "minimax/h3-max", "endpoint_id": "minimax/h3-max/camera-controls",
+            "display_name": "Camera Controls", "execution_state": "catalog_only",
+            "output_resolutions": ["768P", "1080P"],
+        }
+        directory = {"schema_version": 1, "channel_id": "fal", "version": "a" * 64,
+                     "capabilities": [capability]}
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, json=directory)
+
+        real_client = httpx.Client
+        with mock.patch("app.providers.fal.httpx.Client", side_effect=lambda **kwargs: real_client(
+                transport=httpx.MockTransport(handler), **kwargs)):
+            adapter = FalAdapter(None)
+            self.assertEqual(adapter.channel_capabilities(), directory)
+            self.assertEqual(requests[0].url.path, "/v1/capabilities")
+            self.assertEqual(requests[0].headers["X-Caller-Id"], "video-mcp")
+            directory["capabilities"][0]["execution_state"] = "adapter_connected_unverified"
+            self.assertIsNone(adapter.channel_capabilities())
+            directory["capabilities"][0]["execution_state"] = "catalog_only"
+            directory["capabilities"].append(dict(capability))
+            self.assertIsNone(adapter.channel_capabilities())
 
     def test_submit_poll_and_result_preserve_provider_boundary(self) -> None:
         calls: list[httpx.Request] = []

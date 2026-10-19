@@ -82,37 +82,96 @@ test('fal H3 modes share one card without borrowing quotas or claiming a task-si
   assert.doesNotMatch(nodes['[data-catalog-results]'].innerHTML, /<strong>T2V<\/strong>/);
 });
 
-test('fal official catalog candidate shows mode badges and sourced input/output specs', () => {
+test('fal H3 Max displays discovered endpoints without claiming paid execution', () => {
   const context = vm.createContext({ URL });
   vm.runInContext(readFileSync(new URL('../frontend/model-catalog.js', import.meta.url), 'utf8'), context);
   const nodes = {};
   const root = { innerHTML:'', addEventListener() {}, removeEventListener() {},
     querySelectorAll: () => [], querySelector: selector => nodes[selector] ??= {} };
-  const candidate = readFileSync(new URL('../../../../deploys/k8s.dev.verdantflarehub.com/verdantflare-video/video-models-fal-v0-1-1.cm.yaml', import.meta.url), 'utf8');
-  const catalog = JSON.parse(candidate.split('  channel-catalog.yaml: |\n')[1].split('  review.yaml: |\n')[0].replace(/^    /gm, ''));
-  const channel = { ...catalog.channel, version:catalog.channel_version, models:catalog.models };
+  const view = new context.VideoCatalogView(root, async () => ({}));
+  const model = { id:'fal-h3max-ref', display_name:'MiniMax H3 Max · 参考生视频',
+    business_type:'video_generation', description:'参考生视频', identity_review:'approved',
+    billing_modes:['provider_billed'], upstream_model_id:'minimax/h3-max/reference-to-video',
+    supplier_profiles:[], team_profiles:[] };
+  const names = ['3D to Video','Camera Controls','Director','Extend Video Max','Image to Video Max',
+    'Insert Video Max','Lip Sync Max','Recast Max','Reference Director','Reference to Video Max',
+    'Relight Max','Text to Video Max'];
+  const capabilities = names.map((display_name, index) => ({
+    capability_id:`video.h3max.${index}`, model_id:'minimax/h3-max', display_name,
+    endpoint_id:`minimax/h3-max/${index}`, execution_state:'catalog_only',
+    protocol:index===2||index===8?'websocket':'queue',
+    output_resolutions:index===5?['480p','768p']:index===6?['480P','768P','1080P','2K']:['480P','768P','1080P']
+  }));
+  const data = { state:'ready', snapshot_id:'unchanged',
+    channels:[{ id:'fal', display_name:'fal.ai', models:[model] }], conflicts:[],
+    groups:[{id:model.id,entries:[{channel_id:'fal',entry_id:model.id}]}],
+    execution:{ fal:{[model.id]:{state:'catalog_only'}} },
+    channel_capabilities:{fal:{schema_version:1,channel_id:'fal',version:'one',capabilities}} };
+  view.set(data);
+  const html = nodes['[data-catalog-results]'].innerHTML;
+  assert.match(html, /<h3>MiniMax H3 Max<\/h3>/);
+  assert.match(html, /模型 ID：<code>minimax\/h3-max<\/code>/);
+  assert.equal((html.match(/class="cap-pill"/g) || []).length,12);
+  assert.match(html, /Insert Video Max[\s\S]*最高输出：768p/);
+  assert.match(html, /Lip Sync Max[\s\S]*最高输出：2K/);
+  assert.match(html, /12 个端点已纳入只读能力目录 · 暂不可提交/);
+  assert.doesNotMatch(html, /12 个端点已接入执行适配/);
+  const second = {...model,id:'fal-h3max-camera',display_name:'MiniMax H3 Max · Camera Controls',
+    upstream_model_id:'minimax/h3-max/camera-controls'};
+  view.set({...data,snapshot_id:'with-second-entry',
+    channels:[{...data.channels[0],models:[model,second]}],
+    groups:[...data.groups,{id:second.id,entries:[{channel_id:'fal',entry_id:second.id}]}]});
+  assert.equal((nodes['[data-catalog-results]'].innerHTML.match(/data-catalog-card/g) || []).length,1);
+  view.filters.query = 'Camera Controls';
+  view.renderResults();
+  assert.match(nodes['[data-catalog-results]'].innerHTML, /<h3>MiniMax H3 Max<\/h3>/);
+  view.set({...data,channel_capabilities:{fal:{...data.channel_capabilities.fal,version:'two',capabilities:[]}}});
+  assert.doesNotMatch(nodes['[data-catalog-results]'].innerHTML, /12 个端点已纳入只读能力目录/);
+});
+
+test('fal catalog renders sourced mode and input/output specs without old deployment fixtures', () => {
+  const context = vm.createContext({ URL });
+  vm.runInContext(readFileSync(new URL('../frontend/model-catalog.js', import.meta.url), 'utf8'), context);
+  const nodes = {};
+  const root = { innerHTML:'', addEventListener() {}, removeEventListener() {},
+    querySelectorAll: () => [], querySelector: selector => nodes[selector] ??= {} };
+  const profile = (mode, max_resolution, input_guidance = null) => ({
+    mode, max_resolution, duration_seconds:{minimum:5,maximum:15}, duration_choices_seconds:[],
+    aspect_ratios:['adaptive','16:9'], input_limits:mode === 'reference_to_video'
+      ? {images:9,videos:3,audio_files:3} : null, audio_input:'supported', audio_output:'supported',
+    review_status:'approved', verification_status:'verified', input_guidance
+  });
+  const model = (mode, suffix, name, resolution, guidance = null) => ({
+    id:`fal-h3-${suffix}`, display_name:`MiniMax H3 · ${name}`, business_type:'video_generation',
+    description:'已核对的供应商规格', identity_review:'approved', billing_modes:['provider_billed'],
+    upstream_model_id:`minimax/h3/${suffix}`, supplier_profiles:[profile(mode,resolution,guidance)], team_profiles:[]
+  });
+  const channel = { id:'fal', display_name:'fal.ai', models:[
+    model('text_to_video','text-to-video','文生视频','2K'),
+    model('image_to_video','image-to-video','图生视频','2K'),
+    model('reference_to_video','reference-to-video','参考生视频','1080p',{
+      source_url:'https://fal.ai/models/minimax/h3/reference-to-video/api',
+      reference_quota:'最多 9 图、3 视频、3 音频，合计 ≤12 件',
+      capacity:'图片 ≤30 MB/张；视频合计 <50 MB；音频 ≤15 MB/个'
+    })
+  ] };
   const view = new context.VideoCatalogView(root, async () => ({}));
   view.set({ state:'ready',snapshot_id:'official-parameters',channels:[channel],conflicts:[],execution:{fal:{}},
     groups:channel.models.map(model=>({ id:model.id, entries:[{channel_id:'fal',entry_id:model.id}] })) });
   const html = nodes['[data-catalog-results]'].innerHTML;
   assert.match(html, /<strong>T2V<\/strong>/);
   assert.match(html, /<strong>I2V<\/strong>/);
-  assert.equal((html.match(/class="cap-pill"><strong>R2V<\/strong>/g) || []).length,3);
+  assert.equal((html.match(/class="cap-pill"><strong>R2V<\/strong>/g) || []).length,1);
   assert.match(html, /最多 9 图、3 视频、3 音频，合计 ≤12 件/);
   assert.doesNotMatch(html, /参考文件配额|<div class="catalog-profile"><strong>(T2V|I2V|R2V)<\/strong>|无需参考附件|此模式不接收参考附件/);
-  assert.match(html, /起始帧 1 张，可选结束帧 1 张/);
   assert.doesNotMatch(html, /官方资料|官方来源|官方未|所查官方|未公布|未公开/);
   assert.match(html, /图片 ≤30 MB\/张；视频合计 &lt;50 MB；音频 ≤15 MB\/个/);
-  assert.match(html, /参考视频、音频各自合计 ≤15 秒，每段 2–15 秒/);
   assert.doesNotMatch(html, /href="https:\/\/fal.ai/);
   assert.doesNotMatch(html, /待验证|待核实|各模式见详情|满额实测/);
-  assert.match(html, /支持参考视频/);
-  assert.match(html, /MP4\/MOV/);
+  assert.match(html, /图像 9 · 视频 3 · 音频 3/);
   assert.match(html, /1080p/);
-  assert.match(html, /4K/);
-  assert.match(html, /T2V \/ R2V：自适应/);
-  assert.match(html, /I2V：跟随输入图/);
-  assert.match(html, /T2V \/ I2V：不支持 \/ 支持；R2V：支持 \/ 支持/);
+  assert.match(html, /自适应 \/ 16:9/);
+  assert.match(html, /支持 \/ 支持/);
   assert.doesNotMatch(html, /单次任务最大容量/);
 });
 
