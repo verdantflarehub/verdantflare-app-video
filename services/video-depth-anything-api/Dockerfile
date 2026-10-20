@@ -6,7 +6,7 @@ LABEL org.opencontainers.image.title="VerdantFlare Video Depth Anything API"
 LABEL org.opencontainers.image.version="0.2.3"
 WORKDIR /app
 COPY pyproject.toml ./
-RUN python -m pip install --no-deps .
+RUN python3 -m pip install --break-system-packages --no-cache-dir --no-deps .
 COPY main.py model.py media.py download_model.py gpu_guard.py model-lock.json ./
 EXPOSE 8000
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
