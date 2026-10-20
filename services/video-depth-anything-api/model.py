@@ -28,7 +28,7 @@ class Engine:
     def __init__(self):
         import torch
         from gpu_guard import verify_gpu
-        verify_gpu(torch, os.environ.get('DEPTH_GPU_ALLOCATION', ''))
+        verify_gpu(torch, os.environ.get('DEPTH_GPU_ALLOCATION', ''), os.environ.get('DEPTH_GPU_MODE', 'hami'))
         from video_depth_anything.video_depth import VideoDepthAnything
         path = verify()
         self.model = VideoDepthAnything(encoder='vits', features=64, out_channels=[48, 96, 192, 384])

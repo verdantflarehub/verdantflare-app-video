@@ -11,6 +11,22 @@ def torch_fixture(count=1, available=True):
 
 
 class GPUGuardTest(unittest.TestCase):
+    def test_native_single_device(self):
+        self.assertEqual(verify_gpu(torch_fixture(), '', 'native'), 'GPU-' + UUID)
+
+    def test_native_rejects_ambiguous_or_invalid_allocation(self):
+        with self.assertRaisesRegex(RuntimeError, 'conflicting_gpu_allocation_modes'):
+            verify_gpu(torch_fixture(), f'GPU-{UUID},NVIDIA,24564,100:;', 'native')
+        with self.assertRaisesRegex(RuntimeError, 'unsupported_gpu_mode'):
+            verify_gpu(torch_fixture(), '', 'automatic')
+        fixture = torch_fixture()
+        fixture.cuda.get_device_properties = lambda n: SimpleNamespace(uuid='missing')
+        with self.assertRaisesRegex(RuntimeError, 'invalid_cuda_gpu_uuid'):
+            verify_gpu(fixture, '', 'native')
+        for fixture in (torch_fixture(count=2), torch_fixture(available=False)):
+            with self.assertRaisesRegex(RuntimeError, 'exactly_one_cuda_gpu_required'):
+                verify_gpu(fixture, '', 'native')
+
     def test_matching_full_card(self):
         self.assertEqual(verify_gpu(torch_fixture(), f'GPU-{UUID},NVIDIA,24564,100:;'), 'GPU-' + UUID)
 
