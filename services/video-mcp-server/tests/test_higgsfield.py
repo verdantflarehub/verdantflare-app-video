@@ -14,7 +14,7 @@ from app.artifacts import ArtifactStore
 from app.delivery import CALLER
 from app.executor import VideoExecutor
 from app.dashboard import Dashboard
-from app.artifact_authority import authorize as native_authorize
+from app.artifact_compat import read_output_evidence
 from app.providers.higgsfield_artifact import collect
 from app.artifact_output import source, uuid7
 from app.tasks import TaskStore, TaskConflict
@@ -159,19 +159,17 @@ class HiggsfieldTest(unittest.TestCase):
 
     def test_native_output_requires_persisted_media_and_original_identity(self):
         record = self.poll(self.create())
-        claim = {"principal": {"organization_id": ORG, "subject_id": USER, "request_id": uuid7()},
-                 "permission": {"action": "write", "source": source(record)}}
-        self.assertFalse(native_authorize(claim, self.executor.tasks, self.client))
+        self.assertIsNone(read_output_evidence(self.executor.tasks, record))
         data = b"verified-media-fixture"
         media = {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-        (self.executor.tasks.root / (record.video_task_id + ".higgsfield.mp4")).write_bytes(data)
-        self.executor.tasks.update(record, runtime_stage="collecting", media=media, provider_state={"produced_media": media})
-        self.assertTrue(native_authorize(claim, self.executor.tasks, self.client))
-        claim["principal"]["subject_id"] = "0199abcd-0000-7000-8000-000000000099"
-        self.assertFalse(native_authorize(claim, self.executor.tasks, self.client))
-        claim["principal"]["subject_id"] = USER
-        claim["permission"]["source"]["task_id"] = str(uuid.uuid4())
-        self.assertFalse(native_authorize(claim, self.executor.tasks, self.client))
+        path = self.executor.tasks.root / (record.video_task_id + ".higgsfield.mp4")
+        path.write_bytes(data)
+        record = self.executor.tasks.update(record, runtime_stage="collecting", media=media, provider_state={"produced_media": media})
+        self.assertEqual(read_output_evidence(self.executor.tasks, record), (path, media))
+        with patch.dict(os.environ, {"HIGGSFIELD_ORGANIZATION_ID": uuid7()}):
+            self.assertIsNone(read_output_evidence(self.executor.tasks, record))
+        with patch.dict(os.environ, {"HIGGSFIELD_ALLOWED_USERS": uuid7()}):
+            self.assertIsNone(read_output_evidence(self.executor.tasks, record))
 
     def test_collection_failure_preserves_saved_artifact_upload_receipt(self):
         record = self.create()
