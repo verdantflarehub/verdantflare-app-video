@@ -371,7 +371,30 @@ def video_import_status(project_id: str, import_id: str) -> types.CallToolResult
 @mcp.tool(name="video.import_commit")
 def video_import_commit(project_id: str, import_id: str) -> types.CallToolResult:
     """Verify all bytes and decode media before publishing a native Video artifact."""
-    return _result(executor.imports.commit(project_id=project_id, import_id=import_id))
+    try:
+        committed = executor.imports.commit(project_id=project_id, import_id=import_id)
+    except ValueError as exc:
+        # Validators carry stable codes, but arbitrary exception text may contain
+        # private paths. Never echo it or infer retryability from its wording.
+        messages = {
+            "reference_duration_must_be_2_to_15_seconds": "Reference media must be 2 to 15 seconds long. Use a valid source interval before importing again.",
+            "reference_video_duration_must_be_2_to_15_seconds": "The video stream itself must be 2 to 15 seconds long; a longer audio track does not satisfy this limit.",
+            "reference_pixel_budget_exceeded": "Reference image or video dimensions exceed the supported bounds. Check the media dimensions.",
+            "reference_video_decode_budget_exceeded": "The reference video exceeds the supported frame-rate or decoded-pixel budget.",
+            "reference_media_decode_failed": "The reference media could not be decoded. Check its format and completeness.",
+            "import_incomplete": "The upload is incomplete. Query the original import status and resume from its confirmed offset.",
+        }
+        code = str(exc)
+        if code not in messages:
+            code = "import_validation_failed"
+        result = _result({"error": {
+            "code": code,
+            "message": messages.get(code, "The import could not be validated. Check the media and import parameters."),
+            "retryable": code == "import_incomplete",
+        }})
+        result.is_error = True
+        return result
+    return _result(committed)
 
 
 @mcp.tool(name="video.preflight")
