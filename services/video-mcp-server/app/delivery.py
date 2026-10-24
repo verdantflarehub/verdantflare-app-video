@@ -31,7 +31,7 @@ def normalize(value, route):
     return {'interpolate': {'profile': 'rife_2x'}}
 
 
-def authorize(client, project_id, authority=None):
+def authorize(client, project_id, authority=None, *, require_write=True):
     actor = authority if authority is not None else CALLER.get()
     if not actor or not all(actor.get(k) for k in ('user_id', 'organization_id')):
         raise ValueError('verified Studio identity required')
@@ -43,7 +43,7 @@ def authorize(client, project_id, authority=None):
         response = client.post(url + '/internal/v1/project/open',
             headers={'Authorization': 'Bearer ' + token, 'X-User-Id': actor['user_id'],
                      'X-Organization-Id': actor['organization_id'], 'X-Request-Id': request_id()},
-            json={'project_id': project_id, 'require_write': True}, timeout=15)
+            json={'project_id': project_id, 'require_write': require_write}, timeout=15)
         if response.status_code in (401, 403, 404):
             raise PermissionError('project access denied')
         response.raise_for_status()

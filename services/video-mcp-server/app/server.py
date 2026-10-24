@@ -117,6 +117,7 @@ VIDEO_TOOLS_SCHEMA = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                "execution_proof_only": {"type": "boolean", "default": False},
                 "task_id": {"type": "string", "description": "Video task ID"},
                 "video_task_id": {"type": "string", "description": "Alias for task_id"},
             },
@@ -626,7 +627,7 @@ def video_status(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
 
 
 @mcp.tool(name="video.result")
-def video_result(video_task_id: str = "", task_id: str = "") -> types.CallToolResult:
+def video_result(video_task_id: str = "", task_id: str = "", execution_proof_only: bool = False) -> types.CallToolResult:
     tid = video_task_id or task_id
     if not tid:
         return _result({"error": "task_id is required"})
@@ -635,6 +636,12 @@ def video_result(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
     existing = t_store.get(tid)
     if _is_task_nsfw(existing):
         raise TaskNotFound(f"NOT_FOUND: {tid}")
+    if execution_proof_only:
+        from .execution_proof import proof
+        actor = authorize(executor.client, existing.project_id, require_write=False)
+        if existing.authority and existing.authority.get('organization_id') != actor['organization_id']:
+            raise PermissionError('execution_proof_access_denied')
+        return _result({'execution_proof': proof(existing, a_store)})
     if existing.service == 'higgsfield':
         executor.higgsfield.authorize_record(existing)
     if existing.service == 'fal':
