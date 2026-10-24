@@ -295,7 +295,39 @@ class TaskStore:
                 break
             if rec.get("rating") != "unrated" and chosen_vid == vids[0]:
                 chosen_vid = vid
-        return store.ui_fields(chosen_vid, task_id=record.video_task_id, can_write=can_write)
+        ui = store.ui_fields(chosen_vid, task_id=record.video_task_id, can_write=can_write)
+        rating_obj = ui.get("content_rating")
+        rating_str = (
+            rating_obj.get("rating", "unrated")
+            if isinstance(rating_obj, dict)
+            else str(rating_obj or "unrated")
+        )
+        return {
+            **ui,
+            "content_rating": rating_str,
+            "content_rating_detail": rating_obj,
+        }
+
+    def delete_task(self, task_id: str) -> dict[str, Any]:
+        record = self.get(task_id)
+        with self.exclusive(), self.task_lock(record.video_task_id, purpose="write"):
+            path = self.root / f"{record.video_task_id}.json"
+            if not path.is_file():
+                raise TaskNotFound(f"Unknown task_id: {task_id}")
+            path.unlink(missing_ok=True)
+            db = getattr(self._local, "connection", None)
+            if db is not None:
+                for sql in (
+                    "DELETE FROM identities WHERE task = ?",
+                    "DELETE FROM idempotency_keys WHERE video_task_id = ?",
+                    "DELETE FROM gpu_leases WHERE video_task_id = ?",
+                    "DELETE FROM task_titles WHERE task = ?",
+                ):
+                    try:
+                        db.execute(sql, (record.video_task_id,))
+                    except sqlite3.OperationalError:
+                        pass
+        return {"status": "deleted", "video_task_id": record.video_task_id}
 
     def find_by_artifact_or_task(self, version_id: str) -> TaskRecord | None:
         vid = (version_id or "").strip()

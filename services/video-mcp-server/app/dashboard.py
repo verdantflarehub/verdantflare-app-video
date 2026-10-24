@@ -71,7 +71,14 @@ class ImportRequest(BaseModel):
 class TitleUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     title: str
-    expected_title_revision: int = Field(ge=0)
+    expected_title_revision: int | None = Field(default=None, ge=0)
+
+
+class ContentRatingUpdate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    action: str
+    reason: str | None = None
+    note: str | None = None
 
 
 def task_channel(record):
@@ -117,7 +124,7 @@ def task_presentation(record):
             "generation_code": code, "generation_label": explanation}
 
 
-def public_task(record, store=None):
+def public_task(record, store=None, ratings_store=None):
     record = TaskStore.with_timing(record)
     model = record.request.get("model")
     if not model:
@@ -128,6 +135,7 @@ def public_task(record, store=None):
             "h3-latent-upscale": "h3-latent-upscaler",
         }.get(record.service)
     naming = titles.project(store, record) if store is not None else {'title': titles.fallback(record), 'title_source': 'fallback', 'title_revision': 0, 'title_updated_at': None}
+    ui_fields = store.record_ui_fields(record, ratings_store, can_write=True) if store is not None else {"content_rating": "unrated", "can_clear_rating": False, "can_mark_rating": True}
     return {**naming, "video_task_id": record.video_task_id, "project_id": record.project_id,
             "idempotency_key": record.idempotency_key, "service": record.service, "route": record.runtime_route or record.request.get("route"),
             "model": model, "presentation": task_presentation(record),
@@ -142,7 +150,8 @@ def public_task(record, store=None):
             "completed_at": record.completed_at or (record.updated_at if record.status in {"succeeded", "failed", "cancelled"} else None),
             "artifact_id": (record.delivery or {}).get("final_artifact_id") or record.artifact_id, "media": record.media, "error": record.error, "collection": public_collection(record),
             "input_digest": record.input_digest, "execution_instance_id": record.execution_instance_id, "association_source": "runtime" if record.execution_instance_id else None, "runtime_stage": record.runtime_stage,
-            "dispatched_at": record.dispatched_at, "timing": record.timing, "runtime_metrics": record.runtime_metrics}
+            "dispatched_at": record.dispatched_at, "timing": record.timing, "runtime_metrics": record.runtime_metrics,
+            **ui_fields}
 
 
 class Dashboard:
@@ -463,6 +472,12 @@ class Dashboard:
                                     headers={"Cache-Control": "private, no-store"})
             elif request.method == "GET":
                 value = await run_in_threadpool(self.detail, request.path_params["task_id"], request)
+            elif request.method == "DELETE" or action.endswith("/delete"):
+                task_id = request.path_params["task_id"]
+                def _delete():
+                    tasks_store, _, _ = self._stores(request)
+                    return tasks_store.delete_task(task_id)
+                value = await run_in_threadpool(_delete)
             elif action.endswith("/result"):
                 def result():
                     tasks_store, _, ratings_store = self._stores(request)
@@ -485,8 +500,64 @@ class Dashboard:
                         return JSONResponse({"error": "request_too_large"}, status_code=413)
                 if action.endswith('/title'):
                     inputs = TitleUpdate.model_validate_json(body)
-                    naming = await run_in_threadpool(titles.rename, self.executor, request.path_params['task_id'], **inputs.model_dump())
-                    value = {'video_task_id': request.path_params['task_id'], **naming}
+                    task_id = request.path_params['task_id']
+                    if inputs.expected_title_revision is not None:
+                        naming = await run_in_threadpool(
+                            titles.rename,
+                            self.executor,
+                            task_id,
+                            title=inputs.title,
+                            expected_title_revision=inputs.expected_title_revision,
+                        )
+                    else:
+                        def _rename_simple():
+                            tasks_store, _, _ = self._stores(request)
+                            record = tasks_store.get(task_id)
+                            current = titles.project(tasks_store, record)
+                            return titles.update(tasks_store, record, inputs.title, current["title_revision"])
+                        naming = await run_in_threadpool(_rename_simple)
+                    value = {'video_task_id': task_id, **naming}
+                elif action.endswith('/content-rating'):
+                    inputs = ContentRatingUpdate.model_validate_json(body or b"{}")
+                    act = inputs.action.strip().lower()
+                    if act not in {"mark", "clear"}:
+                        raise ValueError("action must be 'mark' or 'clear'")
+                    task_id = request.path_params["task_id"]
+                    actor_user_id = (
+                        request.headers.get("X-User-Id")
+                        or request.headers.get("X-VF-User-Id")
+                        or "dashboard_user"
+                    ).strip() or "dashboard_user"
+                    reason_text = (inputs.reason or inputs.note or ("manual_mark_nsfw" if act == "mark" else "manual_clear")).strip()
+                    def _update_rating():
+                        tasks_store, _, ratings_store = self._stores(request)
+                        record = tasks_store.get(task_id)
+                        vids = tasks_store.task_version_ids(record)
+                        target_vids = vids if vids else [record.video_task_id]
+                        for vid in target_vids:
+                            if act == "mark":
+                                ratings_store.mark_rating(
+                                    version_id=vid,
+                                    project_id=record.project_id,
+                                    task_id=record.video_task_id,
+                                    actor_user_id=actor_user_id,
+                                    reason=reason_text,
+                                )
+                            else:
+                                ratings_store.clear_rating(
+                                    version_id=vid,
+                                    project_id=record.project_id,
+                                    task_id=record.video_task_id,
+                                    actor_user_id=actor_user_id,
+                                    note=reason_text,
+                                )
+                        new_rating = "nsfw" if act == "mark" else "general"
+                        return {
+                            "status": "ok",
+                            "video_task_id": record.video_task_id,
+                            "content_rating": new_rating,
+                        }
+                    value = await run_in_threadpool(_update_rating)
                 elif action == "/api/artifacts/import":
                     inputs = ImportRequest.model_validate_json(body)
                     artifact = await run_in_threadpool(self.executor.import_asset, **inputs.model_dump())
@@ -520,7 +591,7 @@ class Dashboard:
             return JSONResponse({"error": "title_conflict"}, status_code=409)
         except TaskConflict:
             return JSONResponse({"error": "idempotency_conflict"}, status_code=409)
-        except (ValidationError, ValueError, KeyError, TypeError):
+        except (ValidationError, ValueError, KeyError, TypeError, ContentRatingError):
             return JSONResponse({"error": "invalid_request"}, status_code=400)
         except (ExecutionError, ArtifactError, httpx.HTTPError):
             return JSONResponse({"error": "upstream_operation_failed"}, status_code=502)
@@ -564,8 +635,12 @@ class Dashboard:
                 Route("/video/api/tasks", self.endpoint, methods=["GET", "POST"]),
                 Route("/api/tasks/stats", self.endpoint, methods=["GET"]),
                 Route("/video/api/tasks/stats", self.endpoint, methods=["GET"]),
-                Route("/api/tasks/{task_id:str}", self.endpoint),
-                Route("/video/api/tasks/{task_id:str}", self.endpoint),
+                Route("/api/tasks/{task_id:str}", self.endpoint, methods=["GET", "DELETE"]),
+                Route("/video/api/tasks/{task_id:str}", self.endpoint, methods=["GET", "DELETE"]),
+                Route("/api/tasks/{task_id:str}/delete", self.endpoint, methods=["POST"]),
+                Route("/video/api/tasks/{task_id:str}/delete", self.endpoint, methods=["POST"]),
+                Route("/api/tasks/{task_id:str}/content-rating", self.endpoint, methods=["POST"]),
+                Route("/video/api/tasks/{task_id:str}/content-rating", self.endpoint, methods=["POST"]),
                 Route("/api/tasks/{task_id:str}/thumbnail", self.endpoint),
                 Route("/video/api/tasks/{task_id:str}/thumbnail", self.endpoint),
                 Route("/api/tasks/{task_id:str}/content", self.endpoint),

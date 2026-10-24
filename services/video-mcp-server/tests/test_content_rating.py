@@ -193,9 +193,9 @@ class TestVideoMcpAndHttpContentRating(unittest.TestCase):
         server_mod.tasks = self.orig_tasks
         server_mod.artifacts = self.orig_artifacts
         server_mod.ratings = self.orig_ratings
-        server_mod.app.state.tasks = self.orig_tasks
-        server_mod.app.state.artifacts = self.orig_artifacts
-        server_mod.app.state.ratings = self.orig_ratings
+        server_mod.app.state.tasks = None
+        server_mod.app.state.artifacts = None
+        server_mod.app.state.ratings = None
         self._tmp.cleanup()
 
     def test_mcp_rate_content_hides_from_mcp_and_http_supports_local_switch_and_clear(self) -> None:
@@ -286,7 +286,8 @@ class TestVideoMcpAndHttpContentRating(unittest.TestCase):
         inc_data = resp_inc.json()
         self.assertEqual(inc_data["total"], 2)
         nsfw_item = next(t for t in inc_data["tasks"] if t["task_id"] == self.task_nsfw.video_task_id)
-        self.assertEqual(nsfw_item["content_rating"]["rating"], "nsfw")
+        self.assertEqual(nsfw_item["content_rating"], "nsfw")
+        self.assertEqual(nsfw_item["content_rating_detail"]["rating"], "nsfw")
         self.assertTrue(nsfw_item["can_clear_rating"])
         self.assertFalse(nsfw_item["can_mark_rating"])
 
@@ -325,6 +326,89 @@ class TestVideoMcpAndHttpContentRating(unittest.TestCase):
         self.assertEqual(resp_mark.json()["source"], "human")
         with self.assertRaises(TaskNotFound):
             server_mod.video_status(self.task_nsfw.video_task_id)
+
+    def test_card_action_endpoints_title_content_rating_delete_and_frontend_menu(self) -> None:
+        headers = {"Authorization": "Bearer test-secret-token"}
+        client = TestClient(server_mod.app)
+
+        # 1. POST /api/tasks/{id}/title with {"title": "..."} updates title without requiring expected_title_revision
+        tid = self.task_gen.video_task_id
+        resp_title = client.post(
+            f"/api/tasks/{tid}/title",
+            json={"title": "重命名后的视频任务"},
+            headers=headers,
+        )
+        self.assertEqual(resp_title.status_code, 200, resp_title.text)
+        self.assertEqual(resp_title.json()["title"], "重命名后的视频任务")
+
+        resp_title_v = client.post(
+            f"/video/api/tasks/{tid}/title",
+            json={"title": "二次重命名任务"},
+            headers=headers,
+        )
+        self.assertEqual(resp_title_v.status_code, 200, resp_title_v.text)
+        self.assertEqual(resp_title_v.json()["title"], "二次重命名任务")
+
+        # 2. POST /api/tasks/{id}/content-rating mark & clear
+        resp_mark = client.post(
+            f"/api/tasks/{tid}/content-rating",
+            json={"action": "mark", "reason": "manual card mark"},
+            headers=headers,
+        )
+        self.assertEqual(resp_mark.status_code, 200, resp_mark.text)
+        self.assertEqual(
+            resp_mark.json(),
+            {"status": "ok", "video_task_id": tid, "content_rating": "nsfw"},
+        )
+
+        # Verify /api/dashboard with X-VF-Include-NSFW: 1 returns content_rating == "nsfw"
+        dash_inc = client.get(
+            "/api/dashboard?project_id=proj-a",
+            headers={**headers, "X-VF-Include-NSFW": "1"},
+        ).json()
+        card_task = next(t for t in dash_inc["tasks"] if t["video_task_id"] == tid)
+        self.assertEqual(card_task["content_rating"], "nsfw")
+        self.assertEqual(card_task["title"], "二次重命名任务")
+
+        resp_clear = client.post(
+            f"/video/api/tasks/{tid}/content-rating",
+            json={"action": "clear", "reason": "manual card clear"},
+            headers=headers,
+        )
+        self.assertEqual(resp_clear.status_code, 200, resp_clear.text)
+        self.assertEqual(
+            resp_clear.json(),
+            {"status": "ok", "video_task_id": tid, "content_rating": "general"},
+        )
+
+        # 3. POST /api/tasks/{id}/delete and DELETE /api/tasks/{id}
+        resp_del = client.post(
+            f"/api/tasks/{tid}/delete",
+            json={},
+            headers=headers,
+        )
+        self.assertEqual(resp_del.status_code, 200, resp_del.text)
+        self.assertEqual(resp_del.json(), {"status": "deleted", "video_task_id": tid})
+        self.assertEqual(client.post(f"/api/tasks/{tid}/delete", json={}, headers=headers).status_code, 404)
+
+        tid2 = self.task_nsfw.video_task_id
+        resp_del2 = client.delete(f"/video/api/tasks/{tid2}", headers=headers)
+        self.assertEqual(resp_del2.status_code, 200, resp_del2.text)
+        self.assertEqual(resp_del2.json(), {"status": "deleted", "video_task_id": tid2})
+        self.assertEqual(client.delete(f"/api/tasks/{tid2}", headers=headers).status_code, 404)
+
+        # 4. Verify frontend/dashboard.js includes the three-dots menu and actions
+        js_text = client.get("/dashboard/frontend/dashboard.js").text
+        for token in (
+            "card-more-btn",
+            "card-action-menu",
+            'data-task-action="edit"',
+            'data-task-action="toggle-nsfw"',
+            'data-task-action="delete"',
+            "标记为 18+ (NSFW)",
+            "移除 18+ 标记",
+        ):
+            self.assertIn(token, js_text)
 
 
 if __name__ == "__main__":

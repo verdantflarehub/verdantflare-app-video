@@ -667,9 +667,13 @@ def video_list(
         include_nsfw=False,
         ratings_store=r_store,
     )
+    _ui_only = {"content_rating", "content_rating_detail", "can_clear_rating", "can_mark_rating"}
     return _result({
         "tasks": [
-            {**public_task(r, t_store), "task_id": r.video_task_id}
+            {
+                **{k: v for k, v in public_task(r, t_store, r_store).items() if k not in _ui_only},
+                "task_id": r.video_task_id,
+            }
             for r in records
         ],
         "total": total,
