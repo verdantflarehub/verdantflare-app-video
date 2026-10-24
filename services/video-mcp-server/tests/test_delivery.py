@@ -172,6 +172,22 @@ class AuthorityTest(unittest.TestCase):
         with httpx.Client(transport=httpx.MockTransport(respond)) as client, patch.dict(os.environ, {'VIDEO_PROJECT_SERVICE_URL': 'https://project', 'VIDEO_PROJECT_SERVICE_TOKEN': 'internal'}):
             self.assertEqual(authorize(client, 'p', {'user_id': 'u', 'organization_id': 'o'})['user_id'], 'u')
 
+    def test_read_authorization_omits_optional_zero_and_rechecks_access(self):
+        from app.delivery import authorize
+        def respond(request):
+            body = json.loads(request.content)
+            if 'require_write' in body:
+                return httpx.Response(400)
+            self.assertEqual(body, {'project_id': 'p'})
+            return httpx.Response(status)
+        with httpx.Client(transport=httpx.MockTransport(respond)) as client, patch.dict(os.environ, {'VIDEO_PROJECT_SERVICE_URL': 'https://project', 'VIDEO_PROJECT_SERVICE_TOKEN': 'internal'}):
+            actor = {'user_id': 'u', 'organization_id': 'o'}
+            status = 200
+            self.assertEqual(authorize(client, 'p', actor, require_write=False), actor)
+            status = 403
+            with self.assertRaises(PermissionError):
+                authorize(client, 'p', actor, require_write=False)
+
     def test_authority_revalidation_denial_and_missing_identity(self):
         from app.delivery import authorize
         with httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(403))) as client:
