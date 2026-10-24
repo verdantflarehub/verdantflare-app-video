@@ -101,7 +101,7 @@ class GrokVideoAdapter:
         if quality_profile is not None:
             raise ValueError("unsupported_parameter")
         model = model or self.model
-        if (model not in MODELS) if self.channel_mode else (model != self.model):
+        if model not in MODELS:
             raise ValueError("model_route_mismatch")
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("invalid_prompt")

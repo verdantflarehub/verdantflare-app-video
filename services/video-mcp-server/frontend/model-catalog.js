@@ -33,7 +33,7 @@
     const model = entry.model;
     const team = (model.team_profiles || []).find(p => p.max_resolution || p.duration_seconds || p.duration_choices_seconds?.length || p.input_limits || p.aspect_ratios?.length);
     const supplier = (model.supplier_profiles || [])[0];
-    return supplier || team || null;
+    return team || supplier || null;
   };
   const modeFor = entry => {
     const declared = profileFor(entry)?.mode || entry.model.team_profiles?.[0]?.mode || entry.model.supplier_profiles?.[0]?.mode;
@@ -82,7 +82,11 @@
   })[0];
   const deriveSpecs = entries => {
     const profiles = entries.map(profileFor);
-    const caps = [...new Map(entries.map(modeFor).map(mode => modeToCap[mode]).filter(Boolean).map(pair => [pair[0],pair])).values()];
+    const caps = [...new Map(entries.flatMap(entry => {
+      const active = entry.model.team_profiles?.length ? entry.model.team_profiles : entry.model.supplier_profiles;
+      const list = active?.length ? active.map(p => p.mode) : [modeFor(entry)];
+      return list.map(mode => modeToCap[mode]).filter(Boolean);
+    }).map(pair => [pair[0],pair])).values()];
     const summarize = values => {
       const grouped = new Map();
       values.forEach((value,index) => {
@@ -204,10 +208,11 @@
       this.renderResults();
     }
     executionStatus(entry) {
-      if (entry.channel.id !== 'fal') return '';
-      const capability = this.data.execution?.fal?.[entry.model.id];
-      const state = capability?.state;
+      const capability = this.data.execution?.[entry.channel.id]?.[entry.model.id];
+      const state = capability?.state || entry.model.execution_status;
+      if (!state && entry.channel.id !== 'fal') return '';
       const labels = {
+        ready:'执行适配已就绪',
         adapter_connected_unverified:'执行适配已接入 · 调用受组织授权与额度限制',
         adapter_disconnected:'执行适配已接入 · 服务未连接，暂不可提交',
         catalog_only:'仅目录收录 · 暂不可提交'

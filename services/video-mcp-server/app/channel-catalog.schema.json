@@ -165,6 +165,14 @@
               "retired"
             ]
           },
+          "execution_status": {
+            "enum": [
+              "ready",
+              "adapter_connected_unverified",
+              "adapter_disconnected",
+              "catalog_only"
+            ]
+          },
           "supplier_profiles": {
             "type": "array",
             "items": {

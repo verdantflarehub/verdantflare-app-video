@@ -34,7 +34,7 @@ class H3LatentExecutor:
         return {'Authorization': 'Bearer ' + self.token}
 
     def register_source(self, source):
-        if source.service != 'h3-vdn' or source.status != 'succeeded':
+        if source.service not in ('h3-vdn', 'h3-singularity') or source.status != 'succeeded':
             raise ExecutionError('source_not_ready: a successful supported H3 task is required')
         url, headers, _, _ = self.executor.runtime(self.executor._record_route(source))
         response = self.client.get(f'{url}/v1/videos/{source.runtime_task_id}', headers=headers, timeout=15)
@@ -78,7 +78,7 @@ class H3LatentExecutor:
         source = self.tasks.get(source_video_task_id)
         if project_id is not None and source.project_id != project_id:
             raise ExecutionError('source_not_found')
-        if not source.service == 'h3-vdn':
+        if source.service not in ('h3-vdn', 'h3-singularity'):
             raise ExecutionError('unsupported_source_route')
         source = self.executor.status(source_video_task_id)
         if source.status != 'succeeded':

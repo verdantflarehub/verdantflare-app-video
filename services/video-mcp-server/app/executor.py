@@ -185,13 +185,14 @@ class VideoExecutor:
         from .providers.fal import FAL_MODEL_ID, FAL_PUBLIC_MODEL, FAL_SD2_MODEL_ID, FAL_SD2_PUBLIC_MODEL
 
         catalog = deepcopy(self.catalog.snapshot())
+        execution: dict[str, dict[str, object]] = {}
         fal_channel = next((channel for channel in catalog.get("channels", []) if channel["id"] == "fal"), None)
         if fal_channel is not None:
             connected = self.fal.connected()
             discovered = self.fal.channel_capabilities()
             catalog["channel_capabilities"] = {"fal": discovered if discovered is not None else
                 {"schema_version": 1, "channel_id": "fal", "state": "unavailable", "capabilities": []}}
-            catalog["execution"] = {"fal": {
+            execution["fal"] = {
                 model["id"]: ({"state": "adapter_connected_unverified" if connected else "adapter_disconnected",
                                "route": "fal", "model": FAL_PUBLIC_MODEL}
                               if model.get("upstream_model_id") == FAL_MODEL_ID
@@ -199,7 +200,50 @@ class VideoExecutor:
                                     "route": "fal", "model": FAL_SD2_PUBLIC_MODEL}
                               if model.get("upstream_model_id") == FAL_SD2_MODEL_ID
                               else {"state": "catalog_only"})
-                for model in fal_channel["models"]}}
+                for model in fal_channel["models"]}
+        hf_channel = next((channel for channel in catalog.get("channels", []) if channel["id"] == "higgsfield"), None)
+        if hf_channel is not None:
+            hf_connected = bool(self.higgsfield.enabled and self.higgsfield.configured())
+            hf_map = {
+                "higgsfield-seedance_2_5": "seedance_2_5",
+                "seedance_2_5": "seedance_2_5",
+                "higgsfield-seedance-2-5-draft": "seedance_2_5_draft",
+                "seedance-2-5-draft": "seedance_2_5_draft",
+                "seedance_2_5_draft": "seedance_2_5_draft",
+                "higgsfield-wan3_0": "wan3_0",
+                "wan3_0": "wan3_0",
+                "higgsfield-grok_video_v15_lite": "grok_video_v15_lite",
+                "grok_video_v15_lite": "grok_video_v15_lite",
+            }
+            execution["higgsfield"] = {
+                model["id"]: ({"state": "adapter_connected_unverified" if hf_connected else "adapter_disconnected",
+                               "route": "higgsfield",
+                               "model": hf_map.get(model["id"]) or hf_map.get(model.get("model_id")) or hf_map.get(model.get("upstream_model_id"))}
+                              if (model["id"] in hf_map or model.get("model_id") in hf_map or model.get("upstream_model_id") in hf_map)
+                              and model.get("execution_status") != "catalog_only"
+                              else {"state": "catalog_only"})
+                for model in hf_channel["models"]}
+        local_channel = next((channel for channel in catalog.get("channels", []) if channel["id"] == "local"), None)
+        if local_channel is not None:
+            sr_configured = bool(os.environ.get("VIDEO_SR_RUNTIME_URL", "").strip())
+            latent_configured = bool(os.environ.get("H3_LATENT_RUNTIME_URL", "").strip() and os.environ.get("H3_LATENT_RUNTIME_TOKEN", "").strip())
+            local_exec = {}
+            for model in local_channel["models"]:
+                mid = model["id"]
+                upstream = model.get("upstream_model_id")
+                if mid in {"local-seedvr2", "seedvr2"} or upstream in {"seedvr2", "video-sr"}:
+                    local_exec[mid] = {"state": "adapter_connected_unverified" if sr_configured else "catalog_only"}
+                elif mid in {"local-h3-latent-upscaler", "h3-latent-upscaler"} or upstream in {"h3-latent-upscaler", "video-h3-latent-upscale"}:
+                    local_exec[mid] = {"state": "adapter_connected_unverified" if latent_configured else "catalog_only"}
+                elif model.get("execution_status") == "catalog_only":
+                    local_exec[mid] = {"state": "catalog_only"}
+                elif upstream in {"MiniMax-H3", "minimax-h3-ref2va"} or mid == "local-h3":
+                    local_exec[mid] = {"state": "adapter_connected_unverified", "route": self.runtime_route, "model": "minimax-h3-ref2va"}
+                else:
+                    local_exec[mid] = {"state": model.get("execution_status", "adapter_connected_unverified")}
+            execution["local"] = local_exec
+        if execution:
+            catalog["execution"] = execution
         return catalog
 
     def capabilities(self) -> dict[str, object]:
@@ -256,7 +300,9 @@ class VideoExecutor:
                 "models": [{"model": "minimax-h3-ref2va"},
                            {"model": "bytedance-seedance-2.0-reference-to-video", "routes": ["fal"]},
                            {"model": self.grok.model, "routes": ["grok"]},
+                           *[{"model": m, "routes": ["grok"]} for m in sorted({"grok-imagine-video", "grok-imagine-video-1.5"} - {self.grok.model})],
                            {"model": self.google.model, "routes": ["google"]},
+                           *[{"model": m, "routes": ["google"]} for m in sorted({"veo-3.1-lite-generate-preview", "veo-3.1-lite-generate-001"} - {self.google.model})],
                            *[{"model": item["model"], "routes": ["higgsfield"]} for item in self.higgsfield.capabilities()]],
                 "model_specification": {"aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
                                         "omni_adaptive": True},

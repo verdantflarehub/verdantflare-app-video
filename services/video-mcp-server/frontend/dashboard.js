@@ -989,7 +989,12 @@ $("dispatchForm").addEventListener("submit", async (event) => {
   try {
     const body = Object.fromEntries(new FormData(event.target));
     body.duration_seconds = Number(body.duration_seconds);
-    body.model = body.route === "grok" ? grokCapability?.model : "minimax-h3-ref2va";
+    const selectedFalModel = body.fal_model || $("falModelSelect")?.value || "minimax-h3-ref2va";
+    delete body.fal_model;
+    body.model = body.route === "grok" ? grokCapability?.model : body.route === "fal" ? selectedFalModel : "minimax-h3-ref2va";
+    if (body.route === "fal" && body.model === "bytedance-seedance-2.0-reference-to-video") {
+      body.mode = "reference_to_video";
+    }
     const references = { images: [], videos: [], audios: [] };
     const kinds = { image: "images", video: "videos", audio: "audios" };
     for (const line of body.references.trim().split("\n")) {
@@ -1004,11 +1009,12 @@ $("dispatchForm").addEventListener("submit", async (event) => {
         purpose: parts[2],
       });
     }
-    const missingReference = body.route === "fal"
+    const isFalSeedance = body.route === "fal" && body.model === "bytedance-seedance-2.0-reference-to-video";
+    const missingReference = body.route === "fal" && !isFalSeedance
       ? !references.images.length && !references.videos.length && !references.audios.length
       : !references.images.length && !references.videos.length;
     if (missingReference && body.route !== "grok")
-      throw new Error(body.route === "fal" ? "fal 至少需要一个参考素材。" : "至少需要一张图片或一段视频参考。");
+      throw new Error(body.route === "fal" && !isFalSeedance ? "fal 至少需要一个参考素材。" : "至少需要一张图片或一段视频参考。");
     if (body.route === "grok") {
       if (references.videos.length || references.audios.length || references.images.length > 1 || references.images.some(r => r.purpose !== "first_frame")) throw new Error("Grok 仅接受一张 first_frame 图片，或不使用参考。");
       body.mode = references.images.length ? "image_to_video" : "text_to_video";
@@ -1033,25 +1039,41 @@ $("dispatchForm").addEventListener("submit", async (event) => {
   }
 });
 
-$("dispatchForm").elements.route.addEventListener("change", () => {
+const syncDispatchRouteControls = () => {
   const duration = $("dispatchForm").elements.duration_seconds;
   const route = $("dispatchForm").elements.route.value;
   const grok = route === "grok";
-  $("referenceInput").required = !grok;
-  $("grokResolution").hidden = !grok;
-  $("dispatchForm").elements.resolution.disabled = !grok;
   const fal = route === "fal";
-  const sol = route.startsWith("h3-sol") || route === "h3-vdn" || fal;
+  const falModelSelect = $("falModelSelect");
+  if ($("falModelField")) $("falModelField").hidden = !fal;
+  if (falModelSelect) falModelSelect.disabled = !fal;
+  const falSeedance = fal && falModelSelect?.value === "bytedance-seedance-2.0-reference-to-video";
+  const hasResolution = grok || falSeedance;
+  $("referenceInput").required = !grok;
+  $("grokResolution").hidden = !hasResolution;
+  $("dispatchForm").elements.resolution.disabled = !hasResolution;
+  const legacy916Only = route.startsWith("h3-sol") || route === "h3-vdn";
+  const minFive = legacy916Only || (fal && !falSeedance);
   const ratio = $("dispatchForm").elements.aspect_ratio;
-  duration.min = grok ? "1" : sol ? "5" : "4";
+  duration.min = grok ? "1" : minFive ? "5" : "4";
   duration.step = "1";
-  if (sol && (!Number.isInteger(Number(duration.value)) || Number(duration.value) < 5 || Number(duration.value) > 15))
-    duration.value = "5";
+  const minDuration = Number(duration.min);
+  if (!Number.isInteger(Number(duration.value)) || Number(duration.value) < minDuration || Number(duration.value) > 15)
+    duration.value = String(Math.max(5, minDuration));
   [...ratio.options].forEach((option) => {
-    option.hidden = grok ? !["16:9","9:16","1:1","4:3","3:4"].includes(option.value) : !fal && option.value !== "9:16";
+    option.hidden = grok
+      ? !["16:9", "9:16", "1:1", "4:3", "3:4"].includes(option.value)
+      : falSeedance
+        ? option.value === "adaptive"
+        : legacy916Only && option.value !== "9:16";
   });
-  ratio.value = grok ? "16:9" : fal ? "adaptive" : "9:16";
-});
+  if (grok) ratio.value = "16:9";
+  else if (fal && !falSeedance) ratio.value = "adaptive";
+  else if (falSeedance && ratio.value === "adaptive") ratio.value = "16:9";
+  else if (legacy916Only) ratio.value = "9:16";
+};
+$("dispatchForm").elements.route.addEventListener("change", syncDispatchRouteControls);
+$("falModelSelect")?.addEventListener?.("change", syncDispatchRouteControls);
 
 window.addEventListener("DOMContentLoaded", () => {
   if (window.studioEmbedded) {

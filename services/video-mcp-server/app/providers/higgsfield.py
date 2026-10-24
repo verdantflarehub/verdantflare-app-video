@@ -50,7 +50,7 @@ class HiggsfieldAdapter:
                  "aspect_ratios": sorted(RATIOS | ({"21:9"} if model in {"seedance_2_5", "seedance_2_5_draft"} else set())),
                  "modes": (["reference_to_video"] if model == "seedance_2_5_draft" else
                            ["text_to_video", "reference_to_video"] if model == "wan3_0" else
-                           ["text_to_video"] if model == "seedance_2_5" else ["text_to_video", "image_to_video"]),
+                           ["text_to_video"]),
                  "reference_limits": {"images": 4, "videos": 1, "audios": 0} if model in {"wan3_0", "seedance_2_5_draft"} else None,
                  "poll": True, "cancel": False, "callback": False, "verification_status": "not_recorded"}
                 for model, bounds in MODELS.items()]
@@ -134,12 +134,7 @@ class HiggsfieldAdapter:
                     _, info = self.reference_source(project_id, ref["artifact_id"], kind)
                     sources.append(info)
         elif refs["images"]:
-            if model != "grok_video_v15_lite":
-                raise ValueError("unsupported_references")
-            ref = refs["images"][0]
-            if not isinstance(ref, dict) or set(ref) != {"artifact_id", "purpose"} or ref["purpose"] != "first_frame":
-                raise ValueError("first_frame_reference_required")
-            _, source = self.executor.grok.source(project_id, ref["artifact_id"])
+            raise ValueError("unsupported_references")
         if source and aspect_ratio is None:
             aspect_ratio = next((ratio for ratio in sorted(RATIOS) if
                 abs(source["width"] * int(ratio.split(":")[1]) - source["height"] * int(ratio.split(":")[0])) <=

@@ -80,7 +80,8 @@ const videoCapabilityCatalog=[
       "video.sr.status",
       "video.sr.result",
       "video.sr.preview"
-    ]
+    ],
+    "pending": true
   },
   {
     "id": "video.interpolate",
@@ -107,11 +108,11 @@ const videoCapabilityCatalog=[
       "video.h3.latent.upscale.result",
       "video.h3.latent.upscale.preview"
     ],
-    "pending": false
+    "pending": true
   }
 ];
 
-function catalogCapabilities(){return `<h2 class="service-subheading">能力目录</h2><p class="business-muted">当前发布定义 · 工具就绪情况取决于对应渠道</p><div class="business-models">${videoCapabilityCatalog.map(c=>`<article class="business-card catalog-card"><h3>${escapeHTML(c.title)}</h3><p>${escapeHTML(c.description)}</p><dl class="catalog-meta"><dt>输入</dt><dd>${escapeHTML(c.input)}</dd><dt>输出</dt><dd>${escapeHTML(c.output)}</dd></dl><details><summary>${c.tools.length} 个工具</summary>${c.tools.map(t=>`<p><code>${escapeHTML(t)}</code></p>`).join('')}</details></article>`).join('')}</div>`}
+function catalogCapabilities(){return `<h2 class="service-subheading">能力目录</h2><p class="business-muted">当前发布定义 · 工具就绪情况取决于对应渠道</p><div class="business-models">${videoCapabilityCatalog.map(c=>`<article class="business-card catalog-card"><h3>${escapeHTML(c.title)}</h3>${c.pending?'<p class="catalog-execution" data-execution-state="catalog_only">仅目录收录 · 暂未部署</p>':''}<p>${escapeHTML(c.description)}</p><dl class="catalog-meta"><dt>输入</dt><dd>${escapeHTML(c.input)}</dd><dt>输出</dt><dd>${escapeHTML(c.output)}</dd></dl><details><summary>${c.tools.length} 个工具</summary>${c.tools.map(t=>`<p><code>${escapeHTML(t)}</code></p>`).join('')}</details></article>`).join('')}</div>`}
 
 const modelCatalogView = new VideoCatalogView($('modelServices'), () => api('/api/model-catalog'));
 let businessBusy = false, resourceSelection = null, resourceOrigin = null, resourceRevision = 0;
