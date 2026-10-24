@@ -746,7 +746,10 @@ async function handleTaskAction(action, id, ratingAction) {
       if (!trimmed || trimmed === current) return;
       await api(`/api/tasks/${encodeURIComponent(id)}/title`, {
         method: "POST",
-        body: JSON.stringify({ title: trimmed }),
+        body: JSON.stringify({
+          title: trimmed,
+          expected_title_revision: Number(task?.title_revision ?? 0),
+        }),
       });
       notice(`已更新任务名称：${trimmed}`);
       await refresh();
