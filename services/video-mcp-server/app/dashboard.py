@@ -16,6 +16,7 @@ from starlette.routing import Route
 from starlette.concurrency import run_in_threadpool
 
 from .artifacts import ArtifactError, ArtifactNotFound
+from .content_rating import ContentRatingError, ContentRatingStore, include_nsfw_from_headers
 from .executor import ExecutionError
 from .resources import Resources
 from .tasks import TaskConflict, TaskNotFound, TaskRecord, TaskStore
@@ -70,7 +71,14 @@ class ImportRequest(BaseModel):
 class TitleUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     title: str
-    expected_title_revision: int = Field(ge=0)
+    expected_title_revision: int | None = Field(default=None, ge=0)
+
+
+class ContentRatingUpdate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    action: str
+    reason: str | None = None
+    note: str | None = None
 
 
 def task_channel(record):
@@ -116,7 +124,7 @@ def task_presentation(record):
             "generation_code": code, "generation_label": explanation}
 
 
-def public_task(record, store=None):
+def public_task(record, store=None, ratings_store=None):
     record = TaskStore.with_timing(record)
     model = record.request.get("model")
     if not model:
@@ -127,6 +135,7 @@ def public_task(record, store=None):
             "h3-latent-upscale": "h3-latent-upscaler",
         }.get(record.service)
     naming = titles.project(store, record) if store is not None else {'title': titles.fallback(record), 'title_source': 'fallback', 'title_revision': 0, 'title_updated_at': None}
+    ui_fields = store.record_ui_fields(record, ratings_store, can_write=True) if store is not None else {"content_rating": "unrated", "can_clear_rating": False, "can_mark_rating": True}
     return {**naming, "video_task_id": record.video_task_id, "project_id": record.project_id,
             "idempotency_key": record.idempotency_key, "service": record.service, "route": record.runtime_route or record.request.get("route"),
             "model": model, "presentation": task_presentation(record),
@@ -141,7 +150,8 @@ def public_task(record, store=None):
             "completed_at": record.completed_at or (record.updated_at if record.status in {"succeeded", "failed", "cancelled"} else None),
             "artifact_id": (record.delivery or {}).get("final_artifact_id") or record.artifact_id, "media": record.media, "error": record.error, "collection": public_collection(record),
             "input_digest": record.input_digest, "execution_instance_id": record.execution_instance_id, "association_source": "runtime" if record.execution_instance_id else None, "runtime_stage": record.runtime_stage,
-            "dispatched_at": record.dispatched_at, "timing": record.timing, "runtime_metrics": record.runtime_metrics}
+            "dispatched_at": record.dispatched_at, "timing": record.timing, "runtime_metrics": record.runtime_metrics,
+            **ui_fields}
 
 
 class Dashboard:
@@ -153,10 +163,25 @@ class Dashboard:
         self.sync_errors = 0
         self.synced_at = None
 
-    def records(self):
-        self.executor.tasks.ensure_ready()
+    def _stores(self, request: Request | None = None):
+        tasks_store = getattr(request.app.state, "tasks", None) if request is not None else None
+        if tasks_store is None:
+            tasks_store = self.executor.tasks
+        artifacts_store = getattr(request.app.state, "artifacts", None) if request is not None else None
+        if artifacts_store is None:
+            artifacts_store = self.executor.artifacts
+        ratings_store = getattr(request.app.state, "ratings", None) if request is not None else None
+        if ratings_store is None or ratings_store.db_path != tasks_store.db_path:
+            ratings_store = ContentRatingStore(tasks_store.db_path, domain="video")
+            if request is not None:
+                request.app.state.ratings = ratings_store
+        return tasks_store, artifacts_store, ratings_store
+
+    def records(self, tasks_store=None):
+        store = tasks_store or self.executor.tasks
+        store.ensure_ready()
         records = []
-        for path in self.executor.tasks.root.glob("video_task_*.json"):
+        for path in store.root.glob("video_task_*.json"):
             try:
                 records.append(TaskRecord.model_validate_json(path.read_text()))
             except (OSError, ValueError):
@@ -208,12 +233,16 @@ class Dashboard:
             await asyncio.sleep(2)
 
     def snapshot(self, request):
+        tasks_store, _, ratings_store = self._stores(request)
+        include_nsfw = include_nsfw_from_headers(request.headers)
         query = request.query_params
         page = max(1, int(query.get("page", "1")))
         size = max(1, min(100, int(query.get("page_size", "24"))))
-        records = self.records()
+        records = self.records(tasks_store)
         visible = []
         for record in records:
+            if not include_nsfw and tasks_store.is_record_nsfw(record, ratings_store):
+                continue
             if record.service == "higgsfield":
                 try:
                     self.executor.higgsfield.authorize_record(record)
@@ -230,7 +259,14 @@ class Dashboard:
         options = project_options(self.executor.client, projects)
         project_labels = {item["id"]: item["label"] for item in options}
         channels = [{"id": c, "label": channel_label(c)} for c in sorted({task_channel(r) for r in records})]
-        rows = [public_task(r, self.executor.tasks) for r in records]
+        rows = [
+            {
+                **public_task(r, tasks_store),
+                "task_id": r.video_task_id,
+                **tasks_store.record_ui_fields(r, ratings_store, can_write=True),
+            }
+            for r in records
+        ]
         channel = query.get("channel", "all")
         if channel != "all":
             rows = [r for r in rows if r["presentation"]["channel_id"] == channel]
@@ -258,31 +294,81 @@ class Dashboard:
                 "services": dict(self.services), "grok_capability": self.executor.grok.capability(),
                 "synced_at": self.synced_at, "sync_errors": self.sync_errors}
 
-    def detail(self, task_id):
-        record = self.executor.tasks.get(task_id)
+    def list_tasks_api(self, request):
+        tasks_store, _, ratings_store = self._stores(request)
+        include_nsfw = include_nsfw_from_headers(request.headers)
+        query = request.query_params
+        project_id = query.get("project_id")
+        service = query.get("service")
+        route = query.get("route")
+        status = query.get("status")
+        limit = max(1, min(200, int(query.get("limit", "50"))))
+        offset = max(0, int(query.get("offset", "0")))
+        records, total = tasks_store.list_tasks(
+            project_id=project_id,
+            service=service,
+            route=route,
+            status=status,
+            limit=limit,
+            offset=offset,
+            include_nsfw=include_nsfw,
+            ratings_store=ratings_store,
+        )
+        items = [
+            {
+                **public_task(r, tasks_store),
+                "task_id": r.video_task_id,
+                **tasks_store.record_ui_fields(r, ratings_store, can_write=True),
+            }
+            for r in records
+        ]
+        return {"tasks": items, "total": total, "limit": limit, "offset": offset}
+
+    def task_stats_api(self, request):
+        tasks_store, _, ratings_store = self._stores(request)
+        include_nsfw = include_nsfw_from_headers(request.headers)
+        project_id = request.query_params.get("project_id")
+        return tasks_store.get_stats(
+            project_id=project_id,
+            include_nsfw=include_nsfw,
+            ratings_store=ratings_store,
+        )
+
+    def detail(self, task_id, request=None):
+        tasks_store, artifacts_store, ratings_store = self._stores(request)
+        include_nsfw = include_nsfw_from_headers(request.headers) if request is not None else False
+        record = tasks_store.get(task_id)
+        if not include_nsfw and tasks_store.is_record_nsfw(record, ratings_store):
+            raise TaskNotFound(f"NOT_FOUND: {task_id}")
         if record.service == "higgsfield":
             self.executor.higgsfield.authorize_record(record)
         if record.service == "fal":
             self.executor.fal.authorize_record(record)
-        value = public_task(record, self.executor.tasks)
+        value = public_task(record, tasks_store)
+        value["task_id"] = record.video_task_id
+        value.update(tasks_store.record_ui_fields(record, ratings_store, can_write=True))
         value["runtime_version"] = record.runtime_version or self.executor.runtime_version
         value["references"] = []
         for kind, items in record.request.get("references", {}).items():
             for item in items:
                 try:
-                    artifact = self.executor.artifacts.get(item["artifact_id"], record.project_id)
+                    artifact = artifacts_store.get(item["artifact_id"], record.project_id)
                     value["references"].append({"kind": kind, "purpose": item["purpose"], **artifact.model_dump()})
                 except (ArtifactError, ValueError):
                     value["references"].append({"kind": kind, "purpose": item["purpose"], "unavailable": True})
         artifact_id = (record.delivery or {}).get("final_artifact_id") or record.artifact_id
         if artifact_id:
-            value["artifact"] = self.executor.artifacts.get(artifact_id, record.project_id).model_dump()
+            value["artifact"] = artifacts_store.get(artifact_id, record.project_id).model_dump()
         if record.service == "higgsfield" and record.status == "succeeded":
             value.update(self.executor.higgsfield.public_result(record))
         return value
 
-    def thumbnail(self, task_id):
-        record = self.executor.tasks.get(task_id)
+    def thumbnail(self, task_id, request=None):
+        tasks_store, artifacts_store, ratings_store = self._stores(request)
+        include_nsfw = include_nsfw_from_headers(request.headers) if request is not None else False
+        record = tasks_store.get(task_id)
+        if not include_nsfw and tasks_store.is_record_nsfw(record, ratings_store):
+            raise TaskNotFound(f"NOT_FOUND: {task_id}")
         if record.service == "higgsfield":
             self.executor.higgsfield.authorize_record(record)
         if record.service == "fal":
@@ -305,10 +391,10 @@ class Dashboard:
             if not artifact_id:
                 return JSONResponse({"error": "preview_unavailable"}, status_code=404)
             try:
-                artifact = self.executor.artifacts.get(artifact_id, record.project_id)
+                artifact = artifacts_store.get(artifact_id, record.project_id)
                 if not (artifact.media_type or "").startswith("video/"):
                     return JSONResponse({"error": "preview_unavailable"}, status_code=404)
-                source_path = self.executor.artifacts.content_path(artifact)
+                source_path = artifacts_store.content_path(artifact)
                 digest = artifact.sha256
             except (ArtifactNotFound, FileNotFoundError):
                 return JSONResponse({"error": "preview_unavailable"}, status_code=404)
@@ -316,7 +402,7 @@ class Dashboard:
                 return JSONResponse({"error": "preview_extraction_failed"}, status_code=422)
         if not Path(source_path).is_file():
             return JSONResponse({"error": "preview_unavailable"}, status_code=404)
-        directory = self.executor.artifacts.root / "previews"
+        directory = artifacts_store.root / "previews"
         directory.mkdir(parents=True, exist_ok=True)
         output = directory / f"{digest}.jpg"
         with self.result_lock:
@@ -359,32 +445,52 @@ class Dashboard:
     async def endpoint(self, request: Request):
         try:
             action = request.url.path
+            if action.startswith("/video/"):
+                action = action[len("/video"):]
             if action == "/api/model-catalog":
                 value = self.executor.catalog_view()
             elif action == "/api/capabilities":
                 value = self.executor.capabilities()
             elif action == "/api/dashboard":
                 value = await run_in_threadpool(self.snapshot, request)
+            elif action == "/api/tasks/stats":
+                value = await run_in_threadpool(self.task_stats_api, request)
+            elif action == "/api/tasks" and request.method == "GET":
+                value = await run_in_threadpool(self.list_tasks_api, request)
             elif action.endswith("/thumbnail"):
-                return await run_in_threadpool(self.thumbnail, request.path_params["task_id"])
+                return await run_in_threadpool(self.thumbnail, request.path_params["task_id"], request)
             elif action.endswith("/content"):
-                record = self.executor.tasks.get(request.path_params["task_id"])
+                tasks_store, _, ratings_store = self._stores(request)
+                include_nsfw = include_nsfw_from_headers(request.headers)
+                record = tasks_store.get(request.path_params["task_id"])
+                if not include_nsfw and tasks_store.is_record_nsfw(record, ratings_store):
+                    return JSONResponse({"error": "not_found"}, status_code=404)
                 if record.service != "higgsfield":
                     return JSONResponse({"error": "not_found"}, status_code=404)
                 path = await run_in_threadpool(self.executor.higgsfield.content_path, record)
                 return FileResponse(path, media_type="video/mp4", filename=record.video_task_id + ".mp4",
                                     headers={"Cache-Control": "private, no-store"})
             elif request.method == "GET":
-                value = await run_in_threadpool(self.detail, request.path_params["task_id"])
+                value = await run_in_threadpool(self.detail, request.path_params["task_id"], request)
+            elif request.method == "DELETE" or action.endswith("/delete"):
+                task_id = request.path_params["task_id"]
+                def _delete():
+                    tasks_store, _, _ = self._stores(request)
+                    return tasks_store.delete_task(task_id)
+                value = await run_in_threadpool(_delete)
             elif action.endswith("/result"):
                 def result():
-                    record = self.executor.tasks.get(request.path_params["task_id"])
+                    tasks_store, _, ratings_store = self._stores(request)
+                    include_nsfw = include_nsfw_from_headers(request.headers)
+                    record = tasks_store.get(request.path_params["task_id"])
+                    if not include_nsfw and tasks_store.is_record_nsfw(record, ratings_store):
+                        raise TaskNotFound(f"NOT_FOUND: {request.path_params['task_id']}")
                     if record.service == "higgsfield":
                         self.executor.higgsfield.authorize_record(record)
                     if record.service == "fal":
                         self.executor.fal.authorize_record(record)
                     self.executor.result(request.path_params["task_id"])
-                    return self.detail(request.path_params["task_id"])
+                    return self.detail(request.path_params["task_id"], request)
                 value = await run_in_threadpool(result)
             else:
                 body = bytearray()
@@ -394,8 +500,64 @@ class Dashboard:
                         return JSONResponse({"error": "request_too_large"}, status_code=413)
                 if action.endswith('/title'):
                     inputs = TitleUpdate.model_validate_json(body)
-                    naming = await run_in_threadpool(titles.rename, self.executor, request.path_params['task_id'], **inputs.model_dump())
-                    value = {'video_task_id': request.path_params['task_id'], **naming}
+                    task_id = request.path_params['task_id']
+                    if inputs.expected_title_revision is not None:
+                        naming = await run_in_threadpool(
+                            titles.rename,
+                            self.executor,
+                            task_id,
+                            title=inputs.title,
+                            expected_title_revision=inputs.expected_title_revision,
+                        )
+                    else:
+                        def _rename_simple():
+                            tasks_store, _, _ = self._stores(request)
+                            record = tasks_store.get(task_id)
+                            current = titles.project(tasks_store, record)
+                            return titles.update(tasks_store, record, inputs.title, current["title_revision"])
+                        naming = await run_in_threadpool(_rename_simple)
+                    value = {'video_task_id': task_id, **naming}
+                elif action.endswith('/content-rating'):
+                    inputs = ContentRatingUpdate.model_validate_json(body or b"{}")
+                    act = inputs.action.strip().lower()
+                    if act not in {"mark", "clear"}:
+                        raise ValueError("action must be 'mark' or 'clear'")
+                    task_id = request.path_params["task_id"]
+                    actor_user_id = (
+                        request.headers.get("X-User-Id")
+                        or request.headers.get("X-VF-User-Id")
+                        or "dashboard_user"
+                    ).strip() or "dashboard_user"
+                    reason_text = (inputs.reason or inputs.note or ("manual_mark_nsfw" if act == "mark" else "manual_clear")).strip()
+                    def _update_rating():
+                        tasks_store, _, ratings_store = self._stores(request)
+                        record = tasks_store.get(task_id)
+                        vids = tasks_store.task_version_ids(record)
+                        target_vids = vids if vids else [record.video_task_id]
+                        for vid in target_vids:
+                            if act == "mark":
+                                ratings_store.mark_rating(
+                                    version_id=vid,
+                                    project_id=record.project_id,
+                                    task_id=record.video_task_id,
+                                    actor_user_id=actor_user_id,
+                                    reason=reason_text,
+                                )
+                            else:
+                                ratings_store.clear_rating(
+                                    version_id=vid,
+                                    project_id=record.project_id,
+                                    task_id=record.video_task_id,
+                                    actor_user_id=actor_user_id,
+                                    note=reason_text,
+                                )
+                        new_rating = "nsfw" if act == "mark" else "general"
+                        return {
+                            "status": "ok",
+                            "video_task_id": record.video_task_id,
+                            "content_rating": new_rating,
+                        }
+                    value = await run_in_threadpool(_update_rating)
                 elif action == "/api/artifacts/import":
                     inputs = ImportRequest.model_validate_json(body)
                     artifact = await run_in_threadpool(self.executor.import_asset, **inputs.model_dump())
@@ -429,7 +591,7 @@ class Dashboard:
             return JSONResponse({"error": "title_conflict"}, status_code=409)
         except TaskConflict:
             return JSONResponse({"error": "idempotency_conflict"}, status_code=409)
-        except (ValidationError, ValueError, KeyError, TypeError):
+        except (ValidationError, ValueError, KeyError, TypeError, ContentRatingError):
             return JSONResponse({"error": "invalid_request"}, status_code=400)
         except (ExecutionError, ArtifactError, httpx.HTTPError):
             return JSONResponse({"error": "upstream_operation_failed"}, status_code=502)
@@ -466,11 +628,25 @@ class Dashboard:
                 Route("/dashboard/frontend/{name:path}", asset),
                 Route("/dashboard/static/{name:path}", asset),
                 Route("/dashboard/tasks/{task_id:str}", task_shell),
-                Route("/api/dashboard", self.endpoint), Route("/api/capabilities", self.endpoint),
-                Route("/api/model-catalog", self.endpoint), Route("/api/tasks", self.endpoint, methods=["POST"]),
-                Route("/api/tasks/{task_id:str}", self.endpoint),
+                Route("/api/dashboard", self.endpoint), Route("/video/api/dashboard", self.endpoint),
+                Route("/api/capabilities", self.endpoint), Route("/video/api/capabilities", self.endpoint),
+                Route("/api/model-catalog", self.endpoint), Route("/video/api/model-catalog", self.endpoint),
+                Route("/api/tasks", self.endpoint, methods=["GET", "POST"]),
+                Route("/video/api/tasks", self.endpoint, methods=["GET", "POST"]),
+                Route("/api/tasks/stats", self.endpoint, methods=["GET"]),
+                Route("/video/api/tasks/stats", self.endpoint, methods=["GET"]),
+                Route("/api/tasks/{task_id:str}", self.endpoint, methods=["GET", "DELETE"]),
+                Route("/video/api/tasks/{task_id:str}", self.endpoint, methods=["GET", "DELETE"]),
+                Route("/api/tasks/{task_id:str}/delete", self.endpoint, methods=["POST"]),
+                Route("/video/api/tasks/{task_id:str}/delete", self.endpoint, methods=["POST"]),
+                Route("/api/tasks/{task_id:str}/content-rating", self.endpoint, methods=["POST"]),
+                Route("/video/api/tasks/{task_id:str}/content-rating", self.endpoint, methods=["POST"]),
                 Route("/api/tasks/{task_id:str}/thumbnail", self.endpoint),
+                Route("/video/api/tasks/{task_id:str}/thumbnail", self.endpoint),
                 Route("/api/tasks/{task_id:str}/content", self.endpoint),
+                Route("/video/api/tasks/{task_id:str}/content", self.endpoint),
                 Route("/api/tasks/{task_id:str}/result", self.endpoint, methods=["POST"]),
+                Route("/video/api/tasks/{task_id:str}/result", self.endpoint, methods=["POST"]),
                 Route("/api/tasks/{task_id:str}/title", self.endpoint, methods=["POST"]),
+                Route("/video/api/tasks/{task_id:str}/title", self.endpoint, methods=["POST"]),
                 Route("/api/artifacts/import", self.endpoint, methods=["POST"])]

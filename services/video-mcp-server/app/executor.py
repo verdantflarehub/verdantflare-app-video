@@ -267,7 +267,13 @@ class VideoExecutor:
                                  "reference_duration_seconds": {"minimum": 2, "maximum": 15},
                                  "max_image_pixels": 16 * 1024 * 1024, "max_video_pixels": 4096 * 2160,
                                  "max_video_decoded_pixels": 1_000_000_000, "max_video_fps": 120,
-                                 "audio_channels": [1, 2]}}
+                                 "audio_channels": [1, 2]},
+                "content_rating": {
+                    "supported": True,
+                    "tool": "video.rate_content",
+                    "rubric_version": "rubric v1.0",
+                    "add_only": True,
+                }}
 
     @property
     def imports(self):

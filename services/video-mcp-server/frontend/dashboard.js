@@ -128,6 +128,7 @@ const thumbnailFailures = new Map();
 let modalTask = null,
   modalUrls = [],
   restoreFocus = null,
+  openMenuTaskId = null,
   revision = 0;
 const escapeHTML = (v) =>
   String(v ?? "").replace(
@@ -473,6 +474,7 @@ function reconcileGallery(html, tasks) {
     if (card) {
       existing.delete(id);
       card.setAttribute("aria-label", next.getAttribute("aria-label"));
+      card.classList.toggle("menu-open", openMenuTaskId === id);
       for (const selector of [".task-identity", ".card-badges", ".card-body"]) {
         const current = card.querySelector(selector),
           replacement = next.querySelector(selector);
@@ -537,17 +539,28 @@ function render(data) {
     : "暂无符合条件的任务。可调整筛选，或新建运镜任务。";
   const badge = (t) =>
     `<span class="badge-status ${t.status === "succeeded" ? "completed" : escapeHTML(t.status)}">${t.runtime_stage === "submission_unknown" ? "提交待确认" : t.runtime_stage === "collect_retry" ? "回收重试中" : escapeHTML(taskStatusLabel(t))}</span>`;
+  const nsfwBadge = (t) =>
+    t.content_rating === "nsfw"
+      ? `<span class="badge-tag badge-nsfw" data-rating="nsfw">18+</span>`
+      : "";
+  const cardActionMenu = (t) => {
+    const id = escapeHTML(t.video_task_id);
+    const isNsfw = t.content_rating === "nsfw";
+    const toggleLabel = isNsfw ? "移除 18+ 标记" : "标记为 18+ (NSFW)";
+    const isOpen = openMenuTaskId === t.video_task_id;
+    return `<div class="card-more-wrap"><button type="button" class="card-more-btn" data-menu-toggle="${id}" aria-label="更多操作" aria-haspopup="menu" aria-expanded="${isOpen ? "true" : "false"}">···</button><div class="card-action-menu${isOpen ? " open" : ""}" role="menu" data-menu-for="${id}"${isOpen ? "" : " hidden"}><button type="button" class="card-action-item" role="menuitem" data-task-action="edit" data-task-id="${id}">编辑</button><button type="button" class="card-action-item" role="menuitem" data-task-action="toggle-nsfw" data-task-id="${id}" data-rating-action="${isNsfw ? "clear" : "mark"}">${toggleLabel}</button><button type="button" class="card-action-item danger" role="menuitem" data-task-action="delete" data-task-id="${id}">删除</button></div></div>`;
+  };
   const galleryHTML = loadedTasks
     .map(
       (t) =>
-        `<article class="model-card" tabindex="0" role="button" data-task="${escapeHTML(t.video_task_id)}" aria-label="查看 ${escapeHTML(taskDisplayName(t))}"><div class="card-thumb-wrap">${thumbPlaceholderHTML(t)}${taskIdentity(t)}<div class="card-badges">${badge(t)}</div><div class="card-times"><span title="开始时间">${date(t.created_at)}</span><span title="${t.service === "higgsfield" ? generationTimeHint : "排队 / 运行"}">${elapsed(t)}</span></div></div><div class="card-body"><div><div class="card-title-row"><span title="${escapeHTML(taskDisplayName(t))}">${escapeHTML(taskDisplayName(t))}</span></div><p class="card-prompt">${escapeHTML(taskPrompt(t))}</p></div><div class="card-footer"><div class="model-tags">${taskTags(t)}</div><span class="card-footer-action">查看</span></div></div></article>`,
+        `<article class="model-card${openMenuTaskId === t.video_task_id ? " menu-open" : ""}" tabindex="0" role="button" data-task="${escapeHTML(t.video_task_id)}" aria-label="查看 ${escapeHTML(taskDisplayName(t))}"><div class="card-thumb-wrap">${thumbPlaceholderHTML(t)}${taskIdentity(t)}<div class="card-badges">${nsfwBadge(t)}${badge(t)}</div><div class="card-times"><span title="开始时间">${date(t.created_at)}</span><span title="${t.service === "higgsfield" ? generationTimeHint : "排队 / 运行"}">${elapsed(t)}</span></div></div><div class="card-body"><div><div class="card-title-row"><span title="${escapeHTML(taskDisplayName(t))}">${escapeHTML(taskDisplayName(t))}</span></div><p class="card-prompt">${escapeHTML(taskPrompt(t))}</p></div><div class="card-footer"><div class="model-tags">${taskTags(t)}</div>${cardActionMenu(t)}</div></div></article>`,
     )
     .join("");
   reconcileGallery(galleryHTML, loadedTasks);
   const tableHTML = loadedTasks
     .map(
       (t) =>
-        `<tr><td title="${escapeHTML(taskDisplayName(t))}">${escapeHTML(taskDisplayName(t))}</td><td>${taskTableIdentity(t)}</td><td>${escapeHTML((t.prompt || "").slice(0, 100))}</td><td>${escapeHTML(t.duration_seconds)}s · ${escapeHTML(t.aspect_ratio)}</td><td>${elapsed(t)}</td><td>${badge(t)}</td><td><button class="button" data-task="${escapeHTML(t.video_task_id)}">${t.status === "succeeded" ? "回放" : "详情"}</button></td></tr>`,
+        `<tr data-task="${escapeHTML(t.video_task_id)}"><td title="${escapeHTML(taskDisplayName(t))}">${escapeHTML(taskDisplayName(t))}</td><td>${taskTableIdentity(t)}</td><td>${escapeHTML((t.prompt || "").slice(0, 100))}</td><td>${escapeHTML(t.duration_seconds)}s · ${escapeHTML(t.aspect_ratio)}</td><td>${elapsed(t)}</td><td>${nsfwBadge(t)}${badge(t)}</td><td>${cardActionMenu(t)}</td></tr>`,
     )
     .join("");
   if ($("taskRows").innerHTML !== tableHTML)
@@ -708,6 +721,66 @@ function dispatch() {
     $("attemptInput").value = `shot/${crypto.randomUUID()}`;
   openModal("dispatchModal");
 }
+function closeAllActionMenus() {
+  openMenuTaskId = null;
+  document.querySelectorAll(".card-action-menu").forEach((menu) => {
+    menu.hidden = true;
+    menu.classList.remove("open");
+  });
+  document.querySelectorAll("button[data-menu-toggle]").forEach((btn) => {
+    btn.setAttribute("aria-expanded", "false");
+  });
+  document.querySelectorAll(".model-card.menu-open, tr.menu-open").forEach((el) => {
+    el.classList.remove("menu-open");
+  });
+}
+async function handleTaskAction(action, id, ratingAction) {
+  if (!id) return;
+  const task = loadedTasks.find((t) => t.video_task_id === id);
+  try {
+    if (action === "edit") {
+      const current = task ? taskDisplayName(task) : "";
+      const nextTitle = window.prompt("编辑任务名称（1–64 字）：", current);
+      if (nextTitle == null) return;
+      const trimmed = nextTitle.trim();
+      if (!trimmed || trimmed === current) return;
+      await api(`/api/tasks/${encodeURIComponent(id)}/title`, {
+        method: "POST",
+        body: JSON.stringify({
+          title: trimmed,
+          expected_title_revision: Number(task?.title_revision ?? 0),
+        }),
+      });
+      notice(`已更新任务名称：${trimmed}`);
+      await refresh();
+    } else if (action === "toggle-nsfw") {
+      const nextAction =
+        ratingAction || (task?.content_rating === "nsfw" ? "clear" : "mark");
+      const reason =
+        nextAction === "mark" ? "manual_mark_nsfw" : "manual_clear_nsfw";
+      await api(`/api/tasks/${encodeURIComponent(id)}/content-rating`, {
+        method: "POST",
+        body: JSON.stringify({ action: nextAction, reason }),
+      });
+      notice(
+        nextAction === "mark" ? "已标记为 18+ (NSFW)。" : "已移除 18+ 标记。",
+      );
+      await refresh();
+    } else if (action === "delete") {
+      const name = task ? taskDisplayName(task) : id;
+      if (!window.confirm(`确认删除任务「${name}」吗？此操作不可恢复。`)) return;
+      await api(`/api/tasks/${encodeURIComponent(id)}/delete`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      loadedTasks = loadedTasks.filter((t) => t.video_task_id !== id);
+      notice(`已删除任务：${name}`);
+      await refresh();
+    }
+  } catch (error) {
+    notice(error.message || "操作失败，请稍后重试。", true);
+  }
+}
 document.addEventListener("click", (event) => {
   const retryBtn = event.target?.closest?.("button[data-thumb-retry]");
   if (retryBtn) {
@@ -716,7 +789,37 @@ document.addEventListener("click", (event) => {
     retryThumbnail(retryBtn.dataset.thumbRetry);
     return;
   }
-  const target = event.target?.closest?.("button,a,article");
+  const menuToggle = event.target?.closest?.("button[data-menu-toggle]");
+  if (menuToggle) {
+    event.preventDefault();
+    event.stopPropagation();
+    const id = menuToggle.dataset.menuToggle;
+    const wrap = menuToggle.closest(".card-more-wrap");
+    const menu = wrap?.querySelector(".card-action-menu");
+    const willOpen = menu ? menu.hidden : openMenuTaskId !== id;
+    closeAllActionMenus();
+    if (willOpen && menu) {
+      openMenuTaskId = id;
+      menu.hidden = false;
+      menu.classList.add("open");
+      menuToggle.setAttribute("aria-expanded", "true");
+      wrap.closest(".model-card, tr")?.classList.add("menu-open");
+    }
+    return;
+  }
+  const actionBtn = event.target?.closest?.("button[data-task-action]");
+  if (actionBtn) {
+    event.preventDefault();
+    event.stopPropagation();
+    const action = actionBtn.dataset.taskAction;
+    const id = actionBtn.dataset.taskId;
+    const ratingAction = actionBtn.dataset.ratingAction;
+    closeAllActionMenus();
+    handleTaskAction(action, id, ratingAction);
+    return;
+  }
+  if (openMenuTaskId) closeAllActionMenus();
+  const target = event.target?.closest?.("button,a,article,tr[data-task]");
   if (target?.dataset.action === "token") openModal("tokenModal");
   if (target?.dataset.action === "dispatch") dispatch();
   if (target?.dataset.action === "refresh") refresh();

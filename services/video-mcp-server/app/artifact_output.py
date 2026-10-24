@@ -39,7 +39,7 @@ def publish(tasks, record, path, media):
     with path.open("rb") as stream:
         if path.stat().st_size != media["size"] or hashlib.file_digest(stream, "sha256").hexdigest() != media["sha256"]:
             raise ValueError("media_integrity_failed")
-    # Persist verifiable producer evidence before Artifact asks us for authority.
+    # Persist verifiable producer evidence and deterministic write_id before uploading to Artifact.
     state["produced_media"] = media
     state.setdefault("artifact_write_id", uuid7())
     record = tasks.update(record, runtime_stage="collecting", media=media, provider_state=state)

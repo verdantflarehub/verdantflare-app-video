@@ -3,9 +3,14 @@ import hashlib
 import os
 from urllib.parse import quote, urlparse
 
-import boto3
-from botocore.config import Config
-from botocore.exceptions import BotoCoreError, ClientError
+try:
+    import boto3
+    from botocore.config import Config
+    from botocore.exceptions import BotoCoreError, ClientError
+except ImportError:  # pragma: no cover
+    boto3 = None
+    Config = None
+    BotoCoreError = ClientError = Exception
 import httpx
 
 from .artifacts import require_project_id

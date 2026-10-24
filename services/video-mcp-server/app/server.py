@@ -22,8 +22,9 @@ from starlette.routing import Mount, Route
 
 from .artifacts import ArtifactError, ArtifactNotFound, ArtifactStore, require_project_id
 from . import __version__, titles
+from .content_rating import ContentRatingError, ContentRatingStore, include_nsfw_from_headers
 from .executor import ExecutionError, VideoExecutor
-from .dashboard import Dashboard
+from .dashboard import Dashboard, public_task
 from .registry import EtcdRegistry
 from .collection import public_collection
 from .tasks import TaskConflict, TaskNotFound, TaskStore
@@ -33,9 +34,49 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 artifacts = ArtifactStore.from_environment()
 tasks = TaskStore.from_environment()
+ratings = ContentRatingStore(tasks.db_path, domain="video")
 executor = VideoExecutor(artifacts, tasks)
 dashboard = Dashboard(executor)
 mcp = MCPServer("VerdantFlare Video")
+
+
+def _active_tasks() -> TaskStore:
+    state = getattr(globals().get("app"), "state", None)
+    return getattr(state, "tasks", None) or executor.tasks
+
+
+def _active_artifacts() -> ArtifactStore:
+    state = getattr(globals().get("app"), "state", None)
+    return getattr(state, "artifacts", None) or executor.artifacts
+
+
+def _active_ratings() -> ContentRatingStore:
+    state = getattr(globals().get("app"), "state", None)
+    return getattr(state, "ratings", None) or ratings
+
+
+def _is_task_nsfw(record) -> bool:
+    return _active_tasks().is_record_nsfw(record, _active_ratings())
+
+
+def _resolve_rating_target(version_id: str, project_id: str | None = None) -> tuple[str, str, str | None]:
+    vid = (version_id or "").strip()
+    if not vid:
+        raise TaskNotFound("NOT_FOUND: empty version_id")
+    t_store = _active_tasks()
+    a_store = _active_artifacts()
+    task_rec = t_store.find_by_artifact_or_task(vid)
+    if task_rec is not None:
+        if project_id and task_rec.project_id != project_id:
+            raise TaskNotFound(f"NOT_FOUND: {vid}")
+        primary_vid = (task_rec.delivery or {}).get("final_artifact_id") or task_rec.artifact_id or vid
+        resolved_vid = vid if vid != task_rec.video_task_id else primary_vid
+        return resolved_vid, task_rec.project_id, task_rec.video_task_id
+    try:
+        art = a_store.get(vid, project_id)
+    except (ArtifactError, ValueError) as e:
+        raise TaskNotFound(f"NOT_FOUND: {vid}") from e
+    return art.artifact_id, art.project_id, None
 
 VIDEO_TOOLS_SCHEMA = [
     {
@@ -204,24 +245,36 @@ def video_h3_latent_generate(source_video_task_id: str, project_id: str | None =
 @mcp.tool(name="video.h3.latent.upscale.status")
 @_latent_errors
 def video_h3_latent_status(video_task_id: str) -> types.CallToolResult:
+    if _is_task_nsfw(_active_tasks().get(video_task_id)):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
     adapter = executor.processing["h3-latent-upscale"]
     record = adapter.status(video_task_id)
+    if _is_task_nsfw(record):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
     return _result({**adapter.public_status(record), **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.h3.latent.upscale.result")
 @_latent_errors
 def video_h3_latent_result(video_task_id: str) -> types.CallToolResult:
+    if _is_task_nsfw(_active_tasks().get(video_task_id)):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
     adapter = executor.processing["h3-latent-upscale"]
     record = adapter.result(video_task_id)
+    if _is_task_nsfw(record):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
     return _result({**adapter.public_result(record), **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.h3.latent.upscale.preview")
 @_latent_errors
 def video_h3_latent_preview(video_task_id: str) -> types.CallToolResult:
+    if _is_task_nsfw(_active_tasks().get(video_task_id)):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
     adapter = executor.processing["h3-latent-upscale"]
     record = adapter.result(video_task_id)
+    if _is_task_nsfw(record):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
     return _result({**adapter.public_result(record, preview=True), **titles.project(executor.tasks, record)})
 
 
@@ -236,20 +289,32 @@ def video_depth_generate(project_id: str, idempotency_key: str, source_artifact_
 
 @mcp.tool(name="video.depth.status")
 def video_depth_status(video_task_id: str) -> types.CallToolResult:
+    if _is_task_nsfw(_active_tasks().get(video_task_id)):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
     record = executor.depth.status(video_task_id)
+    if _is_task_nsfw(record):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
     return _result({**executor.depth.public_status(record), **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.depth.result")
 def video_depth_result(video_task_id: str) -> types.CallToolResult:
+    if _is_task_nsfw(_active_tasks().get(video_task_id)):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
     record = executor.depth.result(video_task_id)
+    if _is_task_nsfw(record):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
     return _result({**executor.depth.public_result(record), **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.depth.preview")
 def video_depth_preview(video_task_id: str) -> types.CallToolResult:
     """Get an immutable side-by-side source RGB / grayscale depth MP4."""
+    if _is_task_nsfw(_active_tasks().get(video_task_id)):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
     record = executor.depth.result(video_task_id)
+    if _is_task_nsfw(record):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
     return _result({**executor.depth.public_result(record, preview=True), **titles.project(executor.tasks, record)})
 
 
@@ -281,46 +346,73 @@ def video_interpolate_generate(project_id: str, idempotency_key: str, source_art
 
 @mcp.tool(name="video.sr.status")
 def video_sr_status(video_task_id: str) -> types.CallToolResult:
+    if _is_task_nsfw(_active_tasks().get(video_task_id)):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
     adapter = executor.processing["sr"]
     record = adapter.status(video_task_id)
+    if _is_task_nsfw(record):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
     return _result({**adapter.public_status(record), **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.sr.result")
 def video_sr_result(video_task_id: str) -> types.CallToolResult:
+    if _is_task_nsfw(_active_tasks().get(video_task_id)):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
     adapter = executor.processing["sr"]
     record = adapter.result(video_task_id)
+    if _is_task_nsfw(record):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
     return _result({**adapter.public_result(record), **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.sr.preview")
 def video_sr_preview(video_task_id: str) -> types.CallToolResult:
+    if _is_task_nsfw(_active_tasks().get(video_task_id)):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
     adapter = executor.processing["sr"]
     record = adapter.result(video_task_id)
+    if _is_task_nsfw(record):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
     return _result({**adapter.public_result(record, preview=True), **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.interpolate.status")
 def video_interpolate_status(video_task_id: str) -> types.CallToolResult:
-    authorize(executor.client, tasks.get(video_task_id).project_id)
+    existing = _active_tasks().get(video_task_id)
+    if _is_task_nsfw(existing):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
+    authorize(executor.client, existing.project_id)
     adapter = executor.processing["interpolate"]
     record = adapter.status(video_task_id)
+    if _is_task_nsfw(record):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
     return _result({**adapter.public_status(record), **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.interpolate.result")
 def video_interpolate_result(video_task_id: str) -> types.CallToolResult:
-    authorize(executor.client, tasks.get(video_task_id).project_id)
+    existing = _active_tasks().get(video_task_id)
+    if _is_task_nsfw(existing):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
+    authorize(executor.client, existing.project_id)
     adapter = executor.processing["interpolate"]
     record = adapter.result(video_task_id)
+    if _is_task_nsfw(record):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
     return _result({**adapter.public_result(record), **titles.project(executor.tasks, record)})
 
 
 @mcp.tool(name="video.interpolate.preview")
 def video_interpolate_preview(video_task_id: str) -> types.CallToolResult:
-    authorize(executor.client, tasks.get(video_task_id).project_id)
+    existing = _active_tasks().get(video_task_id)
+    if _is_task_nsfw(existing):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
+    authorize(executor.client, existing.project_id)
     adapter = executor.processing["interpolate"]
     record = adapter.result(video_task_id)
+    if _is_task_nsfw(record):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
     return _result({**adapter.public_result(record, preview=True), **titles.project(executor.tasks, record)})
 
 
@@ -510,15 +602,20 @@ def video_status(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
     tid = video_task_id or task_id
     if not tid:
         return _result({"error": "task_id is required"})
-    existing = executor.tasks.get(tid)
+    t_store = _active_tasks()
+    existing = t_store.get(tid)
+    if _is_task_nsfw(existing):
+        raise TaskNotFound(f"NOT_FOUND: {tid}")
     if existing.service == 'higgsfield':
         executor.higgsfield.authorize_record(existing)
     if existing.service == 'fal':
         executor.fal.authorize_record(existing)
     if existing.service == 'interpolate' or existing.request.get('postprocess'):
         authorize(executor.client, existing.project_id)
-    record = executor.status(tid)
-    return _result({**titles.project(executor.tasks, record), "task_id": record.video_task_id, "video_task_id": record.video_task_id, "status": record.status,
+    record = executor.status(tid) if t_store is executor.tasks else existing
+    if _is_task_nsfw(record):
+        raise TaskNotFound(f"NOT_FOUND: {tid}")
+    return _result({**titles.project(t_store, record), "task_id": record.video_task_id, "video_task_id": record.video_task_id, "status": record.status,
                     "created_at": record.created_at, "updated_at": record.updated_at, "error": record.error,
                     "timing": record.timing, "runtime_metrics": record.runtime_metrics, "delivery": record.delivery,
                     "collection": public_collection(record),
@@ -533,31 +630,106 @@ def video_result(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
     tid = video_task_id or task_id
     if not tid:
         return _result({"error": "task_id is required"})
-    existing = executor.tasks.get(tid)
+    t_store = _active_tasks()
+    a_store = _active_artifacts()
+    existing = t_store.get(tid)
+    if _is_task_nsfw(existing):
+        raise TaskNotFound(f"NOT_FOUND: {tid}")
     if existing.service == 'higgsfield':
         executor.higgsfield.authorize_record(existing)
     if existing.service == 'fal':
         executor.fal.authorize_record(existing)
     if existing.service == 'interpolate' or existing.request.get('postprocess'):
         authorize(executor.client, existing.project_id)
-    record = executor.result(tid)
+    if t_store is executor.tasks:
+        record = executor.result(tid)
+    else:
+        if existing.status not in {"succeeded", "completed"}:
+            raise ExecutionError(f"task_not_completed:{existing.status}")
+        record = existing
+    if _is_task_nsfw(record):
+        raise TaskNotFound(f"NOT_FOUND: {tid}")
     if record.service == 'higgsfield':
-        return _result({**executor.higgsfield.public_result(record), **titles.project(executor.tasks, record)})
+        return _result({**executor.higgsfield.public_result(record), **titles.project(t_store, record)})
     if record.service in executor.processing:
         res = executor.processing[record.service].public_result(record)
         res["task_id"] = record.video_task_id
-        return _result({**res, **titles.project(executor.tasks, record)})
+        return _result({**res, **titles.project(t_store, record)})
     if record.service == "depth":
         res = executor.depth.public_result(record)
         res["task_id"] = record.video_task_id
-        return _result({**res, **titles.project(executor.tasks, record)})
-    artifact = artifacts.get(record.artifact_id, record.project_id)
+        return _result({**res, **titles.project(t_store, record)})
+    artifact = a_store.get(record.artifact_id, record.project_id)
     value = {"task_id": record.video_task_id, "video_task_id": record.video_task_id, "artifact_id": artifact.artifact_id,
-             "model": record.request["model"], "runtime_version": record.runtime_version or executor.runtime_version,
+             "model": record.request.get("model", "minimax-h3-ref2va"), "runtime_version": record.runtime_version or executor.runtime_version,
              "runtime_route": record.runtime_route, "service": record.service,
              "input_digest": record.input_digest, "media": record.media, "delivery": record.delivery,
-             "download_path": artifacts.download_path(artifact.artifact_id)}
-    return _result({**value, **titles.project(executor.tasks, record)})
+             "download_path": a_store.download_path(artifact.artifact_id)}
+    return _result({**value, **titles.project(t_store, record)})
+
+
+@mcp.tool(name="video.list")
+def video_list(
+    project_id: str | None = None,
+    service: str | None = None,
+    route: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> types.CallToolResult:
+    """List video generation tasks (NSFW-rated tasks are unconditionally excluded from MCP)."""
+    t_store = _active_tasks()
+    r_store = _active_ratings()
+    records, total = t_store.list_tasks(
+        project_id=project_id,
+        service=service,
+        route=route,
+        status=status,
+        limit=limit,
+        offset=offset,
+        include_nsfw=False,
+        ratings_store=r_store,
+    )
+    _ui_only = {"content_rating", "content_rating_detail", "can_clear_rating", "can_mark_rating"}
+    return _result({
+        "tasks": [
+            {
+                **{k: v for k, v in public_task(r, t_store, r_store).items() if k not in _ui_only},
+                "task_id": r.video_task_id,
+            }
+            for r in records
+        ],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    })
+
+
+@mcp.tool(name="video.rate_content")
+def video_rate_content(
+    version_id: str,
+    rating: str,
+    reason: str,
+    rubric_version: str = "rubric v1.0",
+    project_id: str | None = None,
+) -> types.CallToolResult:
+    """Record an add-only content rating (general | nsfw) for a generated video version."""
+    resolved_vid, resolved_project_id, resolved_task_id = _resolve_rating_target(
+        version_id, project_id=project_id
+    )
+    try:
+        res = _active_ratings().rate_content(
+            version_id=resolved_vid,
+            project_id=resolved_project_id,
+            task_id=resolved_task_id,
+            rating=rating,
+            reason=reason,
+            rubric_version=rubric_version,
+            rated_by="mcp:video.rate_content",
+        )
+    except ContentRatingError as e:
+        raise ValueError(f"{e.code}: {e}") from e
+    return _result(res)
 
 
 @mcp.tool(name="video.depth")
@@ -611,9 +783,10 @@ def video_title_update(video_task_id: str, title: str, expected_title_revision: 
         return types.CallToolResult(isError=True, content=[types.TextContent(type='text', text='title_conflict: read the latest task before editing')])
 
 
-_registered_title = mcp._tool_manager.get_tool('video.title_update')
-VIDEO_TOOLS_SCHEMA.append({'name': 'video.title_update', 'description': _registered_title.description,
-                           'inputSchema': _registered_title.parameters})
+for _name in ('video.title_update', 'video.list', 'video.rate_content'):
+    _registered_tool = mcp._tool_manager.get_tool(_name)
+    VIDEO_TOOLS_SCHEMA.append({'name': _name, 'description': _registered_tool.description,
+                               'inputSchema': _registered_tool.parameters})
 
 
 for _entry in VIDEO_TOOLS_SCHEMA:
@@ -631,31 +804,109 @@ def transport_security_from_environment() -> TransportSecuritySettings:
 
 
 async def health(request: Request) -> JSONResponse:
-    artifacts.ensure_ready(); tasks.ensure_ready()
+    artifacts.ensure_ready(); tasks.ensure_ready(); ratings.ensure_ready()
     return JSONResponse({"status": "ok", "contract_version": "v1", "version": __version__,
                          "channels": {"higgsfield": executor.higgsfield.channel_health()}})
 
 
 async def artifact_content(request: Request) -> Response:
     try:
-        record = artifacts.get(request.path_params["artifact_id"])
-        return FileResponse(artifacts.content_path(record), media_type=record.media_type, filename=record.filename)
+        artifact_id = request.path_params["artifact_id"]
+        a_store = _active_artifacts()
+        t_store = _active_tasks()
+        r_store = _active_ratings()
+        record = a_store.get(artifact_id)
+        if not include_nsfw_from_headers(request.headers):
+            if r_store.is_nsfw(artifact_id):
+                return JSONResponse({"error": "artifact_not_found"}, status_code=404)
+            linked_task = t_store.find_by_artifact_or_task(artifact_id)
+            if linked_task is not None and t_store.is_record_nsfw(linked_task, r_store):
+                return JSONResponse({"error": "artifact_not_found"}, status_code=404)
+        return FileResponse(a_store.content_path(record), media_type=record.media_type, filename=record.filename)
     except (ValueError, ArtifactNotFound):
         return JSONResponse({"error": "artifact_not_found"}, status_code=404)
 
 
+async def internal_clear_rating(request: Request) -> JSONResponse:
+    version_id = request.path_params["version_id"]
+    actor_user_id = (
+        request.headers.get("X-User-Id")
+        or request.headers.get("X-VF-User-Id")
+        or ""
+    ).strip()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not actor_user_id:
+        actor_user_id = str(body.get("actor_user_id") or "").strip()
+    note = str(body.get("note") or body.get("reason") or "manual_clear").strip()
+    project_id = body.get("project_id")
+    try:
+        resolved_vid, resolved_project_id, resolved_task_id = _resolve_rating_target(
+            version_id, project_id=project_id
+        )
+        res = _active_ratings().clear_rating(
+            version_id=resolved_vid,
+            project_id=resolved_project_id,
+            task_id=resolved_task_id,
+            actor_user_id=actor_user_id,
+            note=note,
+        )
+        return JSONResponse(res)
+    except TaskNotFound:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    except ContentRatingError as e:
+        return JSONResponse({"error": str(e), "code": e.code}, status_code=400)
+
+
+async def internal_mark_rating(request: Request) -> JSONResponse:
+    version_id = request.path_params["version_id"]
+    actor_user_id = (
+        request.headers.get("X-User-Id")
+        or request.headers.get("X-VF-User-Id")
+        or ""
+    ).strip()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not actor_user_id:
+        actor_user_id = str(body.get("actor_user_id") or "").strip()
+    reason = str(body.get("reason") or body.get("note") or "manual_mark_nsfw").strip()
+    project_id = body.get("project_id")
+    try:
+        resolved_vid, resolved_project_id, resolved_task_id = _resolve_rating_target(
+            version_id, project_id=project_id
+        )
+        res = _active_ratings().mark_rating(
+            version_id=resolved_vid,
+            project_id=resolved_project_id,
+            task_id=resolved_task_id,
+            actor_user_id=actor_user_id,
+            reason=reason,
+        )
+        return JSONResponse(res)
+    except TaskNotFound:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    except ContentRatingError as e:
+        return JSONResponse({"error": str(e), "code": e.code}, status_code=400)
+
+
 class BearerAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if request.url.path == "/health" or request.url.path.startswith("/runtime-artifacts/"):
+        raw_path = request.url.path
+        norm_path = raw_path[len("/video"):] if raw_path.startswith("/video/") else raw_path
+        if norm_path == "/health" or norm_path.startswith(("/runtime-artifacts/", "/artifacts/")):
             return await call_next(request)
-        if request.url.path in {"/dashboard", "/dashboard/"} or request.url.path.startswith(("/dashboard/frontend/", "/dashboard/static/", "/dashboard/tasks/")):
+        if norm_path in {"/dashboard", "/dashboard/"} or norm_path.startswith(("/dashboard/frontend/", "/dashboard/static/", "/dashboard/tasks/")):
             response = await call_next(request)
             response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
             response.headers["X-Content-Type-Options"] = "nosniff"
             response.headers["Referrer-Policy"] = "no-referrer"
             return response
         token = os.environ.get("VIDEO_MCP_BEARER_TOKEN", "").strip()
-        if request.url.path.startswith("/api/") and not token:
+        if norm_path.startswith(("/api/", "/internal/")) and not token:
             return JSONResponse({"error": "authentication_not_configured"}, status_code=503)
         if token and not hmac.compare_digest(request.headers.get("authorization", ""), f"Bearer {token}"):
             return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -666,14 +917,14 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             response = await call_next(request)
         finally:
             CALLER.reset(context_token)
-        if request.url.path in {"/mcp", "/api/tasks", "/api/artifacts/import"} or request.url.path.endswith("/result"):
+        if norm_path in {"/mcp", "/api/tasks", "/api/artifacts/import"} or norm_path.endswith("/result"):
             dashboard.resources.record_request(response.status_code >= 400)
         return response
 
 
 @contextlib.asynccontextmanager
 async def lifespan(app: Starlette):
-    artifacts.ensure_ready(); tasks.ensure_ready()
+    artifacts.ensure_ready(); tasks.ensure_ready(); ratings.ensure_ready()
     await registry.start()
     async def delivery_poll():
         while True:
@@ -713,8 +964,16 @@ async def lifespan(app: Starlette):
 
 app = Starlette(routes=[*dashboard.routes(), Route("/health", health),
                         Route("/artifacts/{artifact_id:str}/content", artifact_content),
+                        Route("/video/artifacts/{artifact_id:str}/content", artifact_content),
                         Route("/runtime-artifacts/{artifact_id:str}/content", artifact_content),
+                        Route("/internal/content-ratings/{version_id:str}/clear", internal_clear_rating, methods=["POST"]),
+                        Route("/video/internal/content-ratings/{version_id:str}/clear", internal_clear_rating, methods=["POST"]),
+                        Route("/internal/content-ratings/{version_id:str}/mark", internal_mark_rating, methods=["POST"]),
+                        Route("/video/internal/content-ratings/{version_id:str}/mark", internal_mark_rating, methods=["POST"]),
                         Mount("/", app=mcp.streamable_http_app(json_response=True, stateless_http=True,
                                                                transport_security=transport_security_from_environment()))],
                 lifespan=lifespan)
+app.state.tasks = tasks
+app.state.artifacts = artifacts
+app.state.ratings = ratings
 app.add_middleware(BearerAuthMiddleware)

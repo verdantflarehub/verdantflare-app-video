@@ -15,6 +15,7 @@ from starlette.routing import Route
 
 from . import titles
 from .artifacts import ArtifactError, ArtifactNotFound
+from .content_rating import include_nsfw_from_headers
 from .dashboard import Submission, public_task
 from .tasks import TaskConflict, TaskNotFound
 
@@ -137,13 +138,17 @@ class MemberDashboard:
             value = self.adapter.project_request('list', params)
             return {'items':[{k:p[k] for k in ('project_id','name')} for p in value['items']],
                     'next_cursor':value.get('next_cursor','')}
+        tasks_store, artifacts_store, ratings_store = self.dashboard._stores(request)
+        include_nsfw = include_nsfw_from_headers(request.headers)
         if action == 'assets':
             project = query.get('project_id')
             self.adapter.authorize(project)
             items = []
-            for path in self.executor.artifacts.artifacts_root.glob('art_*/metadata.json'):
+            for path in artifacts_store.artifacts_root.glob('art_*/metadata.json'):
                 try:
-                    item = self.executor.artifacts.get(path.parent.name, project)
+                    item = artifacts_store.get(path.parent.name, project)
+                    if not include_nsfw and ratings_store.is_nsfw(item.artifact_id):
+                        continue
                     if item.media_type.startswith(('image/', 'video/')):
                         items.append(item.model_dump())
                 except (ArtifactError, ValueError):
@@ -152,10 +157,13 @@ class MemberDashboard:
         if action.startswith('assets/') and action.endswith('/content'):
             project = query.get('project_id')
             self.adapter.authorize(project)
-            item = self.executor.artifacts.get(action.split('/')[1], project)
+            asset_id = action.split('/')[1]
+            if not include_nsfw and ratings_store.is_nsfw(asset_id):
+                raise MemberError('not_found', 404)
+            item = artifacts_store.get(asset_id, project)
             if not item.media_type.startswith(('image/', 'video/')):
                 raise MemberError('not_found', 404)
-            return FileResponse(self.executor.artifacts.content_path(item), media_type=item.media_type,
+            return FileResponse(artifacts_store.content_path(item), media_type=item.media_type,
                                 headers={'Cache-Control':'private, no-store'})
         if action.startswith('imports/'):
             self.adapter.authorize(body.get('project_id'))
@@ -172,29 +180,39 @@ class MemberDashboard:
             return self.preflight(body)
         if action == 'attempt':
             self.identity(body.get('project_id'), body.get('idempotency_key'))
-            record = self.executor.tasks.find_idempotency(body['project_id'], body['idempotency_key'])
+            record = tasks_store.find_idempotency(body['project_id'], body['idempotency_key'])
             if not record:
                 return {'state':'not_found'}
             self.record(record.video_task_id)
-            return {'state':'found', 'task':public_task(record, self.executor.tasks)}
+            if not include_nsfw and tasks_store.is_record_nsfw(record, ratings_store):
+                return {'state':'not_found'}
+            return {'state':'found', 'task':public_task(record, tasks_store)}
         if action == 'tasks' and request.method == 'POST':
             return self.create(body)
         if action == 'tasks':
             items = []
-            for record in self.dashboard.records():
+            for record in self.dashboard.records(tasks_store):
                 if record.service != 'higgsfield':
+                    continue
+                if not include_nsfw and tasks_store.is_record_nsfw(record, ratings_store):
                     continue
                 try:
                     self.adapter.authorize_record(record)
                 except PermissionError:
                     continue
-                items.append(public_task(record, self.executor.tasks))
+                items.append({
+                    **public_task(record, tasks_store),
+                    'task_id': record.video_task_id,
+                    **tasks_store.record_ui_fields(record, ratings_store, can_write=True),
+                })
             return {'tasks':items}
         parts = action.split('/')
         if len(parts) in {2,3} and parts[0] == 'tasks':
             record = self.record(parts[1])
+            if not include_nsfw and tasks_store.is_record_nsfw(record, ratings_store):
+                raise TaskNotFound('not_found')
             if len(parts) == 2:
-                value = self.dashboard.detail(record.video_task_id)
+                value = self.dashboard.detail(record.video_task_id, request)
                 value['billing'] = {'quoted_credits':(record.provider_state or {}).get('quoted_credits'),
                                     'provider_charge':None, 'reconciliation_status':'unreconciled'}
                 return value
@@ -202,11 +220,11 @@ class MemberDashboard:
                 return FileResponse(self.adapter.content_path(record), media_type='video/mp4',
                     filename=record.video_task_id+'.mp4', headers={'Cache-Control':'private, no-store'})
             if parts[2] == 'thumbnail':
-                return self.dashboard.thumbnail(record.video_task_id)
+                return self.dashboard.thumbnail(record.video_task_id, request)
             if parts[2] == 'result':
                 # A pending result is a normal state, not an HTTP failure.
                 self.adapter.status(record)
-                return self.dashboard.detail(record.video_task_id)
+                return self.dashboard.detail(record.video_task_id, request)
         raise MemberError('not_found', 404)
 
     async def endpoint(self, request):
