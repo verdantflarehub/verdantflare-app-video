@@ -17,5 +17,5 @@
 本地轻量测试：`PYTHONPATH=src python -m pytest tests`。镜像仅由 release GitHub Actions 构建。
 
 - [Huobao 接入设计](https://github.com/verdantflarehub/verdantflare-design/blob/dev/docs/design/studio/details/06-studio-project-design.external-workbench-h3-api.draft.md)
-- [Aliyun 试用部署](https://github.com/verdantflarehub/verdantflare-design/blob/dev/deploys/k8s.ali.wodcloud.com/verdantflare-workbench-trial/README.md)
+- [Aliyun 历史试用部署（已清退）](https://github.com/verdantflarehub/verdantflare-design/blob/22ed06c4/deploys/k8s.ali.wodcloud.com/verdantflare-workbench-trial/README.md)
 - [5090 Video 部署](https://github.com/verdantflarehub/verdantflare-design/blob/dev/deploys/k8s.dev.verdantflarehub.com/verdantflare-video/README.md)
