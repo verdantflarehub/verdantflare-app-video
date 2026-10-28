@@ -42,7 +42,8 @@ class HiggsfieldTest(unittest.TestCase):
         self.assertEqual(record.request["resolution"], "480p")
         self.assertEqual([v["kind"] for v in record.request["sources"]], ["image", "video"])
         from app import server
-        with patch.object(server, "executor", self.executor), patch.object(self.executor.higgsfield, "cost", return_value=12) as quote:
+        with patch.object(server, "executor", self.executor), patch.object(self.executor.higgsfield, "quote", return_value={
+                'credits':12, 'can_submit': True, 'blocked_reason':None, 'expires_at':'test-expiry'}) as quote:
             preview = server.video_preflight(project_id=PROJECT, route="higgsfield", model="seedance_2_5_draft",
                 prompt="dance", duration_seconds=4, references=refs).structured_content
             self.assertEqual(preview["quoted_credits"], 12)
@@ -71,6 +72,11 @@ class HiggsfieldTest(unittest.TestCase):
         self.actor = CALLER.set({"organization_id": ORG, "user_id": USER})
         self.client = httpx.Client(transport=httpx.MockTransport(self.respond))
         self.executor = VideoExecutor(ArtifactStore(self.root), TaskStore(self.root), self.client)
+        # Directory/lease behavior has independent tests. These tests exercise
+        # the adapter after a real registry gate has admitted the exact model.
+        gate = patch.object(self.executor, 'require_channel')
+        self.registry_gate = gate.start()
+        self.addCleanup(gate.stop)
         self.executor.higgsfield.client.close()
         self.executor.higgsfield.client = self.client
 
@@ -86,9 +92,9 @@ class HiggsfieldTest(unittest.TestCase):
             self.assertEqual(uuid.UUID(req.headers["X-Request-Id"]).version, 7)
             return httpx.Response(403 if self.deny_project else 200, json={})
         if req.method == "POST":
+            self.task_id = json.loads(req.content)["request_id"]
             if self.fail_submit:
                 raise httpx.ReadTimeout("synthetic", request=req)
-            self.task_id = json.loads(req.content)["request_id"]
         return httpx.Response(200, json={"request_id": self.task_id, "binding_id": "team",
             "remote_id": REMOTE if self.gateway_stage != "submission_unknown" else None,
             "stage": self.gateway_stage, "status": self.gateway_status, "quoted_credits": 2,
@@ -143,12 +149,12 @@ class HiggsfieldTest(unittest.TestCase):
         record = self.create()
         self.fail_submit = True
         record = self.poll(record)
-        self.assertEqual(record.runtime_stage, "prepared")
+        self.assertEqual(record.runtime_stage, "submission_unknown")
         self.fail_submit = False
         self.poll(record)
         payloads = [json.loads(r.content) for r in self.calls if r.url.host == "gateway.internal" and r.method == "POST"]
-        self.assertEqual(len(payloads), 2)
-        self.assertEqual(payloads[0], payloads[1])
+        self.assertEqual(len(payloads), 1)
+        self.assertTrue(any(r.method == 'GET' and r.url.path.endswith(record.video_task_id) for r in self.calls))
 
     def test_unknown_provider_submission_only_queries_existing_gateway_task(self):
         self.gateway_stage = "submission_unknown"
@@ -156,6 +162,25 @@ class HiggsfieldTest(unittest.TestCase):
         self.poll(record)
         gateway_calls = [r for r in self.calls if r.url.host == "gateway.internal"]
         self.assertEqual([r.method for r in gateway_calls], ["POST", "GET"])
+
+    def test_status_error_cannot_revoke_known_provider_acceptance(self):
+        record = self.poll(self.create())
+        self.assertEqual(record.runtime_task_id, REMOTE)
+        original = self.executor.higgsfield.client
+        def failure(req):
+            if req.url.host == 'project.internal':
+                return self.respond(req)
+            self.assertEqual(req.method, 'GET')
+            return httpx.Response(503, json={'accepted': False, 'error': {
+                'source': 'higgsfield', 'code': 'provider_unavailable',
+                'message': 'Status lookup is temporarily unavailable.'}})
+        with httpx.Client(transport=httpx.MockTransport(failure)) as client:
+            self.executor.higgsfield.client = client
+            observed = self.poll(record)
+        self.executor.higgsfield.client = original
+        self.assertTrue(observed.error['accepted'])
+        self.assertEqual(observed.error['code'], 'provider_unavailable')
+        self.assertEqual(observed.runtime_task_id, REMOTE)
 
     def test_native_output_requires_persisted_media_and_original_identity(self):
         record = self.poll(self.create())
@@ -331,7 +356,7 @@ class HiggsfieldTest(unittest.TestCase):
                 dashboard.detail(record.video_task_id)
             with self.assertRaises(PermissionError):
                 dashboard.thumbnail(record.video_task_id)
-            snapshot = dashboard.snapshot(SimpleNamespace(query_params={}))
+            snapshot = dashboard.snapshot(SimpleNamespace(query_params={}, headers={}, app=SimpleNamespace(state=SimpleNamespace())))
             self.assertEqual(snapshot["tasks"], [])
             self.assertEqual(snapshot["projects"], [])
         finally:

@@ -180,71 +180,17 @@ class VideoExecutor:
         return self.sol_route if record.service == "h3-sol" else self.runtime_route
 
     def catalog_view(self) -> dict[str, object]:
-        """Project adapter facts beside the immutable supplier catalog."""
-        from copy import deepcopy
-        from .providers.fal import FAL_MODEL_ID, FAL_PUBLIC_MODEL, FAL_SD2_MODEL_ID, FAL_SD2_PUBLIC_MODEL
+        from .channel_catalog import project
+        return project(self)
 
-        catalog = deepcopy(self.catalog.snapshot())
-        execution: dict[str, dict[str, object]] = {}
-        fal_channel = next((channel for channel in catalog.get("channels", []) if channel["id"] == "fal"), None)
-        if fal_channel is not None:
-            connected = self.fal.connected()
-            discovered = self.fal.channel_capabilities()
-            catalog["channel_capabilities"] = {"fal": discovered if discovered is not None else
-                {"schema_version": 1, "channel_id": "fal", "state": "unavailable", "capabilities": []}}
-            execution["fal"] = {
-                model["id"]: ({"state": "adapter_connected_unverified" if connected else "adapter_disconnected",
-                               "route": "fal", "model": FAL_PUBLIC_MODEL}
-                              if model.get("upstream_model_id") == FAL_MODEL_ID
-                              else {"state": "adapter_connected_unverified" if connected else "adapter_disconnected",
-                                    "route": "fal", "model": FAL_SD2_PUBLIC_MODEL}
-                              if model.get("upstream_model_id") == FAL_SD2_MODEL_ID
-                              else {"state": "catalog_only"})
-                for model in fal_channel["models"]}
-        hf_channel = next((channel for channel in catalog.get("channels", []) if channel["id"] == "higgsfield"), None)
-        if hf_channel is not None:
-            hf_connected = bool(self.higgsfield.enabled and self.higgsfield.configured())
-            hf_map = {
-                "higgsfield-seedance_2_5": "seedance_2_5",
-                "seedance_2_5": "seedance_2_5",
-                "higgsfield-seedance-2-5-draft": "seedance_2_5_draft",
-                "seedance-2-5-draft": "seedance_2_5_draft",
-                "seedance_2_5_draft": "seedance_2_5_draft",
-                "higgsfield-wan3_0": "wan3_0",
-                "wan3_0": "wan3_0",
-                "higgsfield-grok_video_v15_lite": "grok_video_v15_lite",
-                "grok_video_v15_lite": "grok_video_v15_lite",
-            }
-            execution["higgsfield"] = {
-                model["id"]: ({"state": "adapter_connected_unverified" if hf_connected else "adapter_disconnected",
-                               "route": "higgsfield",
-                               "model": hf_map.get(model["id"]) or hf_map.get(model.get("model_id")) or hf_map.get(model.get("upstream_model_id"))}
-                              if (model["id"] in hf_map or model.get("model_id") in hf_map or model.get("upstream_model_id") in hf_map)
-                              and model.get("execution_status") != "catalog_only"
-                              else {"state": "catalog_only"})
-                for model in hf_channel["models"]}
-        local_channel = next((channel for channel in catalog.get("channels", []) if channel["id"] == "local"), None)
-        if local_channel is not None:
-            sr_configured = bool(os.environ.get("VIDEO_SR_RUNTIME_URL", "").strip())
-            latent_configured = bool(os.environ.get("H3_LATENT_RUNTIME_URL", "").strip() and os.environ.get("H3_LATENT_RUNTIME_TOKEN", "").strip())
-            local_exec = {}
-            for model in local_channel["models"]:
-                mid = model["id"]
-                upstream = model.get("upstream_model_id")
-                if mid in {"local-seedvr2", "seedvr2"} or upstream in {"seedvr2", "video-sr"}:
-                    local_exec[mid] = {"state": "adapter_connected_unverified" if sr_configured else "catalog_only"}
-                elif mid in {"local-h3-latent-upscaler", "h3-latent-upscaler"} or upstream in {"h3-latent-upscaler", "video-h3-latent-upscale"}:
-                    local_exec[mid] = {"state": "adapter_connected_unverified" if latent_configured else "catalog_only"}
-                elif model.get("execution_status") == "catalog_only":
-                    local_exec[mid] = {"state": "catalog_only"}
-                elif upstream in {"MiniMax-H3", "minimax-h3-ref2va"} or mid == "local-h3":
-                    local_exec[mid] = {"state": "adapter_connected_unverified", "route": self.runtime_route, "model": "minimax-h3-ref2va"}
-                else:
-                    local_exec[mid] = {"state": model.get("execution_status", "adapter_connected_unverified")}
-            execution["local"] = local_exec
-        if execution:
-            catalog["execution"] = execution
-        return catalog
+    def require_channel(self, route: str, model: str) -> None:
+        """New submissions only; callers check their stored idempotency record first."""
+        from .channel_errors import ChannelError
+        catalog = self.catalog_view()
+        for entry in catalog.get("execution", {}).get(route, {}).values():
+            if entry.get("model") == model and entry.get("can_submit") is True:
+                return
+        raise ChannelError("channel_unavailable", source=route, accepted=False)
 
     def capabilities(self) -> dict[str, object]:
         """Separate configured adapters, live readiness and unverified GPU combinations."""
@@ -271,6 +217,8 @@ class VideoExecutor:
                 "duration_seconds": {"minimum": 5 if service in {"fal", "h3-sol", "h3-vdn"} else 4, "maximum": 15},
                 "aspect_ratios": sorted(FAL_ASPECT_RATIOS) if route == "fal" else list(ASPECT_RATIOS) if service == "h3-singularity" else ["9:16"],
             })
+            if route == "fal":
+                routes[-1]["modes"] = ["reference_to_video"]
             if service == "h3-singularity":
                 routes[-1].update(quality_profiles=["du-0"], gpu_verified_combinations=[],
                                   verification_status="not_recorded", frame_grid="17k+5", fps=24)
@@ -292,18 +240,24 @@ class VideoExecutor:
                        "configured": self.fal.connected(), "readiness": "not_checked",
                        "limit_scope": "adapter", "duration_seconds": {"minimum": 4, "maximum": 15},
                        "aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+                       "modes": ["reference_to_video"],
                        "resolutions": ["480p", "720p"]})
         routes.extend(self.higgsfield.capabilities())
         catalog = self.catalog_view()
+        dynamic_models = []
+        for channel, entries in catalog.get("execution", {}).items():
+            for entry in entries.values():
+                if entry.get("model"):
+                    dynamic_models.append({"model": entry["model"], "routes": [channel],
+                        "execution_state": entry["state"], "can_submit": entry.get("can_submit", False)})
+        external = {"fal", "grok", "google", "higgsfield"}
+        from .channel_specs import external_routes
+        route_templates = [item for item in routes if item["route"] in external]
+        routes = [item for item in routes if item["route"] not in external]
+        routes.extend(external_routes(route_templates, catalog))
         return {"catalog": catalog, "channel_capabilities": catalog.get("channel_capabilities", {}),
                 "default_model": "minimax-h3-ref2va", "default_route": self.runtime_route,
-                "models": [{"model": "minimax-h3-ref2va"},
-                           {"model": "bytedance-seedance-2.0-reference-to-video", "routes": ["fal"]},
-                           {"model": self.grok.model, "routes": ["grok"]},
-                           *[{"model": m, "routes": ["grok"]} for m in sorted({"grok-imagine-video", "grok-imagine-video-1.5"} - {self.grok.model})],
-                           {"model": self.google.model, "routes": ["google"]},
-                           *[{"model": m, "routes": ["google"]} for m in sorted({"veo-3.1-lite-generate-preview", "veo-3.1-lite-generate-001"} - {self.google.model})],
-                           *[{"model": item["model"], "routes": ["higgsfield"]} for item in self.higgsfield.capabilities()]],
+                "models": [{"model": "minimax-h3-ref2va"}, *dynamic_models],
                 "model_specification": {"aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
                                         "omni_adaptive": True},
                 "postprocess": {"interpolate": self.delivery.capability()},
@@ -489,11 +443,14 @@ class VideoExecutor:
                  references: dict[str, list[dict[str, str]]], route: str | None = None,
                  quality_profile: str | None = None, mode: str | None = None,
                  resolution: str | None = None, postprocess: dict | None = None,
-                 channel_account_id: str | None = None, budget_limit: str | None = None) -> TaskRecord:
+                 channel_account_id: str | None = None, budget_limit: str | None = None,
+                 price_ceiling: float | None = None) -> TaskRecord:
         project_id = require_project_id(project_id)
         if not idempotency_key.strip() or len(idempotency_key) > 128:
             raise ValueError("idempotency_key is invalid")
         route = route or self.runtime_route
+        if route != "higgsfield" and price_ceiling is not None:
+            raise ValueError("price_ceiling_not_supported")
         if route not in {'fal', 'grok', 'google'} and (channel_account_id is not None or budget_limit is not None):
             raise ValueError('channel_budget_not_supported')
         from .delivery import normalize, authorize
@@ -501,7 +458,8 @@ class VideoExecutor:
         if route == "higgsfield":
             return self.higgsfield.generate(project_id=project_id, idempotency_key=idempotency_key,
                 model=model, prompt=prompt, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
-                references=references, quality_profile=quality_profile, mode=mode, resolution=resolution)
+                references=references, quality_profile=quality_profile, mode=mode, resolution=resolution,
+                price_ceiling=price_ceiling)
         if route == "grok":
             return self.grok.generate(project_id=project_id, idempotency_key=idempotency_key,
                 model=model, prompt=prompt, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,

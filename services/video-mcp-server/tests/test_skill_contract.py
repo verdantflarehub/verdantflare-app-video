@@ -66,8 +66,13 @@ class SkillContractTest(unittest.TestCase):
                         {"content_base64": base64.b64encode(b"not an image").decode()},
                         {"content_base64": "A" * (4194304 + 4)},
                         {"source_url": "https://example.invalid/asset.png"}):
-            with self.subTest(updates=list(updates)), self.assertRaises((ValueError, ArtifactError)):
-                server.video_import(**{**self.args, **updates})
+            with self.subTest(updates=list(updates)), mock.patch.object(self.executor.client, "post") as post:
+                result = server.video_import(**{**self.args, **updates}).model_dump(by_alias=True)
+                self.assertTrue(result["isError"])
+                expected = "operation_failed" if "expected_sha256" in updates else "invalid_request"
+                self.assertEqual(result["structuredContent"]["error"]["code"], expected)
+                self.assertEqual(result["structuredContent"]["error"]["source"], "video")
+                post.assert_not_called()
         self.assertEqual(list(self.executor.artifacts.artifacts_root.glob("art_*")), [])
 
     def test_capabilities_do_not_claim_configuration_is_readiness(self):
@@ -76,7 +81,8 @@ class SkillContractTest(unittest.TestCase):
         self.assertEqual(result["default_route"], "h3")
         self.assertIn("16:9", result["model_specification"]["aspect_ratios"])
         routes = {r["route"]: r for r in result["routes"]}
-        self.assertFalse(routes["fal"]["configured"])
+        self.assertNotIn("fal", routes)
+        self.assertEqual(result["channel_capabilities"]["fal"]["state"], "unavailable")
         self.assertEqual(routes["h3"]["readiness"], "not_checked")
         self.assertEqual(routes["h3"]["aspect_ratios"], ["9:16"])
 
@@ -87,9 +93,11 @@ class SkillContractTest(unittest.TestCase):
                        references={"images": [{"artifact_id": artifact["artifact_id"], "purpose": "identity"}]})
         schema = next(t["inputSchema"] for t in server.registry.tools if t["name"] == "video.create")
         validate(request, schema)
-        with mock.patch.object(self.executor.client, "post", side_effect=AssertionError("submitted")):
-            with self.assertRaisesRegex(ValueError, "only 9:16"):
-                server.video_create(**request)
+        with mock.patch.object(self.executor.client, "post") as post:
+            result = server.video_create(**request).model_dump(by_alias=True)
+            self.assertTrue(result["isError"])
+            self.assertEqual(result["structuredContent"]["error"]["code"], "invalid_request")
+            post.assert_not_called()
         self.assertIsNone(self.executor.tasks.find_idempotency("demo", "shot/v1"))
 
     def test_create_uses_host_default_and_preserves_idempotency(self):

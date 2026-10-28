@@ -58,10 +58,13 @@ class FalRouteTest(unittest.TestCase):
         self.environment.start()
         self.authority = mock.patch('app.delivery.authorize', return_value={'organization_id': 'org-one'})
         self.authority.start()
+        self.registration = mock.patch.object(VideoExecutor, 'require_channel')
+        self.registration.start()
 
     def tearDown(self) -> None:
         self.environment.stop()
         self.authority.stop()
+        self.registration.stop()
         self.temporary.cleanup()
 
     def inputs(self, **updates):

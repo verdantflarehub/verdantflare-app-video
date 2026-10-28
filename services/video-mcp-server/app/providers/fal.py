@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from ..artifacts import MAX_ARTIFACT_BYTES, ArtifactError
+from ..channel_errors import ChannelError, channel_error, check_response
 from ..tasks import TaskConflict, TaskRecord
 
 
@@ -177,8 +178,9 @@ class FalAdapter:
         return f"{self.base_url}/{FAL_QUEUE_MODEL_ID}/requests/{request_id}{suffix}"
 
     @staticmethod
-    def _safe_error(code: str, message: str) -> dict[str, str]:
-        return {"code": code, "message": message}
+    def _safe_error(code: str, message: str) -> dict[str, object]:
+        return {"code": code, "message": message, 'source': 'fal',
+                'retryable': code in {'provider_rate_limited', 'provider_unavailable', 'submission_unconfirmed'}}
 
     @classmethod
     def _response_error(cls, response: httpx.Response, *, submission: bool = False) -> dict[str, str]:
@@ -192,6 +194,27 @@ class FalAdapter:
             "submission_unconfirmed" if submission else "provider_failed",
             "fal did not return a confirmed provider response",
         )
+
+    @staticmethod
+    def _channel_error(data, *, status=None, accepted=None, fallback='provider_failed'):
+        error = channel_error(data, source='fal', http_status=status, accepted=accepted)
+        if error.code == 'channel_http_error':
+            code = {400: 'provider_invalid_request', 401: 'provider_auth_failed', 402: 'provider_quota_exhausted',
+                    403: 'provider_auth_failed', 404: 'provider_model_unavailable', 422: 'provider_invalid_request',
+                    429: 'provider_rate_limited'}.get(status, fallback)
+            error = ChannelError(code, source='fal', http_status=status, accepted=accepted)
+        return error.public()
+
+    @staticmethod
+    def _response_body(response):
+        try:
+            if len(response.content) <= 65536:
+                value = response.json()
+                if isinstance(value, dict):
+                    return value
+        except (ValueError, TypeError):
+            pass
+        return {}
 
     @staticmethod
     def _data_uri(media_type: str, payload: bytes, maximum: int) -> str:
@@ -294,7 +317,9 @@ class FalAdapter:
         return request, "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
 
     def _payload(self, record: TaskRecord) -> dict[str, object]:
-        request = record.request
+        return self._request_payload(record.request)
+
+    def _request_payload(self, request: dict) -> dict[str, object]:
         references = request["references"]
         sd2 = request["model"] == FAL_SD2_PUBLIC_MODEL
         payload: dict[str, object] = {
@@ -316,7 +341,7 @@ class FalAdapter:
             values: list[str] = []
             combined_duration = 0.0
             for index, item in enumerate(references[kind], start=1):
-                artifact = self.executor.artifacts.get(item["artifact_id"], record.project_id)
+                artifact = self.executor.artifacts.get(item["artifact_id"], request["project_id"])
                 value, reference_duration = self._artifact_data_uri(artifact, maximum, timed=timed)
                 values.append(value)
                 combined_duration += reference_duration or 0.0
@@ -329,11 +354,10 @@ class FalAdapter:
         payload["prompt"] = "; ".join(tags) + ". " + str(request["prompt"])
         return payload
 
-    def generate(
+    def _normalize_request(
         self,
         *,
         project_id: str,
-        idempotency_key: str,
         model: str,
         prompt: str,
         duration_seconds: int,
@@ -342,7 +366,7 @@ class FalAdapter:
         channel_account_id: str | None = None,
         budget_limit: str | None = None,
         resolution: str | None = None,
-    ) -> TaskRecord:
+    ) -> tuple[dict, str]:
         request, digest = self.normalize(
             project_id=project_id,
             model=model,
@@ -378,11 +402,64 @@ class FalAdapter:
             request["organization_id"] = actor["organization_id"]
             canonical = json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             digest = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+        return request, digest
+
+    def preflight(self, *, project_id, prompt, model=None, duration_seconds=5, aspect_ratio=None,
+                  references, mode=None, resolution=None, quality_profile=None,
+                  channel_account_id=None, budget_limit=None):
+        if mode not in {None, 'reference_to_video'} or quality_profile not in {None, 'du-0'}:
+            raise ChannelError('unsupported_parameter', source='fal', accepted=False)
+        if not self.connected():
+            raise ChannelError('provider_not_configured', source='fal', accepted=False)
+        request, digest = self._normalize_request(project_id=project_id, model=model or FAL_PUBLIC_MODEL,
+            prompt=prompt, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio or '16:9',
+            references=references, resolution=resolution, channel_account_id=channel_account_id,
+            budget_limit=budget_limit)
+        self.executor.require_channel('fal', request['model'])
+        try:
+            payload = self._request_payload(request)
+        except (ArtifactError, OSError, ValueError):
+            raise ChannelError('source_integrity_failed', source='fal', accepted=False) from None
+        provider_model = FAL_SD2_MODEL_ID if request['model'] == FAL_SD2_PUBLIC_MODEL else self.model_id
+        try:
+            response = self.executor.client.post(self.gateway_url + '/v1/video-preflight',
+                headers=self._gateway_headers(request['organization_id']),
+                json={'model_id': provider_model, 'payload': payload,
+                      'account_id': request.get('channel_account_id'), 'budget_limit': request.get('budget_limit')}, timeout=30)
+        except httpx.HTTPError:
+            raise ChannelError('channel_unavailable', source='fal', accepted=False) from None
+        check_response(response, 'fal', accepted=False)
+        try:
+            value = response.json()
+            pricing = value.get('pricing', {})
+            expected_digest = hashlib.sha256(json.dumps([provider_model, payload], sort_keys=True,
+                separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
+            if (value.get('schema_version') != 1 or value.get('channel_id') != 'fal'
+                    or value.get('model_id') != provider_model or type(value.get('can_submit')) is not bool
+                    or pricing.get('model_id') != provider_model or pricing.get('input_digest') != expected_digest):
+                raise ValueError()
+        except (ValueError, AttributeError, TypeError):
+            raise ChannelError('provider_protocol_error', source='fal', accepted=False) from None
+        result = {key: value[key] for key in ('schema_version', 'channel_id', 'can_submit', 'blocked_reason',
+                  'pricing', 'observed_at', 'account_id', 'admission_scope') if key in value}
+        result.update(status='validated', model=request['model'], route='fal', input_digest=digest)
+        if not value['can_submit']:
+            result['error'] = channel_error({'reason_code': value.get('blocked_reason')}, source='fal', accepted=False).public()
+            result['blocked_reason'] = result['error']['code']
+        return result
+
+    def generate(self, *, project_id, idempotency_key, model, prompt, duration_seconds, aspect_ratio,
+                 references, channel_account_id=None, budget_limit=None, resolution=None) -> TaskRecord:
+        request, digest = self._normalize_request(project_id=project_id, model=model, prompt=prompt,
+            duration_seconds=duration_seconds, aspect_ratio=aspect_ratio, references=references,
+            channel_account_id=channel_account_id, budget_limit=budget_limit, resolution=resolution)
         existing = self.executor.tasks.find_idempotency(project_id, idempotency_key)
         if existing:
             if existing.input_digest != digest:
                 raise TaskConflict("idempotency key already exists with different input")
             return existing
+        if self.connected():
+            self.executor.require_channel('fal', model)
         record = self.executor.tasks.create(
             project_id=project_id,
             idempotency_key=idempotency_key,
@@ -446,29 +523,15 @@ class FalAdapter:
                 ),
             )
         if not response.is_success:
-            if self._channel_record(record) and response.status_code not in {400, 401, 403, 404, 409, 422, 429}:
-                return self.executor.tasks.update(record, status='queued', runtime_stage='submission_unknown',
-                    error=self._safe_error('submission_unconfirmed', 'channel acceptance is unknown; query the original operation'))
-            try:
-                code = response.json().get('error')
-            except (ValueError, AttributeError):
-                code = None
-            messages = {'cost_unknown': 'provide an explicit USD budget limit before submitting',
-                        'budget_exceeded': 'channel account budget is insufficient',
-                        'daily_limit_reached': 'channel daily task limit reached',
-                        'account_required': 'select an account or configure the channel default',
-                        'account_disabled': 'the selected channel account is disabled',
-                        'authorization_not_verified': 'verify the channel account authorization',
-                        'historical_cost_unknown': 'historical channel costs require reconciliation',
-                        'proxy_unavailable': 'the configured channel proxy is unavailable',
-                        'legacy_call_requires_recovery': 'recover the existing task through its original route'}
-            if isinstance(code, str) and code in messages:
-                return self.executor.tasks.update(record, status='failed', error=self._safe_error(code, messages[code]))
-            return self.executor.tasks.update(
-                record, status="failed", error=self._response_error(response, submission=True)
-            )
+            data = self._response_body(response)
+            accepted = False if response.status_code in {400, 401, 402, 403, 404, 409, 422, 429} else None
+            error = self._channel_error(data, status=response.status_code, accepted=accepted, fallback='submission_unknown')
+            if error.get('accepted') is not False:
+                return self.executor.tasks.update(record, status='queued', runtime_stage='submission_unknown', error=error)
+            return self.executor.tasks.update(record, status='failed', runtime_stage='remote_rejected', error=error)
+        data = self._response_body(response)
         try:
-            request_id = response.json()["call_id" if self._channel_record(record) else "id" if self._gateway_record(record) else "request_id"]
+            request_id = data["call_id" if self._channel_record(record) else "id" if self._gateway_record(record) else "request_id"]
             if not isinstance(request_id, str) or not FAL_REQUEST_ID_PATTERN.fullmatch(request_id):
                 raise ValueError
         except (ValueError, KeyError, TypeError):
@@ -482,22 +545,26 @@ class FalAdapter:
                     "submission_unconfirmed", "fal submission could not be confirmed; do not resubmit automatically"
                 ),
             )
-        gateway_state = response.json().get("state") if self._gateway_record(record) else "queued"
+        gateway_state = data.get("state") if self._gateway_record(record) else "queued"
         if self._channel_record(record):
-            accepted = response.json().get('accepted')
+            accepted = data.get('accepted')
             if accepted is False:
                 return self.executor.tasks.update(record, runtime_task_id=request_id, status='failed',
-                    error=self._safe_error('provider_rejected', 'channel did not accept the request'))
+                    error=self._channel_error(data, accepted=False, fallback='provider_rejected'))
             if accepted is not True:
                 gateway_state = 'acceptance_unknown'
         if gateway_state in {"submission_unconfirmed", "acceptance_unknown"}:
             return self.executor.tasks.update(record, runtime_task_id=request_id,
                 runtime_stage="submission_unknown", status="queued",
-                error=self._safe_error("submission_unconfirmed", "fal submission requires manual reconciliation"))
-        if gateway_state != "queued":
-            return self.executor.tasks.update(record, status="failed",
-                error=self._safe_error("provider_rejected", "fal rejected the submitted request"))
+                error=self._channel_error(data, fallback='submission_unknown'))
+        if gateway_state in {'failed', 'rejected'} or data.get('failed'):
+            return self.executor.tasks.update(record, runtime_task_id=request_id, status='failed',
+                error=self._channel_error(data, accepted=accepted))
+        if gateway_state not in {'queued', 'in_queue', 'in_progress', 'completed'}:
+            return self.executor.tasks.update(record, runtime_task_id=request_id, status='queued', runtime_stage='submission_unknown',
+                error=self._channel_error(data, fallback='submission_unknown'))
         return self.executor.tasks.update(record, runtime_task_id=request_id,
+            status='succeeded' if gateway_state == 'completed' else 'running' if gateway_state == 'in_progress' else 'queued',
             dispatched_at=datetime.now(UTC).isoformat())
 
     def status(self, record: TaskRecord) -> TaskRecord:
@@ -514,15 +581,17 @@ class FalAdapter:
                 if response.status_code == 404 and self._channel_record(record) and not record.runtime_task_id:
                     return self.executor.tasks.update(record, status='queued', runtime_stage='submission_unknown',
                         error=self._safe_error('submission_unconfirmed', 'original operation is not yet recoverable; do not resubmit'))
-                response.raise_for_status()
+                check_response(response, 'fal', accepted=True if record.runtime_task_id else None)
                 data = response.json()
                 if self._channel_record(record) and not record.runtime_task_id:
                     call_id = data['call_id']
                     if not isinstance(call_id, str) or not FAL_REQUEST_ID_PATTERN.fullmatch(call_id):
                         raise ValueError('invalid_call_id')
                     record = self.executor.tasks.update(record, runtime_task_id=call_id)
-            except (httpx.HTTPError, ValueError, KeyError, TypeError) as error:
-                raise FalError("provider_unavailable") from error
+            except ChannelError:
+                raise
+            except (httpx.HTTPError, ValueError, KeyError, TypeError):
+                raise ChannelError('provider_unavailable', source='fal', accepted=True if record.runtime_task_id else None) from None
             state = data.get("state")
             if self._channel_record(record):
                 if data.get('accepted') is False:
@@ -531,17 +600,17 @@ class FalAdapter:
                     state = 'acceptance_unknown'
             if state in {"submission_unconfirmed", "acceptance_unknown", "queued", "in_queue"}:
                 return self.executor.tasks.update(record, status="queued",
-                    error=record.error if state in {"submission_unconfirmed", "acceptance_unknown"} else None,
+                    error=self._channel_error(data, fallback='submission_unknown') if state in {"submission_unconfirmed", "acceptance_unknown"} else None,
                     runtime_stage="submission_unknown" if state in {"submission_unconfirmed", "acceptance_unknown"} else "remote_queued")
             if state == "in_progress":
                 return self.executor.tasks.update(record, status="running", runtime_stage="remote_running", error=None)
-            if state == "completed" and not data.get("failed"):
+            if state == "completed" and not data.get("failed") and not data.get('error') and not data.get('reason_code'):
                 return self.executor.tasks.update(record, status="succeeded", runtime_stage="completed", error=None,
                     runtime_metrics={"runtime_total_seconds": data["metrics"]["inference_time"]}
                     if isinstance(data.get("metrics"), dict) and isinstance(data["metrics"].get("inference_time"), (int, float)) else None)
             if state in {"completed", "rejected", "failed"}:
                 return self.executor.tasks.update(record, status="failed", runtime_stage="remote_failed",
-                    error=self._safe_error("provider_failed", "fal request failed"))
+                    error=self._channel_error(data, accepted=False if state == 'rejected' else True))
             raise FalError("provider_response_invalid")
         if not record.runtime_task_id or not FAL_REQUEST_ID_PATTERN.fullmatch(record.runtime_task_id):
             return self.executor.tasks.update(
@@ -747,6 +816,8 @@ class FalAdapter:
         except httpx.HTTPError as error:
             raise FalError("provider_unavailable") from error
         if not response.is_success:
+            if self._gateway_record(record):
+                check_response(response, 'fal', accepted=True)
             raise FalError(self._response_error(response)["code"])
         try:
             video_url = response.json()["video_url"] if self._gateway_record(record) else response.json()["video"]["url"]

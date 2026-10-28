@@ -51,13 +51,13 @@ const thumbInFlight = new Set<string>()
 let scrollObserver: IntersectionObserver | null = null
 
 const labels: Record<string, string> = { queued: '排队中', running: '渲染中', succeeded: '已完成', failed: '失败', cancelled: '已取消' }
-const generation = new Set(['h3', 'h3-sol', 'h3-vdn', 'h3-singularity', 'fal', 'grok', 'higgsfield'])
+const generation = new Set(['h3', 'h3-sol', 'h3-vdn', 'h3-singularity', 'fal', 'grok', 'google', 'higgsfield'])
 const operations: Record<string, string> = { h3: '视频生成', 'h3-sol': '视频生成', 'h3-vdn': '视频生成', fal: '视频生成', 'h3-latent-upscale': 'H3 潜空间处理', sr: '视频超分', interpolate: '视频补帧', depth: '深度视频' }
 const services: Record<string, string> = { 'h3-latent-upscale': 'H3 Latent Upscaler', sr: 'Video Super Resolution', interpolate: 'Frame Interpolation', depth: 'Depth Anything' }
 const filtered = computed(() => tasks.value)
 const hasMore = computed(() => total.value > 0 && tasks.value.length < total.value && page.value * 24 < total.value)
-const modelName = (task: Task) => task.presentation?.model_label || task.model || '未记录模型'
-const routeName = (task: Task) => task.presentation?.channel_label || task.route || task.service || '未记录渠道'
+const modelName = (task: Task) => task.presentation?.model_label || '未记录模型'
+const routeName = (task: Task) => task.presentation?.channel_label || '未记录渠道'
 const hasResultPreview = (task: Task) => task.status === 'succeeded' && Boolean(task.artifact_id || (task.service === 'higgsfield' && task.media?.sha256))
 const thumbStatusText = (task: Task) => {
   if (thumbErrors.value[task.video_task_id]) return '首帧提取失败'

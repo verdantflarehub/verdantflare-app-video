@@ -5,6 +5,7 @@ import logging
 import subprocess
 import tempfile
 import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -93,7 +94,7 @@ def channel_label(channel):
             "grok": "xAI", "google": "Google", "unknown": "未记录渠道"}.get(channel, channel)
 
 
-def task_presentation(record):
+def task_presentation(record, catalog=None):
     """UI labels only: keep provider identifiers and stored requests unchanged."""
     local = {"h3", "h3-sol", "h3-vdn", "h3-singularity"}
     generating = record.service in local | {"fal", "grok", "google", "higgsfield"}
@@ -103,13 +104,16 @@ def task_presentation(record):
     model = record.request.get("model")
     if not model and record.service in local:
         model = "minimax-h3-ref2va"  # Historical H3 contract, never a provider fallback.
-    models = {"minimax-h3-ref2va": "MiniMax H3", "minimax-h3": "MiniMax H3",
-              "wan3_0": "Wan 3.0", "grok_video_v15_lite": "Grok Imagine 1.5 Lite",
-              "grok-imagine-video": "Grok Imagine", "seedance_2_5": "Seedance 2.5",
-              "seedance_2_5_draft": "Seedance 2.5 Draft",
-              "veo-3.1-lite-generate-preview": "Veo 3.1 Lite",
-              "veo-3.1-fast-generate-preview": "Veo 3.1 Fast",
-              "veo-3.1-generate-preview": "Veo 3.1"}
+    label = None
+    for entry_channel in (catalog or {}).get("channels", []):
+        if entry_channel["id"] != channel:
+            continue
+        for entry in entry_channel["models"]:
+            execution = (catalog or {}).get("execution", {}).get(channel, {}).get(entry["id"], {})
+            if model and model in {entry.get("model_id"), entry.get("upstream_model_id"), execution.get("model")}:
+                label = entry.get("display_name")
+                break
+    label = label or "未记录模型"
     modes = {"text_to_video": ("T2V", "文生视频"), "image_to_video": ("I2V", "图生视频"),
              "first_last_frame_to_video": ("F2V", "首尾帧视频"),
              "reference_to_video": ("R2V", "参考生视频"), "ref2va": ("R2V", "参考生视频")}
@@ -118,13 +122,13 @@ def task_presentation(record):
         mode = "ref2va"
     code, explanation = modes.get(mode, (None, None)) if generating else (None, None)
     return {"is_generation": generating, "channel_id": channel,
-            "model_label": models.get(model, model or "未记录模型") if generating else None,
+            "model_label": label if generating else None,
             "channel_label": channel_label(channel) if generating else None,
             "channel_icon": ("local" if local_channel else "higgsfield" if route == "higgsfield" else None) if generating else None,
             "generation_code": code, "generation_label": explanation}
 
 
-def public_task(record, store=None, ratings_store=None):
+def public_task(record, store=None, ratings_store=None, catalog=None):
     record = TaskStore.with_timing(record)
     model = record.request.get("model")
     if not model:
@@ -138,7 +142,7 @@ def public_task(record, store=None, ratings_store=None):
     ui_fields = store.record_ui_fields(record, ratings_store, can_write=True) if store is not None else {"content_rating": "unrated", "can_clear_rating": False, "can_mark_rating": True}
     return {**naming, "video_task_id": record.video_task_id, "project_id": record.project_id,
             "idempotency_key": record.idempotency_key, "service": record.service, "route": record.runtime_route or record.request.get("route"),
-            "model": model, "presentation": task_presentation(record),
+            "model": model, "presentation": task_presentation(record, catalog),
             "mode": record.request.get("mode"), "resolution": record.request.get("resolution"),
             "needs_attention": record.runtime_stage == "submission_unknown" or bool(record.error),
             "progress": (record.provider_state or {}).get("progress"),
@@ -162,6 +166,14 @@ class Dashboard:
         self.services = {"h3": "unknown", "h3-sol": "not_connected", "fal": "not_connected", "mcp": "ready"}
         self.sync_errors = 0
         self.synced_at = None
+
+    def _public_task(self, record, store=None, ratings_store=None):
+        # Labels may use a short-lived display cache; submission never uses it.
+        now = time.monotonic()
+        if now >= getattr(self, "_label_catalog_until", 0):
+            self._label_catalog = getattr(self.executor, "catalog_view", lambda: {})()
+            self._label_catalog_until = now + 30
+        return public_task(record, store, ratings_store, self._label_catalog)
 
     def _stores(self, request: Request | None = None):
         tasks_store = getattr(request.app.state, "tasks", None) if request is not None else None
@@ -261,7 +273,7 @@ class Dashboard:
         channels = [{"id": c, "label": channel_label(c)} for c in sorted({task_channel(r) for r in records})]
         rows = [
             {
-                **public_task(r, tasks_store),
+                **self._public_task(r, tasks_store),
                 "task_id": r.video_task_id,
                 **tasks_store.record_ui_fields(r, ratings_store, can_write=True),
             }
@@ -316,7 +328,7 @@ class Dashboard:
         )
         items = [
             {
-                **public_task(r, tasks_store),
+                **self._public_task(r, tasks_store),
                 "task_id": r.video_task_id,
                 **tasks_store.record_ui_fields(r, ratings_store, can_write=True),
             }
@@ -344,7 +356,7 @@ class Dashboard:
             self.executor.higgsfield.authorize_record(record)
         if record.service == "fal":
             self.executor.fal.authorize_record(record)
-        value = public_task(record, tasks_store)
+        value = self._public_task(record, tasks_store)
         value["task_id"] = record.video_task_id
         value.update(tasks_store.record_ui_fields(record, ratings_store, can_write=True))
         value["runtime_version"] = record.runtime_version or self.executor.runtime_version
@@ -581,7 +593,7 @@ class Dashboard:
                         return JSONResponse({"error": "service_not_connected"}, status_code=409)
                     kwargs = inputs.model_dump(exclude={"model"})
                     record, naming = await run_in_threadpool(titles.create, self.executor, model=inputs.model, **kwargs)
-                    value = {**public_task(record, self.executor.tasks), **naming}
+                    value = {**self._public_task(record, self.executor.tasks), **naming}
             return JSONResponse(value, headers={"Cache-Control": "no-store"})
         except (TaskNotFound, ArtifactNotFound):
             return JSONResponse({"error": "not_found"}, status_code=404)

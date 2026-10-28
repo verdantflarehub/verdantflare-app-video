@@ -1,10 +1,9 @@
-"""Google AI Studio (Veo 3.1) video channel adapter via google-channel:8001."""
+"""Google Omni video adapter with explicit legacy Veo task recovery."""
 from __future__ import annotations
 
 import base64
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
-from fractions import Fraction
 import hashlib
 import io
 import json
@@ -18,16 +17,20 @@ import httpx
 from PIL import Image, ImageOps
 
 from ..artifacts import ArtifactNotFound
+from ..channel_errors import ChannelError, check_response, channel_error
 from ..tasks import TaskConflict
 
 RATIOS = ["16:9", "9:16"]
-MODELS = {
+RETIRED_MODELS = {
     "veo-3.1-lite-generate-preview",
     "veo-3.1-fast-generate-preview",
     "veo-3.1-generate-preview",
 }
-DEFAULT_MODEL = "veo-3.1-lite-generate-preview"
+DEFAULT_MODEL = "gemini-omni-1.1-flash"
+MODELS = {DEFAULT_MODEL, *RETIRED_MODELS}
 VERSION = "google-channel-v1"
+MAX_SOURCE_IMAGE_BYTES = 24 * 1024 * 1024
+MAX_SOURCE_IMAGE_PIXELS = 16 * 1024 * 1024
 
 
 class GoogleVideoAdapter:
@@ -54,17 +57,17 @@ class GoogleVideoAdapter:
             "route": "google",
             "provider": "google",
             "model": self.model,
-            "models": sorted(MODELS),
+            "models": [DEFAULT_MODEL],
             "enabled": self.enabled,
             "configured": self.configured(),
             "readiness": "not_checked",
             "verification_status": "not_recorded",
             "adapter_version": VERSION,
             "modes": ["text_to_video", "image_to_video"],
-            "duration_seconds": {"minimum": 4, "maximum": 8},
+            "duration_seconds": {"minimum": 3, "maximum": 10},
             "aspect_ratios": RATIOS,
-            "resolutions": ["720p", "1080p"],
-            "limit_scope": "adapter",
+            "resolutions": ["720p"],
+            "limit_scope": "team_provisional_admission",
             "poll": True,
             "callback": False,
             "cancel": False,
@@ -82,7 +85,7 @@ class GoogleVideoAdapter:
 
     def source(self, project_id, artifact_id):
         asset = self.executor.artifacts.get(artifact_id, project_id)
-        if asset.size > 10 * 1024 * 1024:
+        if asset.size > MAX_SOURCE_IMAGE_BYTES:
             raise ValueError("source_size_exceeded")
         data = self.executor.artifacts.content_path(asset).read_bytes()
         if len(data) != asset.size or hashlib.sha256(data).hexdigest() != asset.sha256:
@@ -91,7 +94,7 @@ class GoogleVideoAdapter:
             with Image.open(io.BytesIO(data)) as im:
                 if im.format not in {"PNG", "JPEG", "WEBP"} or getattr(im, "n_frames", 1) != 1:
                     raise ValueError
-                if im.width * im.height > 16 * 1024 * 1024:
+                if im.width * im.height > MAX_SOURCE_IMAGE_PIXELS:
                     raise ValueError
                 mime = Image.MIME[im.format]
                 im.verify()
@@ -109,11 +112,12 @@ class GoogleVideoAdapter:
         model = model or self.model
         if model not in MODELS:
             raise ValueError("model_route_mismatch")
-        if not isinstance(prompt, str) or not prompt.strip():
+        if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 16000:
             raise ValueError("invalid_prompt")
-        if type(duration_seconds) is not int or not 1 <= duration_seconds <= 15:
+        legacy = model in RETIRED_MODELS
+        if type(duration_seconds) is not int or not (1 <= duration_seconds <= 15 if legacy else 3 <= duration_seconds <= 10):
             raise ValueError("unsupported_duration")
-        resolved_duration = 4 if duration_seconds <= 5 else (6 if duration_seconds <= 6 else 8)
+        resolved_duration = (4 if duration_seconds <= 5 else (6 if duration_seconds <= 6 else 8)) if legacy else duration_seconds
         if not isinstance(references, dict) or set(references) - {"images", "videos", "audios"}:
             raise ValueError("invalid_references")
         refs = {k: references.get(k, []) for k in ("images", "videos", "audios")}
@@ -123,7 +127,7 @@ class GoogleVideoAdapter:
         if mode is not None and mode != resolved_mode:
             raise ValueError("mode_reference_mismatch")
         resolution = resolution or "720p"
-        if resolution not in {"480p", "720p", "1080p"}:
+        if resolution not in ({"480p", "720p", "1080p"} if legacy else {"720p"}):
             raise ValueError("unsupported_resolution")
         resolved_resolution = "720p" if resolution == "480p" else resolution
         info = None
@@ -156,19 +160,48 @@ class GoogleVideoAdapter:
     def _resolve_actor(self, project_id):
         from ..delivery import CALLER, authorize
         caller = CALLER.get() or {}
-        if caller.get("user_id") and caller.get("organization_id") and os.environ.get("VIDEO_PROJECT_SERVICE_URL") and os.environ.get("VIDEO_PROJECT_SERVICE_TOKEN"):
+        if not caller.get("user_id") or not caller.get("organization_id"):
+            raise ChannelError("unauthorized", source="google", accepted=False)
+        if not os.environ.get("VIDEO_PROJECT_SERVICE_URL") or not os.environ.get("VIDEO_PROJECT_SERVICE_TOKEN"):
+            raise ChannelError("channel_unavailable", source="google", accepted=False)
+        try:
             return authorize(self.executor.client, project_id)
-        org_id = str(caller.get("organization_id") or os.environ.get("CHANNEL_DISCOVERY_SCOPE_ID") or os.environ.get("STATION_ORGANIZATION_ID") or "01a0fbf9-0a33-7c31-90d0-a51e3b0a9781").strip()
-        user_id = str(caller.get("user_id") or "video-mcp").strip()
-        return {"organization_id": org_id, "user_id": user_id}
+        except PermissionError:
+            raise ChannelError("project_access_denied", source="google", accepted=False) from None
+
+    @staticmethod
+    def _ceiling(value):
+        # A configured default remains a reservation ceiling, never a provider quote.
+        return str(value if value is not None else os.getenv("VIDEO_GOOGLE_DEFAULT_BUDGET_LIMIT", "2"))
+
+    def payload(self, request):
+        value = {key: request[key] for key in ("prompt", "duration_seconds", "resolution", "aspect_ratio", "mode")}
+        if request["mode"] == "image_to_video":
+            data, info = self.source(request["project_id"], request["references"]["images"][0]["artifact_id"])
+            if info != request["source"]:
+                raise ValueError("source_integrity_failed")
+            value["image"] = {"mime_type": info["mime"], "data": base64.b64encode(data).decode()}
+        return value
+
+    def preflight(self, request, channel_account_id=None, budget_limit=None):
+        if not self.configured():
+            raise ChannelError("channel_unavailable", source="google", accepted=False)
+        actor = self._resolve_actor(request["project_id"])
+        response = self.executor.client.post(self.channel_url + "/v1/video-preflight",
+            headers={"Authorization": "Bearer " + self.channel_token,
+                     "X-Organization-Id": actor["organization_id"], "X-Caller-Id": "video-mcp"},
+            json={"model_id": request["model"], "payload": self.payload(request),
+                  "account_id": channel_account_id, "budget_limit": self._ceiling(budget_limit)}, timeout=30)
+        check_response(response, "google", accepted=False)
+        result = response.json()
+        if (not isinstance(result, dict) or result.get("schema_version") != 1 or result.get("channel_id") != "google"
+                or result.get("model_id") != request["model"] or type(result.get("can_submit")) is not bool):
+            raise ChannelError("provider_protocol_error", source="google", accepted=False)
+        return result
 
     def generate(self, *, idempotency_key, channel_account_id=None, budget_limit=None, **kwargs):
         request, digest = self.normalize(**kwargs)
-        actor = self._resolve_actor(request["project_id"])
-        provider_state = {
-            "organization_id": actor["organization_id"],
-            "budget_limit": str(budget_limit or os.getenv("VIDEO_GOOGLE_DEFAULT_BUDGET_LIMIT", "2")),
-        }
+        provider_state = {"budget_limit": self._ceiling(budget_limit)}
         if channel_account_id is not None:
             provider_state["channel_account_id"] = str(channel_account_id)
         with self.locked():
@@ -176,9 +209,18 @@ class GoogleVideoAdapter:
             if old:
                 if old.input_digest != digest:
                     raise TaskConflict("idempotency_conflict")
+                old_state = old.provider_state or {}
+                if (old_state.get("channel_account_id") != provider_state.get("channel_account_id")
+                        or old_state.get("budget_limit") != provider_state["budget_limit"]):
+                    raise TaskConflict("idempotency_conflict")
                 return old
+            if request["model"] in RETIRED_MODELS:
+                raise ChannelError("model_retired", source="google", accepted=False)
             if not self.enabled or not self.configured():
-                raise ValueError("provider_not_configured")
+                raise ChannelError("channel_unavailable", source="google", accepted=False)
+            self.executor.require_channel("google", request["model"])
+            actor = self._resolve_actor(request["project_id"])
+            provider_state["organization_id"] = actor["organization_id"]
             rec = self.executor.tasks.create(
                 project_id=request["project_id"],
                 idempotency_key=idempotency_key,
@@ -198,11 +240,26 @@ class GoogleVideoAdapter:
             )
             try:
                 return self.submit(rec)
+            except ChannelError:
+                raise
             except (OSError, ValueError):
                 return self.error(rec, "source_integrity_failed", terminal=True)
 
     def save(self, rec, **values):
         return self.executor.tasks.update(rec, **values)
+
+    @staticmethod
+    def call_error(body, fallback="provider_call_failed"):
+        if not body.get("error") and not body.get("reason_code"):
+            return ChannelError(fallback, source="google", accepted=body.get("accepted"))
+        return channel_error(body, source="google", accepted=body.get("accepted"))
+
+    def observe(self, rec, body):
+        state = dict(rec.provider_state or {})
+        for key in ("pricing", "usage", "settlement", "settlement_details"):
+            if isinstance(body.get(key), dict):
+                state[key] = body[key]
+        return self.save(rec, provider_state=state)
 
     def error(self, rec, code, *, terminal=False, stage=None, delay=30):
         state = dict(rec.provider_state or {})
@@ -210,7 +267,7 @@ class GoogleVideoAdapter:
         return self.save(
             rec,
             status="failed" if terminal else "running",
-            error={"code": code, "message": code},
+            error=code.public() if isinstance(code, ChannelError) else ChannelError(code, source="google").public(),
             provider_state=state,
             runtime_stage=stage or ("failed" if terminal else rec.runtime_stage),
         )
@@ -229,18 +286,9 @@ class GoogleVideoAdapter:
         if not self.enabled:
             return rec
         state = dict(rec.provider_state or {})
-        payload = {
-            "prompt": p["prompt"],
-            "duration_seconds": p["duration_seconds"],
-            "resolution": p["resolution"],
-            "aspect_ratio": p["aspect_ratio"],
-            "mode": p["mode"],
-        }
-        if p["mode"] == "image_to_video":
-            data, info = self.source(rec.project_id, p["references"]["images"][0]["artifact_id"])
-            if info != p["source"]:
-                return self.error(rec, "source_integrity_failed", terminal=True)
-            payload["image"] = {"mime_type": info["mime"], "data": base64.b64encode(data).decode()}
+        if p["model"] in RETIRED_MODELS:
+            return self.error(rec, "model_retired", terminal=True)
+        payload = self.payload(p)
         rec = self.save(rec, status="running", runtime_stage="submitting")
         try:
             r = self.executor.client.post(
@@ -253,31 +301,30 @@ class GoogleVideoAdapter:
                     "capability": "video",
                     "payload": payload,
                     "account_id": state.get("channel_account_id"),
-                    "budget_limit": state.get("budget_limit") or "2",
+                    "budget_limit": state.get("budget_limit"),
                 },
                 timeout=60,
             )
-            if r.status_code in {400, 401, 403, 404, 409, 422}:
-                code = "provider_rejected"
-                try:
-                    code = r.json().get("error") or code
-                except Exception:
-                    pass
-                return self.error(rec, code, terminal=True)
-            if not r.is_success:
-                return self.error(rec, f"provider_http_{r.status_code}", stage="submission_unknown")
+            check_response(r, "google")
             body = r.json()
             call_id = body["call_id"]
+            if not isinstance(call_id, str) or not call_id:
+                raise ValueError("invalid_call_id")
+            rec = self.save(rec, runtime_task_id=call_id, dispatched_at=datetime.now(UTC).isoformat())
+            rec = self.observe(rec, body)
             if body.get("accepted") is False or body.get("state") in {"rejected", "failed"}:
-                return self.error(rec, body.get("error") or "provider_rejected", terminal=True)
+                return self.error(rec, self.call_error(body), terminal=True)
             if body.get("accepted") is None or body.get("state") == "acceptance_unknown":
                 return self.save(
                     rec,
                     runtime_task_id=call_id,
                     runtime_stage="submission_unknown",
                     dispatched_at=datetime.now(UTC).isoformat(),
-                    error={"code": "submission_unknown", "message": "submission_unknown"},
+                    error=self.call_error(body, "submission_unknown").public(),
                 )
+        except ChannelError as exc:
+            return self.error(rec, exc, terminal=exc.accepted is False or exc.http_status in {400, 401, 403, 404, 409, 422},
+                              stage="submission_unknown" if exc.accepted is not False and (exc.http_status or 500) >= 500 else None)
         except (httpx.HTTPError, ValueError, KeyError, TypeError):
             return self.error(rec, "submission_unknown", stage="submission_unknown")
         return self.save(
@@ -320,22 +367,28 @@ class GoogleVideoAdapter:
                 r = self.executor.client.get(self.channel_url + path, headers=self._headers(rec), timeout=30)
                 if r.status_code == 404 and not rec.runtime_task_id:
                     return self.error(rec, "submission_unknown", stage="submission_unknown", delay=60)
-                r.raise_for_status()
+                check_response(r, "google")
                 data = r.json()
+                rec = self.observe(rec, data)
+                state = dict(rec.provider_state or {})
                 if not rec.runtime_task_id and isinstance(data.get("call_id"), str):
                     rec = self.save(rec, runtime_task_id=data["call_id"])
                 cstate = data.get("state")
                 if data.get("accepted") is False or cstate in {"rejected", "failed"}:
-                    return self.error(rec, data.get("error") or "provider_rejected", terminal=True)
+                    return self.error(rec, self.call_error(data), terminal=True)
                 if cstate in {"acceptance_unknown", "queued", "in_queue", "in_progress"}:
                     state["poll_count"] = int(state.get("poll_count", 0)) + 1
                     delay = min(10, 2 ** min(3, state["poll_count"]))
                     state["next_poll_at"] = time.time() + delay
-                    return self.save(rec, provider_state=state, status="running", error=None, runtime_stage="remote_pending")
+                    return self.save(rec, provider_state=state, status="running",
+                                     error=self.call_error(data).public() if data.get("error") else None,
+                                     runtime_stage="submission_unknown" if cstate == "acceptance_unknown" else "remote_pending")
                 if cstate != "completed":
                     return self.error(rec, "provider_protocol_error")
                 state.update(next_poll_at=0, progress=100)
                 return self.collect(self.save(rec, runtime_stage="collecting", provider_state=state), state)
+            except ChannelError as exc:
+                return self.error(rec, exc)
             except (httpx.HTTPError, ValueError, TypeError, KeyError, OSError):
                 return self.error(rec, "provider_protocol_error")
 
@@ -351,7 +404,7 @@ class GoogleVideoAdapter:
                     headers=self._headers(rec),
                     timeout=180,
                 ) as response:
-                    response.raise_for_status()
+                    check_response(response, "google")
                     with pending.open("wb") as f:
                         for chunk in response.iter_bytes():
                             count += len(chunk)
@@ -370,6 +423,13 @@ class GoogleVideoAdapter:
                 if hashlib.file_digest(stream, "sha256").hexdigest() != state["result_sha256"]:
                     return self.error(rec, "result_integrity_failed", terminal=True)
             media = self.executor.grok.probe(output)
+            if rec.request.get("model") == DEFAULT_MODEL:
+                expected_size = (720, 1280) if rec.request["aspect_ratio"] == "9:16" else (1280, 720)
+                actual_duration = media.get("duration_ms")
+                if ((media.get("width"), media.get("height")) != expected_size
+                        or type(actual_duration) not in {int, float}
+                        or abs(actual_duration - rec.request["duration_seconds"] * 1000) > 250):
+                    return self.error(self.save(rec, media=media), "media_contract_mismatch", terminal=True)
             artifact_id = "art_" + hashlib.sha256(rec.video_task_id.encode()).hexdigest()[:32]
             try:
                 asset = self.executor.artifacts.get(artifact_id, rec.project_id)
@@ -396,6 +456,8 @@ class GoogleVideoAdapter:
                 provider_state=state,
                 error=None,
             )
+        except ChannelError as exc:
+            return self.error(rec, exc, stage="collect_retry")
         except (OSError, ValueError, KeyError, TypeError, StopIteration, ZeroDivisionError, httpx.HTTPError, subprocess.SubprocessError):
             return self.error(rec, "result_collection_failed", stage="collect_retry")
 

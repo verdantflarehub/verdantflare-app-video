@@ -12,11 +12,6 @@
     higgsfield: '<svg class="channel-logo" width="16" height="16" viewBox="0 0 1355 1355" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect width="1355" height="1355" rx="363" fill="#D1FE17"/><path d="M1088.73 670.726L1087.95 662.156C1080.52 579.906 1026.99 425.16 878.52 425.16C768.341 425.16 685.111 533.914 611.658 629.796C553.046 706.582 502.264 772.452 446.385 772.452C431.533 770.898 412.391 763.49 400.676 746.73C390.125 731.522 387.392 712.035 392.858 688.649C401.448 651.619 450.686 617.315 502.644 580.677C531.161 561.19 560.472 540.529 580.79 520.651C639.402 464.134 669.094 423.205 669.094 357.336C669.094 291.467 632.76 258.716 602.283 244.682C541.331 216.625 451.862 232.994 394.818 282.114C386.227 289.913 377.625 297.31 369.807 304.328C312.371 355.392 273.696 390.086 185 363.571V470.369C302.605 522.216 401.46 423.205 438.97 377.605C467.878 347.592 498.355 330.049 521.024 330.049H522.2C532.359 330.441 540.95 334.34 547.211 341.357C557.37 353.056 561.279 366.699 559.319 381.896C555.018 413.864 521.808 451.273 460.856 492.203C389.352 540.149 269.799 620.444 260.413 721.399C253.379 793.905 290.889 866.4 349.501 894.458C486.247 959.165 569.477 847.684 657.77 729.969C725.365 639.149 789.443 553.01 878.531 553.01C958.625 553.01 988.318 619.271 988.318 660.982V669.173L980.5 670.726C786.318 705.029 680.429 886.67 680.429 970.473C680.429 1054.28 751.541 1126 839.061 1126C941.433 1126 1068.02 1038.69 1088.34 793.123L1089.12 784.162H1170V670.737H1088.73V670.726ZM982.841 796.62C967.216 943.566 891.804 1012.17 846.095 1012.17C825.385 1012.17 796.477 995.021 796.477 963.064C796.477 927.208 850.003 818.454 970.341 786.106L984.409 782.597L982.841 796.632V796.62Z" fill="black"/></svg>',
     fal: '<svg class="channel-logo" width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect width="24" height="24" rx="6" fill="#6C3AED"/><path d="M8.5 7H15.5M8.5 12H13.5M8.5 7V17" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="15.5" cy="15.5" r="1.8" fill="#4CE39A"/></svg>'
   };
-  const channelBillingSummary = {
-    local: '本地算力队列 · 免外部积分',
-    higgsfield: '会员权益 / Credits 计费',
-    fal: '供应商 API 按量计费 (FAL_KEY)'
-  };
   const modeToCap = {
     text_to_video: ['T2V','文生视频'],
     image_to_video: ['I2V','图生视频'],
@@ -203,7 +198,7 @@
           JSON.stringify(this.data.channel_capabilities || {}) === JSON.stringify(data.channel_capabilities || {})) return;
       this.data = data;
       const option = (value,label) => `<option value="${esc(value)}">${esc(label)}</option>`;
-      this.root.innerHTML = `<div class="catalog-toolbar"><label>查看方式<select data-catalog-filter="view">${option('channels','按渠道查看')}${option('models','按模型查看')}</select></label><label class="catalog-search">搜索模型<input type="search" data-catalog-filter="query" placeholder="模型名称、用途或模型 ID" /></label><label>业务<select data-catalog-filter="business">${option('all','全部业务')}${Object.entries(business).map(([id,label])=>option(id,label)).join('')}</select></label><label>渠道<select data-catalog-filter="channel">${option('all','全部渠道')}${data.channels.map(c=>option(c.id,c.display_name)).join('')}</select></label></div><p class="business-muted" data-catalog-count></p><div data-catalog-results></div>`;
+      this.root.innerHTML = `<div class="catalog-toolbar"><label>查看方式<select data-catalog-filter="view">${option('channels','按渠道查看')}${option('models','按模型查看')}</select></label><label class="catalog-search">搜索模型<input type="search" data-catalog-filter="query" placeholder="模型名称或用途" /></label><label>业务<select data-catalog-filter="business">${option('all','全部业务')}${Object.entries(business).map(([id,label])=>option(id,label)).join('')}</select></label><label>渠道<select data-catalog-filter="channel">${option('all','全部渠道')}${data.channels.map(c=>option(c.id,c.display_name)).join('')}</select></label></div><p class="business-muted" data-catalog-count></p><div data-catalog-results></div>`;
       for (const input of this.root.querySelectorAll('[data-catalog-filter]')) input.value = this.filters[input.dataset.catalogFilter];
       this.renderResults();
     }
@@ -213,6 +208,9 @@
       if (!state && entry.channel.id !== 'fal') return '';
       const labels = {
         ready:'执行适配已就绪',
+        enabled:'渠道已开放 · 调用受组织授权与额度限制',
+        disabled:'渠道能力已停用 · 暂不可提交',
+        unavailable:'渠道登记或能力暂不可用 · 暂不可提交',
         adapter_connected_unverified:'执行适配已接入 · 调用受组织授权与额度限制',
         adapter_disconnected:'执行适配已接入 · 服务未连接，暂不可提交',
         catalog_only:'仅目录收录 · 暂不可提交'
@@ -228,8 +226,7 @@
       const h3MaxDirectory = discovered.length > 0;
       const familyKey = familyOf(entry);
       const family = entries.length > 1 && familyKey && entries.every(e => familyOf(e) === familyKey);
-      const title = h3MaxDirectory ? 'MiniMax H3 Max' : family ? model.display_name.split(' · ')[0] : model.display_name;
-      const upstreamId = h3MaxDirectory ? 'minimax/h3-max' : family ? model.upstream_model_id.slice(0, model.upstream_model_id.lastIndexOf('/')) : model.upstream_model_id;
+      const title = h3MaxDirectory || family ? model.display_name.split(' · ')[0] : model.display_name;
       const description = h3MaxDirectory ? `${discovered.length} 项 fal.ai 能力；各端点的输出档位和接入状态见详情。` : family ? `${info.caps.map(([,label]) => label).join("、")}；各模式参数如下。` : descriptionFor(entry);
       const connected = entries.filter(e => this.data.execution?.fal?.[e.model.id]?.state === 'adapter_connected_unverified').length;
       const catalogOnly = entries.filter(e => this.data.execution?.fal?.[e.model.id]?.state === 'catalog_only').length;
@@ -242,9 +239,9 @@
       const outputLabel = entry.channel.id === 'fal' ? '供应商视频输出' : '视频输出';
       const outputFooter = output.length ? `<div class="model-foot"><span class="business-muted">${outputLabel}</span><div class="tags model-tags" aria-label="输出规格胶囊">${output.map(value=>`<span>${esc(value)}</span>`).join('')}</div></div>` : '';
       const discoveredDetails = h3MaxDirectory ? discovered.map(item => {
-        return `<section><h4>${esc(item.display_name)}</h4><p class="model-id-line">端点 ID：<code>${esc(item.endpoint_id)}</code></p><p class="business-muted">最高输出：${esc(highestResolution(item.output_resolutions || []) || '未记录')} · ${item.protocol === 'websocket' ? '交互会话' : '异步任务'} · 仅目录收录，暂不可提交</p></section>`;
+        return `<section><h4>${esc(item.display_name)}</h4><p class="business-muted">最高输出：${esc(highestResolution(item.output_resolutions || []) || '未记录')} · ${item.protocol === 'websocket' ? '交互会话' : '异步任务'} · 仅目录收录，暂不可提交</p></section>`;
       }).join('') : '';
-      return `<article class="business-card catalog-card" data-catalog-card><div class="model-head"><div><span class="business-muted">${esc(business[model.business_type] || model.business_type)}</span><h3>${esc(title)}</h3></div></div><p class="model-id-line">模型 ID：<code>${esc(upstreamId ?? "待核实")}</code></p><p class="model-desc">${esc(description)}</p><div class="model-cap-row">${capPills}</div>${h3MaxDirectory ? '' : inputGuidance(entries) || videoInput}<dl class="model-params">${h3MaxDirectory ? '' : ratios + audioRow}</dl>${summary || (entries.length===1?this.executionStatus(entry):'')}${outputFooter}<details data-catalog-entry="${esc(group.id)}" ${this.open.has(group.id)?'open':''}><summary>能力规格与审核状态</summary><div class="catalog-detail">${discoveredDetails || entries.map(e=>`<section><h4>${esc(e.model.display_name)}</h4><p class="model-id-line">端点 ID：<code>${esc(e.model.upstream_model_id ?? '待核实')}</code></p><p class="model-desc">${esc(descriptionFor(e))}</p>${this.executionStatus(e)}<p class="business-muted">${esc(review[e.model.identity_review])} · ${esc(e.model.billing_modes.map(b=>billing[b]).join(' / '))}</p>${profiles(e.model.team_profiles,'团队适配范围',e.channel.id === 'fal')}${profiles(e.model.supplier_profiles,'供应商声明范围',e.channel.id === 'fal')}</section>`).join('')}</div></details></article>`;
+      return `<article class="business-card catalog-card" data-catalog-card><div class="model-head"><div><span class="business-muted">${esc(business[model.business_type] || model.business_type)}</span><h3>${esc(title)}</h3></div></div><p class="model-desc">${esc(description)}</p><div class="model-cap-row">${capPills}</div>${h3MaxDirectory ? '' : inputGuidance(entries) || videoInput}<dl class="model-params">${h3MaxDirectory ? '' : ratios + audioRow}</dl>${summary || (entries.length===1?this.executionStatus(entry):'')}${outputFooter}<details data-catalog-entry="${esc(group.id)}" ${this.open.has(group.id)?'open':''}><summary>能力规格与审核状态</summary><div class="catalog-detail">${discoveredDetails || entries.map(e=>`<section><h4>${esc(e.model.display_name)}</h4><p class="model-desc">${esc(descriptionFor(e))}</p>${this.executionStatus(e)}<p class="business-muted">${esc(review[e.model.identity_review])} · ${esc(e.model.billing_modes.map(b=>billing[b]).join(' / '))}</p>${profiles(e.model.team_profiles,'团队适配范围',e.channel.id === 'fal')}${profiles(e.model.supplier_profiles,'供应商声明范围',e.channel.id === 'fal')}</section>`).join('')}</div></details></article>`;
     }
     renderResults() {
       if (!this.data) return;
@@ -258,14 +255,14 @@
       const visible = displayRows(filtered);
       this.root.querySelector('[data-catalog-count]').textContent = `${visible.length} 个模型卡片 · ${filtered.reduce((sum,row)=>sum+row.entries.length,0)} 条目录能力 · ${this.data.channels.length} 个渠道${this.data.conflicts.length ? ' · 部分模型身份资料冲突，已分开展示' : ''}`;
       const results = this.root.querySelector('[data-catalog-results]');
-      if (!filtered.length) { results.innerHTML = `<p class="empty">${this.data.groups.length?'暂无符合条件的模型。':'当前未收录模型。'}</p>`; return; }
+      if (!filtered.length) { results.innerHTML = `<p class="empty">${this.data.groups.length?'暂无符合条件的模型。':'当前未收录模型。'}</p>` + this.data.channels.filter(channel => channel.directory_state === 'unavailable').map(channel => `<p role="status">${esc(channel.display_name)}：渠道目录暂不可用，暂不可提交。</p>`).join(''); return; }
       if (this.filters.view === 'channels') results.innerHTML = this.data.channels.map(channel=>{
         const order=new Map(channel.models.map((model,index)=>[model.id,index]));
         const rows = displayRows(filtered.map(row=>({...row,entries:row.entries.filter(e=>e.channel.id===channel.id)})).filter(row=>row.entries.length).sort((a,b)=>order.get(a.entries[0].model.id)-order.get(b.entries[0].model.id)));
-        if (!rows.length) return '';
+        if (!rows.length) return channel.directory_state === 'unavailable' && this.filters.channel === 'all' ? `<section class="catalog-channel-section"><h2>${esc(channel.display_name)}</h2><p role="status">渠道目录暂不可用，暂不可提交。</p></section>` : '';
         const logo = channelLogos[channel.id] || channelLogos.local;
-        const ver = `v${channel.version || channel.channel_version || '0.1.0'}`;
-        const bill = channelBillingSummary[channel.id] || '按渠道计费';
+        const ver = channel.directory_state === 'unavailable' ? '渠道目录不可用' : channel.directory_state === 'available' ? '渠道实时目录' : '已审核规格';
+        const bill = channel.billing_summary || '费用与额度以本次渠道预检为准';
         return `<section class="catalog-channel-section channel-group" data-channel-group="${esc(channel.id)}"><div class="channel-group-header"><div class="channel-group-title"><span class="channel-logo-badge">${logo}</span><h2>${esc(channel.display_name)}</h2></div><div class="channel-group-meta"><span class="channel-meta-pill">${esc(ver)}</span><span class="channel-meta-pill">${rows.length} 个模型</span><span class="channel-meta-pill">${esc(bill)}</span></div></div><div class="business-models">${rows.map(row=>this.card({...row.group,id:`${channel.id}/${row.group.id}`},row.entries)).join('')}</div></section>`;
       }).join('');
       else results.innerHTML = `<div class="business-models">${visible.map(row=>this.card(row.group,row.entries)).join('')}</div>`;

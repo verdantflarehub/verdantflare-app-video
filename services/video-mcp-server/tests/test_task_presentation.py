@@ -7,9 +7,17 @@ from app.tasks import TaskRecord
 
 
 class TaskPresentationTest(unittest.TestCase):
+    def setUp(self):
+        models = [("minimax-h3-ref2va", "MiniMax H3"), ("wan3_0", "Wan 3.0"),
+                  ("grok_video_v15_lite", "Grok Imagine 1.5 Lite"),
+                  ("seedance_2_5", "Seedance 2.5"), ("seedance_2_5_draft", "Seedance 2.5 Draft")]
+        self.catalog = {"channels": [{"id": channel, "models": [
+            {"id": model, "model_id": model, "display_name": name} for model, name in models]}
+            for channel in ("local", "higgsfield", "fal")]}
+
     def present(self, service, model=None, mode=None, route=None):
         return task_presentation(SimpleNamespace(service=service, runtime_route=route,
-                                                request={"model": model, "mode": mode}))
+                                                request={"model": model, "mode": mode}), self.catalog)
 
     def test_higgsfield_models_and_modes_are_independent_of_channel(self):
         for model, name, mode, code in [
@@ -46,11 +54,18 @@ class TaskPresentationTest(unittest.TestCase):
     def test_request_route_wins_over_internal_backend(self):
         record = SimpleNamespace(service="h3", runtime_route="h3-singularity",
                                  request={"model": "minimax-h3-ref2va", "route": "fal"})
-        p = task_presentation(record)
+        p = task_presentation(record, self.catalog)
         self.assertEqual((p["model_label"], p["channel_label"]), ("MiniMax H3", "fal.ai"))
         self.assertIsNone(p["channel_icon"])
         record.request["route"] = "future-route"
         self.assertEqual(task_presentation(record)["channel_label"], "future-route")
+
+    def test_model_names_follow_declaration_and_unknown_never_exposes_model_id(self):
+        self.catalog["channels"][1]["models"][1]["display_name"] = "Wan Updated"
+        self.assertEqual(self.present("higgsfield", "wan3_0")["model_label"], "Wan Updated")
+        self.assertEqual(self.present("higgsfield", "future-model-id")["model_label"], "未记录模型")
+        record = SimpleNamespace(service="grok", runtime_route="grok", request={"model": "grok-imagine-video"})
+        self.assertEqual(task_presentation(record)["model_label"], "未记录模型")
 
     def test_processing_is_not_generation_even_if_request_has_a_mode(self):
         for service in ("depth", "sr", "interpolate", "h3-latent-upscale"):

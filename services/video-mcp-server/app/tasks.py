@@ -52,7 +52,7 @@ class TaskRecord(BaseModel):
     artifact_id: str | None = None
     collection: dict[str, object] | None = None
     media: dict[str, object] | None = None
-    error: dict[str, str] | None = None
+    error: dict[str, object] | None = None
     provider_state: dict[str, object] | None = None
     delivery: dict[str, object] | None = None
     authority: dict[str, str] | None = None
@@ -148,7 +148,7 @@ class TaskStore:
 
     def create(self, *, project_id: str, idempotency_key: str, input_digest: str,
                request: dict[str, object], runtime_task_id: str | None, status: str,
-               error: dict[str, str] | None = None, authority: dict[str, str] | None = None,
+               error: dict[str, object] | None = None, authority: dict[str, str] | None = None,
                runtime_endpoint: str | None = None, runtime_version: str | None = None,
                runtime_route: str | None = None) -> TaskRecord:
         existing = self.find_idempotency(project_id, idempotency_key)

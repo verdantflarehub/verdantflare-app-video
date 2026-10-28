@@ -14,6 +14,7 @@ import uuid
 import httpx
 
 from ..tasks import TaskConflict
+from ..channel_errors import ChannelError, check_response, channel_error
 
 MODELS = {"grok_video_v15_lite": (2, 15), "seedance_2_5": (4, 15), "wan3_0": (2, 15),
           "seedance_2_5_draft": (4, 15)}
@@ -89,7 +90,7 @@ class HiggsfieldAdapter:
             json=body, timeout=15)
         if response.status_code in {401, 403, 404}:
             raise PermissionError("project_access_denied")
-        response.raise_for_status()
+        check_response(response, "higgsfield", accepted=False)
         return response.json()
 
     def authorize_record(self, record):
@@ -170,6 +171,7 @@ class HiggsfieldAdapter:
             return old
         if not self.enabled or not self.configured():
             raise ValueError("higgsfield_not_configured")
+        self.executor.require_channel('higgsfield', request['model'])
         if price_ceiling is not None:
             import math
             if type(price_ceiling) not in (int, float) or not math.isfinite(price_ceiling) or price_ceiling < 0:
@@ -214,7 +216,7 @@ class HiggsfieldAdapter:
                             headers={**self.headers(), "Content-Length": str(info["size"]),
                                      "Content-Type": "application/octet-stream", "X-Media-Kind": kind},
                             content=stream, timeout=120)
-                    response.raise_for_status()
+                    check_response(response, "higgsfield")
                     if response.json() != {"status": "committed", **info}:
                         raise ValueError("input_receipt_mismatch")
                     references.append(info)
@@ -228,7 +230,7 @@ class HiggsfieldAdapter:
 
     def quote(self, request):
         response = self.client.post(self.url + "/v1/cost", headers=self.headers(), json=self.generation_payload(request))
-        response.raise_for_status()
+        check_response(response, "higgsfield", accepted=False)
         data = response.json()
         value = data.get("credits")
         import math
@@ -253,7 +255,8 @@ class HiggsfieldAdapter:
         record = self.executor.tasks.get(record.video_task_id)
         state = dict(record.provider_state or {})
         state["next_poll_at"] = time.time() + 15
-        return self.executor.tasks.update(record, provider_state=state, error={"code": code, "message": code})
+        return self.executor.tasks.update(record, provider_state=state,
+            error=code.public() if isinstance(code, ChannelError) else channel_error({'error': code}, source='higgsfield').public())
 
     def status(self, record):
         if record.status in {"succeeded", "failed", "cancelled"}:
@@ -267,13 +270,14 @@ class HiggsfieldAdapter:
             if record.runtime_stage == "prepared":
                 if not self.enabled:
                     return record
-                # The gateway is independently idempotent by our durable task ID.
-                response = self.client.post(self.url + "/v1/jobs", headers=self.headers(), json=self.payload(record))
+                payload = self.payload(record)
+                # Persist intent before the network boundary. A lost response
+                # is recovered by GET using this same domain identity.
+                record = self.executor.tasks.update(record, runtime_stage='submission_unknown', status='running')
+                response = self.client.post(self.url + "/v1/jobs", headers=self.headers(), json=payload)
             else:
                 response = self.client.get(self.url + "/v1/jobs/" + record.video_task_id, headers=self.headers())
-            if response.status_code in {400, 403, 409}:
-                return self.defer(record, "higgsfield_request_blocked")
-            response.raise_for_status()
+            check_response(response, "higgsfield", accepted=True if record.runtime_task_id else None)
             data = response.json()
             if data.get("request_id") != record.video_task_id or data.get("binding_id") != self.binding:
                 raise ValueError("gateway_identity_mismatch")
@@ -292,12 +296,14 @@ class HiggsfieldAdapter:
                 dispatched_at=data.get("created_at") if identity else None,
                 error={"code": "submission_unknown", "message": "submission_unknown"} if data["stage"] == "submission_unknown" else None)
             if data["status"] == "failed":
-                code = "media_contract_mismatch" if data.get("error") == "media_contract_mismatch" else "provider_generation_failed"
-                return self.executor.tasks.update(record, status="failed", error={"code": code, "message": code})
+                return self.executor.tasks.update(record, status="failed",
+                    error=channel_error(data, source='higgsfield', accepted=True if identity else None).public())
             if data["status"] == "completed":
                 from .higgsfield_artifact import collect
                 return collect(self, record, data["media"])
             return record
+        except ChannelError as exc:
+            return self.defer(record, exc)
         except (httpx.HTTPError, ValueError, KeyError, TypeError, OSError, PermissionError):
             return self.defer(record, "higgsfield_recovery_pending")
 
@@ -339,7 +345,7 @@ class HiggsfieldAdapter:
                          "X-Organization-Id": actor["organization_id"], "X-Request-Id": uuid7()})
             if response.status_code in {401, 403, 404}:
                 raise PermissionError("artifact_access_denied")
-            response.raise_for_status()
+            check_response(response, "higgsfield")
             version = response.json()
         media = record.media or {}
         if (any(version.get(k) != v for k, v in ref.items()) or version.get("source") != source(record) or

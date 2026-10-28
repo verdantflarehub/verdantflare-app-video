@@ -21,6 +21,7 @@ import httpx
 from PIL import Image, ImageOps
 
 from ..tasks import TaskConflict
+from ..channel_errors import ChannelError, check_response, channel_error
 from ..artifacts import ArtifactNotFound
 
 RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4"]
@@ -146,13 +147,19 @@ class GrokVideoAdapter:
         return request, digest
 
     def _resolve_actor(self, project_id):
-        from ..delivery import CALLER, authorize
-        caller = CALLER.get() or {}
-        if caller.get("user_id") and caller.get("organization_id") and os.environ.get("VIDEO_PROJECT_SERVICE_URL") and os.environ.get("VIDEO_PROJECT_SERVICE_TOKEN"):
-            return authorize(self.executor.client, project_id)
-        org_id = str(caller.get("organization_id") or os.environ.get("CHANNEL_DISCOVERY_SCOPE_ID") or os.environ.get("STATION_ORGANIZATION_ID") or "01a0fbf9-0a33-7c31-90d0-a51e3b0a9781").strip()
-        user_id = str(caller.get("user_id") or "video-mcp").strip()
-        return {"organization_id": org_id, "user_id": user_id}
+        from ..delivery import authorize
+        return authorize(self.executor.client, project_id)
+
+    def preflight(self, request, channel_account_id=None, budget_limit=None):
+        actor = self._resolve_actor(request['project_id'])
+        if not self.channel_mode:
+            raise ChannelError('provider_not_configured', source='grok', accepted=False)
+        response = self.executor.client.post(self.channel_url + '/v1/video-preflight',
+            headers={'Authorization': 'Bearer ' + self.channel_token,
+                     'X-Organization-Id': actor['organization_id'], 'X-Caller-Id': 'video-mcp'},
+            json={'model_id': request['model'], 'account_id': channel_account_id}, timeout=20)
+        check_response(response, 'grok', accepted=False)
+        return response.json()
 
     def generate(self, *, idempotency_key, channel_account_id=None, budget_limit=None, **kwargs):
         request, digest = self.normalize(**kwargs)
@@ -172,6 +179,8 @@ class GrokVideoAdapter:
                 return old
             if not self.enabled or not self.configured():
                 raise ValueError("provider_not_configured")
+            if self.channel_mode:
+                self.executor.require_channel('grok', request['model'])
             rec = self.executor.tasks.create(project_id=request["project_id"], idempotency_key=idempotency_key,
                 input_digest=digest, request=request, runtime_task_id="", status="queued", authority=actor)
             rec = self.executor.tasks.update(rec, service="grok", runtime_route="grok",
@@ -191,7 +200,7 @@ class GrokVideoAdapter:
         state = dict(rec.provider_state or {})
         state["next_poll_at"] = time.time() + delay
         return self.save(rec, status="failed" if terminal else "running",
-            error={"code": code, "message": code}, provider_state=state,
+            error=code.public() if isinstance(code, ChannelError) else channel_error({'error': code}, source='grok').public(), provider_state=state,
             runtime_stage=stage or ("failed" if terminal else rec.runtime_stage))
 
     def _channel_headers(self, rec):
@@ -231,23 +240,20 @@ class GrokVideoAdapter:
                         "account_id": state.get("channel_account_id"),
                         "budget_limit": state.get("budget_limit") or "2",
                     }, timeout=60)
-                if r.status_code in {400, 401, 403, 404, 409, 422}:
-                    code = "provider_rejected"
-                    try:
-                        code = r.json().get("error") or code
-                    except Exception:
-                        pass
-                    return self.error(rec, code, terminal=True)
                 if not r.is_success:
-                    return self.error(rec, f"provider_http_{r.status_code}", stage="submission_unknown")
+                    check_response(r, 'grok', accepted=False if r.status_code in {400,401,403,404,409,422,429} else None)
                 body = r.json()
                 call_id = body["call_id"]
+                rec = self.save(rec, runtime_task_id=call_id)
                 if body.get("accepted") is False or body.get("state") in {"rejected", "failed"}:
-                    return self.error(rec, body.get("error") or "provider_rejected", terminal=True)
+                    return self.error(rec, channel_error(body, source='grok'), terminal=True)
                 if body.get("accepted") is None or body.get("state") == "acceptance_unknown":
                     return self.save(rec, runtime_task_id=call_id, runtime_stage="submission_unknown",
                                      dispatched_at=datetime.now(UTC).isoformat(),
                                      error={"code": "submission_unknown", "message": "submission_unknown"})
+            except ChannelError as exc:
+                return self.error(rec, exc, terminal=exc.accepted is False,
+                                  stage='failed' if exc.accepted is False else 'submission_unknown')
             except (httpx.HTTPError, ValueError, KeyError, TypeError):
                 return self.error(rec, "submission_unknown", stage="submission_unknown")
             return self.save(rec, runtime_task_id=call_id, runtime_stage="remote_pending",
@@ -350,13 +356,16 @@ class GrokVideoAdapter:
             r = self.executor.client.get(self.channel_url + path, headers=self._channel_headers(rec), timeout=30)
             if r.status_code == 404 and not rec.runtime_task_id:
                 return self.error(rec, "submission_unknown", stage="submission_unknown", delay=60)
-            r.raise_for_status()
+            accepted = self._channel_accepted(rec)
+            check_response(r, 'grok', accepted=accepted)
             data = r.json()
             if not rec.runtime_task_id and isinstance(data.get("call_id"), str):
                 rec = self.save(rec, runtime_task_id=data["call_id"])
             cstate = data.get("state")
             if data.get("accepted") is False or cstate in {"rejected", "failed"}:
-                return self.error(rec, data.get("error") or "provider_rejected", terminal=True)
+                return self.error(rec, channel_error(data, source='grok', accepted=accepted), terminal=True)
+            if cstate == 'acceptance_unknown':
+                return self.error(rec, channel_error(data, source='grok', accepted=accepted), stage='submission_unknown')
             if cstate in {"acceptance_unknown", "queued", "in_queue", "in_progress"}:
                 state["poll_count"] = int(state.get("poll_count", 0)) + 1
                 delay = min(10, 2 ** min(3, state["poll_count"]))
@@ -366,8 +375,18 @@ class GrokVideoAdapter:
                 return self.error(rec, "provider_protocol_error")
             state.update(next_poll_at=0, progress=100)
             return self._channel_collect(self.save(rec, runtime_stage="collecting", provider_state=state), state)
+        except ChannelError as exc:
+            return self.error(rec, exc)
         except (httpx.HTTPError, ValueError, TypeError, KeyError, OSError):
             return self.error(rec, "provider_protocol_error")
+
+    @staticmethod
+    def _channel_accepted(rec):
+        # A channel call ID also exists for unknown submissions. Only a prior
+        # accepted observation (represented by these stages) proves acceptance.
+        return True if rec.runtime_task_id and (rec.runtime_stage in {
+            'remote_pending', 'collecting', 'collect_retry', 'completed'
+        } or (rec.error or {}).get('accepted') is True) else None
 
     def _channel_collect(self, rec, state):
         output = self.output_path(rec)
@@ -377,7 +396,7 @@ class GrokVideoAdapter:
                 digest, count = hashlib.sha256(), 0
                 with self.executor.client.stream("GET", self.channel_url + "/v1/calls/" + quote(rec.runtime_task_id, safe="") + "/result",
                                                  headers=self._channel_headers(rec), timeout=120) as response:
-                    response.raise_for_status()
+                    check_response(response, 'grok', accepted=self._channel_accepted(rec))
                     with pending.open("wb") as f:
                         for chunk in response.iter_bytes():
                             count += len(chunk)
@@ -409,6 +428,8 @@ class GrokVideoAdapter:
             state["next_poll_at"] = 0
             return self.save(rec, status="succeeded", artifact_id=asset.artifact_id, media=media,
                              runtime_stage="completed", provider_state=state, error=None)
+        except ChannelError as exc:
+            return self.error(rec, exc, stage='collect_retry')
         except (OSError, ValueError, KeyError, TypeError, StopIteration, ZeroDivisionError, httpx.HTTPError, subprocess.SubprocessError):
             return self.error(rec, "result_collection_failed", stage="collect_retry")
 

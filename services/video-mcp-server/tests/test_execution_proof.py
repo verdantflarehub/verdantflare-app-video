@@ -42,7 +42,10 @@ class ProofBoundaryTests(unittest.TestCase):
             server.video_result(task_id='task1',execution_proof_only=True)
             collect.assert_not_called();self.assertEqual(auth.call_args.kwargs,{'require_write':False})
         with patch.object(server,'_active_tasks',return_value=store),patch.object(server,'_active_artifacts'), \
-                patch.object(server,'_is_task_nsfw',return_value=False),patch.object(server,'authorize',side_effect=PermissionError('denied')), \
+                patch.object(server,'_is_task_nsfw',return_value=False),patch.object(server,'authorize',side_effect=PermissionError('project access denied')), \
                 patch('app.execution_proof.proof') as build:
-            with self.assertRaises(PermissionError):server.video_result(task_id='task1',execution_proof_only=True)
+            result = server.video_result(task_id='task1',execution_proof_only=True)
+            self.assertTrue(result.is_error)
+            self.assertEqual(result.structured_content['error']['code'], 'project_access_denied')
+            self.assertEqual(json.loads(result.content[0].text), result.structured_content)
             build.assert_not_called()

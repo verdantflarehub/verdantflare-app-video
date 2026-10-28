@@ -24,6 +24,7 @@ from .artifacts import ArtifactError, ArtifactNotFound, ArtifactStore, require_p
 from . import __version__, titles
 from .content_rating import ContentRatingError, ContentRatingStore, include_nsfw_from_headers
 from .executor import ExecutionError, VideoExecutor
+from .channel_errors import tool_errors
 from .dashboard import Dashboard, public_task
 from .registry import EtcdRegistry
 from .collection import public_collection
@@ -428,6 +429,7 @@ def video_capabilities() -> types.CallToolResult:
 
 
 @mcp.tool(name="video.import")
+@tool_errors
 def video_import(project_id: str, filename: str, expected_sha256: str,
                  source_url: str | None = None, content_base64: str | None = None) -> types.CallToolResult:
     """Import exactly one allowed HTTPS source or <=3 MiB image payload; never resolve central IDs."""
@@ -441,6 +443,7 @@ def video_import(project_id: str, filename: str, expected_sha256: str,
 
 
 @mcp.tool(name="video.import_prepare")
+@tool_errors
 def video_import_prepare(project_id: str, idempotency_key: str, filename: str, size: int,
                          sha256: str, purpose: str, source_content_ref: dict[str, str] | None = None) -> types.CallToolResult:
     """Prepare resumable media import. A claimed ContentRef grants no central read permission."""
@@ -449,6 +452,7 @@ def video_import_prepare(project_id: str, idempotency_key: str, filename: str, s
 
 
 @mcp.tool(name="video.import_chunk")
+@tool_errors
 def video_import_chunk(project_id: str, import_id: str, offset: int, content_base64: str, sha256: str) -> types.CallToolResult:
     """Append up to 512 KiB at the confirmed offset; identical repeated bytes are safe."""
     return _result(executor.imports.chunk(project_id=project_id, import_id=import_id, offset=offset,
@@ -456,6 +460,7 @@ def video_import_chunk(project_id: str, import_id: str, offset: int, content_bas
 
 
 @mcp.tool(name="video.import_status")
+@tool_errors
 def video_import_status(project_id: str, import_id: str) -> types.CallToolResult:
     """Read the durable offset and final immutable identity after an interrupted upload."""
     return _result(executor.imports.status(project_id=project_id, import_id=import_id))
@@ -491,37 +496,58 @@ def video_import_commit(project_id: str, import_id: str) -> types.CallToolResult
 
 
 @mcp.tool(name="video.preflight")
+@tool_errors
 def video_preflight(project_id: str, prompt: str, references: dict[str, list[dict[str, str]]],
                     duration_seconds: int = 5, aspect_ratio: str | None = None,
                     model: str | None = None, route: str | None = None,
                     quality_profile: str | None = None, mode: str | None = None,
-                  resolution: str | None = None, postprocess: dict | None = None) -> types.CallToolResult:
-    """Validate Singularity media and reveal native output and reference labels without creating a task."""
+                  resolution: str | None = None, postprocess: dict | None = None,
+                  channel_account_id: str | None = None, budget_limit: str | None = None,
+                  price_ceiling: float | None = None) -> types.CallToolResult:
+    """Validate exact media and parameters and read the selected channel's real pricing and admission."""
     selected = route or executor.runtime_route
     normalize_postprocess(postprocess, selected)
+    if selected not in {'fal', 'grok', 'google'} and (channel_account_id is not None or budget_limit is not None):
+        raise ValueError('channel_budget_not_supported')
+    if selected != 'higgsfield' and price_ceiling is not None:
+        raise ValueError('channel_budget_not_supported')
     if selected == "higgsfield":
         executor.higgsfield.authorize(project_id)
         request, digest = executor.higgsfield.normalize(project_id=require_project_id(project_id),
             prompt=prompt, model=model, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
             references=references, mode=mode, resolution=resolution, quality_profile=quality_profile)
+        quote = executor.higgsfield.quote(request)
+        if price_ceiling is not None:
+            import math
+            if not math.isfinite(price_ceiling) or price_ceiling < 0:
+                raise ValueError('invalid_price_ceiling')
+            if quote['credits'] > price_ceiling:
+                quote = {**quote, 'can_submit': False, 'blocked_reason': 'quote_changed'}
         return _result({"status": "validated", "generation_verified": False, "input_digest": digest,
             "resolved_output": {k: request[k] for k in ("model", "mode", "resolution", "duration_seconds", "aspect_ratio")},
             "reference_mapping": request["references"],
-            **({"quoted_credits": executor.higgsfield.cost(request)} if request["model"] in {"wan3_0", "seedance_2_5_draft"} else {})})
+            **quote, 'quoted_credits': quote['credits'], 'quote_source': 'provider_cost_api', 'unit': 'Credits'})
     if selected == "grok":
         request, digest = executor.grok.normalize(project_id=require_project_id(project_id),
             prompt=prompt, model=model, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
             references=references, mode=mode, resolution=resolution, quality_profile=quality_profile)
         return _result({"status": "validated", "generation_verified": False, "input_digest": digest,
             "resolved_output": {k: request[k] for k in ("mode", "resolution", "duration_seconds", "aspect_ratio")},
-            "reference_mapping": request["references"], "prompt": request["prompt"]})
+            "reference_mapping": request["references"],
+            **executor.grok.preflight(request, channel_account_id=channel_account_id, budget_limit=budget_limit)})
     if selected == "google":
         request, digest = executor.google.normalize(project_id=require_project_id(project_id),
             prompt=prompt, model=model, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
             references=references, mode=mode, resolution=resolution, quality_profile=quality_profile)
         return _result({"status": "validated", "generation_verified": False, "input_digest": digest,
             "resolved_output": {k: request[k] for k in ("model", "mode", "resolution", "duration_seconds", "aspect_ratio")},
-            "reference_mapping": request["references"], "prompt": request["prompt"]})
+            "reference_mapping": request["references"],
+            **executor.google.preflight(request, channel_account_id=channel_account_id, budget_limit=budget_limit)})
+    if selected == 'fal':
+        return _result(executor.fal.preflight(project_id=require_project_id(project_id), prompt=prompt,
+            model=model, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio, references=references,
+            mode=mode, resolution=resolution, quality_profile=quality_profile,
+            channel_account_id=channel_account_id, budget_limit=budget_limit))
     if selected != "h3-singularity":
         raise ValueError("video.preflight currently supports h3-singularity")
     executor.runtime(selected)
@@ -552,6 +578,7 @@ def artifact_import(project_id: str, source_url: str, filename: str, expected_sh
 
 
 @mcp.tool(name="video.create")
+@tool_errors
 def video_create(prompt: str,
                  project_id: str,
                  idempotency_key: str,
@@ -562,13 +589,14 @@ def video_create(prompt: str,
                  route: str | None = None,
                  quality_profile: str | None = None, mode: str | None = None,
                   resolution: str | None = None, postprocess: dict | None = None, title: object = None,
-                  channel_account_id: str | None = None, budget_limit: str | None = None) -> types.CallToolResult:
+                  channel_account_id: str | None = None, budget_limit: str | None = None,
+                  price_ceiling: float | None = None) -> types.CallToolResult:
     """Create an asynchronous video generation task."""
     record, naming = titles.create(executor, title=title, project_id=project_id, idempotency_key=idempotency_key, model=model,
                                prompt=prompt, duration_seconds=duration_seconds,
                                aspect_ratio=aspect_ratio, references=references or {}, route=route,
                                quality_profile=quality_profile, mode=mode, resolution=resolution, postprocess=postprocess,
-                               channel_account_id=channel_account_id, budget_limit=budget_limit)
+                               channel_account_id=channel_account_id, budget_limit=budget_limit, price_ceiling=price_ceiling)
     return _result({**naming, "task_id": record.video_task_id, "video_task_id": record.video_task_id,
                     "status": record.status, "created_at": record.created_at, "error": record.error, "delivery": record.delivery,
                     "resolved_output": record.request.get("resolved_output"),
@@ -576,12 +604,14 @@ def video_create(prompt: str,
 
 
 @mcp.tool(name="video.generate")
+@tool_errors
 def video_generate(project_id: str, idempotency_key: str, model: str, prompt: str,
                    duration_seconds: int, aspect_ratio: str,
                    references: dict[str, list[dict[str, str]]], route: str,
                    quality_profile: str | None = None, mode: str | None = None,
                   resolution: str | None = None, postprocess: dict | None = None, title: object = None,
-                  channel_account_id: str | None = None, budget_limit: str | None = None) -> types.CallToolResult:
+                  channel_account_id: str | None = None, budget_limit: str | None = None,
+                  price_ceiling: float | None = None) -> types.CallToolResult:
     """Generate with a business model and an explicitly selected runtime route.
 
     `route` selects a configured channel such as h3-sol, h3-vdn, or fal.
@@ -593,12 +623,13 @@ def video_generate(project_id: str, idempotency_key: str, model: str, prompt: st
                                prompt=prompt, duration_seconds=duration_seconds,
                                aspect_ratio=aspect_ratio, references=references, route=route,
                                quality_profile=quality_profile, mode=mode, resolution=resolution, postprocess=postprocess,
-                               channel_account_id=channel_account_id, budget_limit=budget_limit)
+                               channel_account_id=channel_account_id, budget_limit=budget_limit, price_ceiling=price_ceiling)
     return _result({**naming, "task_id": record.video_task_id, "video_task_id": record.video_task_id,
                     "status": record.status, "created_at": record.created_at, "error": record.error, "delivery": record.delivery})
 
 
 @mcp.tool(name="video.status")
+@tool_errors
 def video_status(video_task_id: str = "", task_id: str = "") -> types.CallToolResult:
     tid = video_task_id or task_id
     if not tid:
@@ -627,6 +658,7 @@ def video_status(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
 
 
 @mcp.tool(name="video.result")
+@tool_errors
 def video_result(video_task_id: str = "", task_id: str = "", execution_proof_only: bool = False) -> types.CallToolResult:
     tid = video_task_id or task_id
     if not tid:

@@ -95,31 +95,34 @@ class MemberDashboard:
                 self.record(old.video_task_id)
                 if old.input_digest != digest:
                     raise TaskConflict('idempotency_conflict')
-                return public_task(old, self.executor.tasks)
-            with self.quotes() as db:
-                row = db.execute('SELECT value FROM quotes WHERE identity=?', (identity,)).fetchone()
-            if not row:
-                raise MemberError('quote_required')
-            saved = json.loads(row[0])['quote']
-            if saved['input_digest'] != digest:
-                raise MemberError('quote_changed')
-            if datetime.fromisoformat(saved['expires_at']) <= datetime.now(UTC):
-                raise MemberError('quote_expired')
-            if not saved['can_submit']:
-                raise MemberError(saved['blocked_reason'] or 'quote_blocked')
-            current = self.adapter.quote(request)
-            if not current.get('can_submit'):
-                raise MemberError(current.get('blocked_reason') or 'quote_blocked')
-            if current['credits'] != saved['quoted_credits']:
-                raise MemberError('quote_changed')
-            title = titles.validate_title(inputs.title) if inputs.title else None
-            marker = titles.PROVIDED_TITLE.set(title)
-            try:
-                record = self.adapter.generate(idempotency_key=inputs.idempotency_key,
-                    price_ceiling=current['credits'], **inputs.model_dump(exclude={'title','idempotency_key','route','channel_account_id','budget_limit'}))
-            finally:
-                titles.PROVIDED_TITLE.reset(marker)
-            return public_task(record, self.executor.tasks)
+                record = old
+            else:
+                with self.quotes() as db:
+                    row = db.execute('SELECT value FROM quotes WHERE identity=?', (identity,)).fetchone()
+                if not row:
+                    raise MemberError('quote_required')
+                saved = json.loads(row[0])['quote']
+                if saved['input_digest'] != digest:
+                    raise MemberError('quote_changed')
+                if datetime.fromisoformat(saved['expires_at']) <= datetime.now(UTC):
+                    raise MemberError('quote_expired')
+                if not saved['can_submit']:
+                    raise MemberError(saved['blocked_reason'] or 'quote_blocked')
+                current = self.adapter.quote(request)
+                if not current.get('can_submit'):
+                    raise MemberError(current.get('blocked_reason') or 'quote_blocked')
+                if current['credits'] != saved['quoted_credits']:
+                    raise MemberError('quote_changed')
+                title = titles.validate_title(inputs.title) if inputs.title else None
+                marker = titles.PROVIDED_TITLE.set(title)
+                try:
+                    record = self.adapter.generate(idempotency_key=inputs.idempotency_key,
+                        price_ceiling=current['credits'], **inputs.model_dump(exclude={'title','idempotency_key','route','channel_account_id','budget_limit'}))
+                finally:
+                    titles.PROVIDED_TITLE.reset(marker)
+        # Rating projection may initialize WAL on a second connection. Commit
+        # the identity transaction before reading the public representation.
+        return public_task(record, self.executor.tasks)
 
     def dispatch(self, action, request, body):
         self.adapter.authorize_member()

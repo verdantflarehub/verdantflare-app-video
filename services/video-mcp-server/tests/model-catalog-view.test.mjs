@@ -35,7 +35,7 @@ test('default channel view follows channel order and shows supplier tiers separa
   assert.match(html, /aria-label="输出规格胶囊"><span>1080p<\/span>/);
   assert.match(html, /aria-label="输出规格胶囊"><span>2K<\/span>/);
   assert.doesNotMatch(html, /24FPS|≤ 50MB/);
-  assert.match(html, /模型 ID：<code>待核实<\/code>/);
+  assert.doesNotMatch(html, /模型 ID|端点 ID/);
   view.filters.view = 'models';
   view.set({ ...view.data, snapshot_id: 'two' });
   assert.equal(view.filters.view, 'models');
@@ -73,7 +73,7 @@ test('fal H3 modes share one card without borrowing quotas or claiming a task-si
   assert.match(html, /视频参考输入<\/span><strong>支持参考视频 · 适配器准入 3 段<\/strong>/);
   assert.doesNotMatch(html, /单次任务最大容量/);
   assert.match(html, /1 个端点已接入执行适配 · 2 个仅目录收录/);
-  assert.match(html, /端点 ID：<code>minimax\/h3\/reference-to-video<\/code>/);
+  assert.doesNotMatch(html, /端点 ID|<code>minimax\/h3/);
   assert.doesNotMatch(html, /≤ 50MB|24FPS/);
   assert.match(nodes['[data-catalog-count]'].textContent, /1 个模型卡片 · 3 条目录能力/);
   view.filters.query = '图生视频';
@@ -111,7 +111,7 @@ test('fal H3 Max displays discovered endpoints without claiming paid execution',
   view.set(data);
   const html = nodes['[data-catalog-results]'].innerHTML;
   assert.match(html, /<h3>MiniMax H3 Max<\/h3>/);
-  assert.match(html, /模型 ID：<code>minimax\/h3-max<\/code>/);
+  assert.doesNotMatch(html, /模型 ID|端点 ID|<code>minimax\/h3-max/);
   assert.equal((html.match(/class="cap-pill"/g) || []).length,12);
   assert.match(html, /Insert Video Max[\s\S]*最高输出：768p/);
   assert.match(html, /Lip Sync Max[\s\S]*最高输出：2K/);

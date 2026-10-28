@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 import tempfile
@@ -43,43 +44,55 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual(self.client.get('/api/dashboard',headers=self.headers).status_code,200)
 
     def test_fal_catalog_execution_projection_keeps_snapshot_and_fail_closed_states(self):
-        catalog = {'state':'ready', 'snapshot_id':'approved-digest', 'channels':[
-            {'id':'fal', 'models':[
-                {'id':'h3-ref', 'upstream_model_id':'minimax/h3/reference-to-video'},
-                {'id':'h3-text', 'upstream_model_id':'minimax/h3/text-to-video'}]}],
-            'groups':[], 'conflicts':[]}
-        with mock.patch.object(self.executor.catalog, 'snapshot', return_value=catalog):
+        models = [{'id': 'h3-ref', 'model_id': 'h3', 'display_name': 'MiniMax H3',
+                   'entry_kind': 'model', 'business_type': 'video_generation', 'identity_review': 'pending',
+                   'upstream_model_id': 'minimax/h3/reference-to-video'}]
+        catalog = {'state': 'ready', 'snapshot_id': 'approved-digest', 'channels': [
+            {'id': 'fal', 'display_name': 'fal.ai', 'models': models}], 'groups': [], 'conflicts': []}
+        directory = {'schema_version': 1, 'channel_id': 'fal', 'state': 'available', 'version': 'mounted-version',
+            'capabilities': [{'capability_id': 'video.generate.reference', 'type': 'video',
+                'model_id': 'minimax/h3', 'endpoint_id': 'minimax/h3/reference-to-video',
+                'display_name': 'MiniMax H3', 'operation': 'video.generate.reference', 'parameter_schema': {},
+                'execution_state': 'adapter_connected_unverified'}]}
+        read = lambda channel, *_: copy.deepcopy(directory) if channel == 'fal' else {
+            'schema_version': 1, 'channel_id': channel, 'state': 'unavailable', 'capabilities': []}
+        registration = {'fal': {'state': 'enabled', 'lease_valid': True, 'capabilities': directory['capabilities']}}
+        with (mock.patch.object(self.executor.catalog, 'snapshot', return_value=catalog),
+              mock.patch('app.channel_catalog.read_directory', side_effect=read),
+              mock.patch('app.channel_registry.ChannelRegistry.snapshot', return_value=registration)):
             with mock.patch.object(self.executor.fal, 'connected', return_value=True):
-                response = self.client.get('/api/model-catalog',headers=self.headers)
-                self.assertEqual(response.status_code,200)
+                response = self.client.get('/api/model-catalog', headers=self.headers)
+                self.assertEqual(response.status_code, 200)
                 value = response.json()
-                self.assertEqual(value['snapshot_id'],'approved-digest')
-                self.assertEqual(value['execution']['fal']['h3-ref']['state'],'adapter_connected_unverified')
-                self.assertEqual(value['execution']['fal']['h3-text']['state'],'catalog_only')
-                self.assertNotIn('execution',catalog)
+                self.assertNotEqual(value['snapshot_id'], 'approved-digest')
+                self.assertEqual(value['execution']['fal']['video.generate.reference']['state'], 'adapter_connected_unverified')
+                self.assertFalse(value['execution']['fal']['video.generate.reference']['can_submit'])
+                self.assertNotIn('execution', catalog)
+                self.assertEqual(catalog['snapshot_id'], 'approved-digest')
             with mock.patch.object(self.executor.fal, 'connected', return_value=False):
-                self.assertEqual(self.executor.catalog_view()['execution']['fal']['h3-ref']['state'],'adapter_disconnected')
+                self.assertEqual(self.executor.catalog_view()['execution']['fal']['video.generate.reference']['state'], 'adapter_disconnected')
+            with mock.patch('app.channel_registry.ChannelRegistry.snapshot', return_value={}):
+                self.assertEqual(self.executor.catalog_view()['execution']['fal']['video.generate.reference']['state'], 'unavailable')
 
     def test_mcp_capabilities_exposes_channel_directory_without_enabling_generation(self):
-        catalog = {'state':'ready', 'snapshot_id':'approved-digest', 'channels':[
-            {'id':'fal', 'models':[{'id':'h3max-ref',
-                'upstream_model_id':'minimax/h3-max/reference-to-video'}]}],
-            'groups':[], 'conflicts':[]}
-        directory = {'schema_version':1, 'channel_id':'fal', 'version':'declared-digest',
-            'capabilities':[{'capability_id':'video.h3max.camera_controls', 'type':'video',
-                'model_id':'minimax/h3-max', 'endpoint_id':'minimax/h3-max/camera-controls',
-                'display_name':'Camera Controls', 'execution_state':'catalog_only'}]}
-        with (mock.patch.object(self.executor.catalog, 'snapshot', return_value=catalog),
-              mock.patch.object(self.executor.fal, 'channel_capabilities', return_value=directory)):
+        directory = {'schema_version': 1, 'channel_id': 'fal', 'state': 'available', 'version': 'declared-digest',
+            'capabilities': [{'capability_id': 'video.h3max.camera_controls', 'type': 'video',
+                'model_id': 'minimax/h3-max', 'endpoint_id': 'minimax/h3-max/camera-controls',
+                'display_name': 'MiniMax H3 Max · Camera Controls', 'execution_state': 'catalog_only',
+                'operation': 'video.generate.camera_controls', 'parameter_schema': {}}]}
+        read = lambda channel, *_: copy.deepcopy(directory) if channel == 'fal' else {
+            'schema_version': 1, 'channel_id': channel, 'state': 'unavailable', 'capabilities': []}
+        with (mock.patch('app.channel_catalog.read_directory', side_effect=read),
+              mock.patch('app.channel_registry.ChannelRegistry.snapshot', return_value={})):
             response = self.client.get('/api/model-catalog', headers=self.headers)
             self.assertEqual(response.status_code, 200)
             value = response.json()
-            self.assertEqual(value['channel_capabilities']['fal'], directory)
-            self.assertEqual(value['execution']['fal']['h3max-ref']['state'], 'catalog_only')
+            self.assertEqual(value['channel_capabilities']['fal']['capabilities'], directory['capabilities'])
+            self.assertEqual(value['execution']['fal']['video.h3max.camera_controls']['state'], 'catalog_only')
+            self.assertFalse(value['execution']['fal']['video.h3max.camera_controls']['can_submit'])
             mcp_capabilities = self.executor.capabilities()
-            self.assertEqual(mcp_capabilities['catalog']['channel_capabilities']['fal'], directory)
-            self.assertEqual(mcp_capabilities['channel_capabilities']['fal'], directory)
-            self.assertNotIn('channel_capabilities', catalog)
+            self.assertEqual(mcp_capabilities['channel_capabilities']['fal']['capabilities'], directory['capabilities'])
+            self.assertFalse(any(route['route'] == 'fal' for route in mcp_capabilities['routes']))
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

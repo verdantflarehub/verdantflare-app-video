@@ -232,13 +232,19 @@ class TestVideoMcpAndHttpContentRating(unittest.TestCase):
         self.assertEqual(after_list["total"], 1)
         self.assertEqual([t["task_id"] for t in after_list["tasks"]], [self.task_gen.video_task_id])
 
-        # MCP status and result raise TaskNotFound for the nsfw task
-        with self.assertRaises(TaskNotFound):
-            server_mod.video_status(self.task_nsfw.video_task_id)
-        with self.assertRaises(TaskNotFound):
-            server_mod.video_result(self.task_nsfw.video_task_id)
+        # Status and result hide NSFW resources through the same safe error envelope.
+        hidden_results = [
+            server_mod.video_status(self.task_nsfw.video_task_id),
+            server_mod.video_result(self.task_nsfw.video_task_id),
+        ]
+        for result in hidden_results:
+            self.assertTrue(result.is_error)
+            self.assertEqual(result.structured_content["error"]["code"], "task_not_found")
+            self.assertEqual(json.loads(result.content[0].text), result.structured_content)
+            self.assertNotIn("content_rating", result.structured_content)
+            self.assertNotIn("artifact_id", result.structured_content)
 
-        # Unknown or cross-project version_id raises TaskNotFound
+        # Unknown or cross-project rating targets remain hidden.
         with self.assertRaises(TaskNotFound):
             server_mod.video_rate_content(
                 version_id="art_00000000000000000000000000000000",
@@ -324,8 +330,9 @@ class TestVideoMcpAndHttpContentRating(unittest.TestCase):
         self.assertEqual(resp_mark.status_code, 200)
         self.assertEqual(resp_mark.json()["rating"], "nsfw")
         self.assertEqual(resp_mark.json()["source"], "human")
-        with self.assertRaises(TaskNotFound):
-            server_mod.video_status(self.task_nsfw.video_task_id)
+        hidden_status = server_mod.video_status(self.task_nsfw.video_task_id)
+        self.assertTrue(hidden_status.is_error)
+        self.assertEqual(hidden_status.structured_content["error"]["code"], "task_not_found")
 
     def test_card_action_endpoints_title_content_rating_delete_and_frontend_menu(self) -> None:
         headers = {"Authorization": "Bearer test-secret-token"}
