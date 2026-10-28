@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from app.artifacts import ArtifactStore
+from app.channel_errors import ChannelError
 from app.executor import VideoExecutor
 from app.providers.fal import FAL_PUBLIC_MODEL, FAL_SD2_PUBLIC_MODEL, FAL_LIP_PUBLIC_MODEL
 from app.tasks import TaskStore
@@ -66,6 +67,36 @@ class ChannelSpecificationTests(unittest.TestCase):
         self.assertEqual(h3['reference_limits']['request_body_max_bytes'], 96 * 1024 * 1024)
         self.assertIsNone(h3['reference_limits']['max_total_bytes'])
         self.assertEqual(sd2['reference_limits']['total'], 12)
+
+    def test_disabled_draft_preserves_reason_without_disabling_other_models(self):
+        entries = self.catalog['execution']['higgsfield']
+        for entry in entries.values():
+            entry['can_submit'] = True
+        entries['seedance_2_5_draft'].update(state='disabled', can_submit=False,
+                                          reason_code='provider_not_found')
+        routes = self.routes()
+        draft = routes['higgsfield', 'seedance_2_5_draft']
+        self.assertFalse(draft['can_submit'])
+        self.assertEqual(draft['reason_code'], 'provider_not_found')
+        self.assertEqual(draft['modes'], ['reference_to_video'])
+        with patch.object(self.executor, 'catalog_view', return_value=self.catalog):
+            with self.assertRaises(ChannelError) as denied:
+                self.executor.require_channel('higgsfield', 'seedance_2_5_draft')
+            self.assertEqual(denied.exception.public()['code'], 'provider_not_found')
+            self.assertFalse(denied.exception.public()['accepted'])
+            for model in ('seedance_2_5', 'wan3_0', 'grok_video_v15_lite'):
+                self.assertTrue(routes['higgsfield', model]['can_submit'])
+                self.assertNotIn('reason_code', routes['higgsfield', model])
+                self.executor.require_channel('higgsfield', model)
+
+    def test_disabled_model_does_not_expose_unknown_reason(self):
+        entry = self.catalog['execution']['higgsfield']['seedance_2_5_draft']
+        entry.update(state='disabled', reason_code='private-upstream-body')
+        self.assertNotIn('reason_code', self.routes()['higgsfield', 'seedance_2_5_draft'])
+        with patch.object(self.executor, 'catalog_view', return_value=self.catalog):
+            with self.assertRaises(ChannelError) as denied:
+                self.executor.require_channel('higgsfield', 'seedance_2_5_draft')
+        self.assertEqual(denied.exception.public()['code'], 'channel_unavailable')
 
     def test_declared_bounds_intersect_adapter_and_no_template_is_not_invented(self):
         cap = next(item for item in self.catalog['channel_capabilities']['higgsfield']['capabilities']

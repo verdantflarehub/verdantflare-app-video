@@ -1,6 +1,8 @@
 """Effective Video adapter limits, keyed by the exact execution identity."""
 from copy import deepcopy
 
+from .channel_errors import safe_code
+
 from .providers.fal import (FAL_PUBLIC_MODEL, FAL_SD2_PUBLIC_MODEL, FAL_LIP_PUBLIC_MODEL, MAX_FAL_IMAGE_BYTES,
                             MAX_FAL_VIDEO_BYTES, MAX_FAL_AUDIO_BYTES)
 from .providers.google import MAX_SOURCE_IMAGE_BYTES, MAX_SOURCE_IMAGE_PIXELS
@@ -59,6 +61,9 @@ def effective_route(template, declaration, entry):
              'can_submit': entry.get('can_submit', False), 'readiness': 'not_checked',
              'capability_id': entry['capability_id'], 'display_name': declaration['display_name']}
     value.pop('models', None)
+    reason = entry.get('reason_code')
+    if not value['can_submit'] and safe_code(reason, route):
+        value['reason_code'] = reason
     channel_schema = deepcopy(declaration.get('parameter_schema', {}))
     props = channel_schema.get('properties', {})
     props = props if isinstance(props, dict) else {}

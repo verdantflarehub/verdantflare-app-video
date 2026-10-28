@@ -80,6 +80,22 @@ class HiggsfieldTest(unittest.TestCase):
         self.executor.higgsfield.client.close()
         self.executor.higgsfield.client = self.client
 
+    def test_mcp_preflight_rejects_disabled_draft_without_quoting(self):
+        from app import server
+        from app.channel_errors import ChannelError
+        asset = self.executor.artifacts.create_from_chunks(project_id=PROJECT, operation='import',
+            filename='identity.png', media_type='image/png', chunks=[b'synthetic-media'])
+        self.registry_gate.side_effect = ChannelError('provider_not_found', source='higgsfield', accepted=False)
+        with patch.object(server, 'executor', self.executor), patch.object(self.executor.higgsfield, 'quote') as quote:
+            result = server.video_preflight(project_id=PROJECT, route='higgsfield', model='seedance_2_5_draft',
+                prompt='dance', duration_seconds=4,
+                references={'images':[{'artifact_id':asset.artifact_id, 'purpose':'reference'}]})
+        self.assertTrue(result.is_error)
+        self.assertEqual(result.structured_content['error']['code'], 'provider_not_found')
+        self.assertFalse(result.structured_content['error']['accepted'])
+        self.registry_gate.assert_called_once_with('higgsfield', 'seedance_2_5_draft')
+        quote.assert_not_called()
+
     def tearDown(self):
         CALLER.reset(self.actor)
         self.client.close()

@@ -212,3 +212,29 @@ test('fal cards distinguish the one adapted endpoint from catalog-only entries',
   } } });
   assert.match(nodes['[data-catalog-results]'].innerHTML, /服务未连接，暂不可提交/);
 });
+
+test('a disabled Draft capability shows its safe reason while other Higgsfield models remain connected', () => {
+  const context = vm.createContext({ URL });
+  vm.runInContext(readFileSync(new URL('../frontend/model-catalog.js', import.meta.url), 'utf8'), context);
+  const nodes = {};
+  const root = { innerHTML:'', addEventListener() {}, removeEventListener() {},
+    querySelectorAll: () => [], querySelector: selector => nodes[selector] ??= {} };
+  const view = new context.VideoCatalogView(root, async () => ({}));
+  const models = [['draft','Seedance 2.5 Draft'],['wan','Wan 3.0']].map(([id,display_name]) => ({
+    id, display_name, business_type:'video_generation', description:'', identity_review:'pending',
+    billing_modes:[], upstream_model_id:id, supplier_profiles:[], team_profiles:[] }));
+  const data = { state:'ready', snapshot_id:'draft-disabled', conflicts:[],
+    channels:[{id:'higgsfield', display_name:'Higgsfield', models}],
+    groups:models.map(model => ({id:model.id,entries:[{channel_id:'higgsfield',entry_id:model.id}]})),
+    execution:{higgsfield:{draft:{state:'disabled',can_submit:false,reason_code:'provider_not_found'},
+      wan:{state:'adapter_connected_unverified',can_submit:true}}} };
+  view.set(data);
+  const html = nodes['[data-catalog-results]'].innerHTML;
+  assert.match(html, /供应商暂不提供此模型操作，请选择其他可用模型/);
+  assert.match(html, /Wan 3.0[\s\S]*执行适配已接入 · 调用受组织授权与额度限制/);
+  assert.doesNotMatch(html, /供应商已停止此模型/);
+  view.set({...data, execution:{higgsfield:{...data.execution.higgsfield,
+    draft:{state:'disabled',can_submit:false,reason_code:'private-upstream-body'}}}});
+  assert.match(nodes['[data-catalog-results]'].innerHTML, /渠道能力已停用 · 暂不可提交/);
+  assert.doesNotMatch(nodes['[data-catalog-results]'].innerHTML, /private-upstream-body/);
+});

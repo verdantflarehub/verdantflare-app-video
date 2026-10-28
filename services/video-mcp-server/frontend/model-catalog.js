@@ -215,7 +215,9 @@
         adapter_disconnected:'执行适配已接入 · 服务未连接，暂不可提交',
         catalog_only:'仅目录收录 · 暂不可提交'
       };
-      const label = labels[state] || '暂不可提交';
+      const reasons = { provider_not_found: '供应商暂不提供此模型操作，请选择其他可用模型', model_retired: '供应商已停止此模型，请选择其他可用模型' };
+      const reason = capability?.can_submit !== true && Object.hasOwn(reasons, capability?.reason_code) ? reasons[capability.reason_code] : '';
+      const label = reason || labels[state] || '暂不可提交';
       return `<p class="catalog-execution" data-execution-state="${esc(state || 'unknown')}">${esc(label)}</p>`;
     }
     card(group, entries) {

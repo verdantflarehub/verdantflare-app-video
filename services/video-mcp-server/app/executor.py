@@ -185,11 +185,16 @@ class VideoExecutor:
 
     def require_channel(self, route: str, model: str) -> None:
         """New submissions only; callers check their stored idempotency record first."""
-        from .channel_errors import ChannelError
+        from .channel_errors import ChannelError, safe_code
         catalog = self.catalog_view()
-        for entry in catalog.get("execution", {}).get(route, {}).values():
-            if entry.get("model") == model and entry.get("can_submit") is True:
-                return
+        entries = [entry for entry in catalog.get("execution", {}).get(route, {}).values()
+                   if entry.get("model") == model]
+        if any(entry.get("can_submit") is True for entry in entries):
+            return
+        for entry in entries:
+            reason = entry.get('reason_code')
+            if entry.get('state') in {'disabled', 'catalog_only'} and safe_code(reason, route):
+                raise ChannelError(reason, source=route, accepted=False)
         raise ChannelError("channel_unavailable", source=route, accepted=False)
 
     def capabilities(self) -> dict[str, object]:

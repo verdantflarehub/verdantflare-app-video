@@ -511,6 +511,7 @@ def video_preflight(project_id: str, prompt: str, references: dict[str, list[dic
         request, digest = executor.higgsfield.normalize(project_id=require_project_id(project_id),
             prompt=prompt, model=model, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
             references=references, mode=mode, resolution=resolution, quality_profile=quality_profile)
+        executor.require_channel('higgsfield', request['model'])
         quote = executor.higgsfield.quote(request)
         if price_ceiling is not None:
             import math

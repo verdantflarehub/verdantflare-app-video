@@ -75,6 +75,7 @@ class MemberDashboard:
         # Authorize before resolving any referenced content.
         identity = self.identity(body.get('project_id'), body.get('idempotency_key'))
         inputs, request, digest = self.normalize(body)
+        self.executor.require_channel('higgsfield', inputs.model)
         if not self.adapter.enabled or not self.adapter.configured():
             raise MemberError('higgsfield_not_configured')
         quote = self.adapter.quote(request)
@@ -98,6 +99,7 @@ class MemberDashboard:
                     raise TaskConflict('idempotency_conflict')
                 record = old
             else:
+                self.executor.require_channel('higgsfield', inputs.model)
                 with self.quotes() as db:
                     row = db.execute('SELECT value FROM quotes WHERE identity=?', (identity,)).fetchone()
                 if not row:

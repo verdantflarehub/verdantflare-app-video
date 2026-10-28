@@ -107,27 +107,36 @@
     if (epoch !== generation || $('project')?.value !== project) return;
     assets = value.items; renderAssets();
   }
+  function availability(cap) {
+    const labels = { provider_not_found: '供应商暂不可用', model_retired: '供应商已停止此模型' };
+    return Object.hasOwn(labels, cap?.reason_code) ? labels[cap.reason_code] : '当前不可提交';
+  }
   function body() {
     capture(); const references = {images:[],videos:[],audios:[]};
     for (const a of selected.values()) references[a.kind].push({artifact_id:a.artifact_id,purpose:draft.mode==='image_to_video'?'first_frame':a.purpose});
     if (!draft.project || !draft.model || !draft.prompt.trim()) throw Error('请选择项目、模型并填写提示词。');
-    if (capabilities.find(c=>c.model===draft.model)?.can_submit !== true) throw Error('当前注册能力不可提交，请刷新模型状态。');
+    const capability = capabilities.find(c=>c.model===draft.model);
+    if (capability?.can_submit !== true) throw Error(availability(capability) + '，请选择其他可用模型。');
     if (draft.mode !== 'text_to_video' && !selected.size) throw Error('请至少选择一项参考素材。');
     return {project_id:draft.project,idempotency_key:attempt,title:draft.title||null,route:'higgsfield',model:draft.model,mode:draft.mode,prompt:draft.prompt,duration_seconds:Number(draft.duration),aspect_ratio:draft.ratio,resolution:draft.resolution,references};
   }
   function lockInputs(locked) { root.querySelectorAll('#hf-inputs input, #hf-inputs select, #hf-inputs textarea, #hf-upload').forEach(el => el.disabled = locked); }
+  function updateQuoteButton() { if ($('quote')) $('quote').disabled = busy || !!pending || capabilities.find(c => c.model === $('model')?.value)?.can_submit !== true; }
   async function createPage(generation) {
     shell('新建视频', '模型 × 渠道 · 项目素材与会员额度统一使用', '<p id="hf-loading">正在读取可用项目与模型…</p>');
     const [ps, cs] = await Promise.all([request('projects'), request('capabilities')]);
     if (epoch !== generation) return;
     projects = ps.items; capabilities = cs.routes;
     const names = Object.fromEntries(capabilities.map(c => [c.model, c.display_name || '名称未登记']));
+    const unavailable = capabilities.filter(c => c.can_submit !== true && c.reason_code === 'provider_not_found');
+    const alternatives = capabilities.filter(c => c.can_submit === true && c.modes?.includes('reference_to_video'));
+    const availabilityHint = unavailable.length ? '<p class="hf-muted" role="status">' + unavailable.map(c => esc(names[c.model])).join('、') + '：供应商暂不可用。' + (alternatives.length ? '参考生成可自行选择 ' + alternatives.map(c => esc(names[c.model])).join('、') + '，所需规格与费用以新报价为准。' : '请另选可用模型。') + '</p>' : '';
     const keepSelected = [...selected.values()];
-    shell('新建视频', '模型 × 渠道 · 项目素材与会员额度统一使用', `<div class="hf-layout"><div id="hf-inputs"><section class="hf-panel"><h2>项目与模型</h2><div class="hf-fields"><label>项目<select id="hf-project"><option value="">请选择项目</option>${projects.map(p=>`<option value="${esc(p.project_id)}">${esc(p.name)}</option>`).join('')}</select></label><label>调用渠道<select disabled><option>Higgsfield</option></select></label><label>模型<select id="hf-model"><option value="">请选择模型</option>${capabilities.map(c=>`<option value="${esc(c.model)}" ${c.can_submit===true?'':'disabled'}>${esc(names[c.model])}${c.can_submit===true?'':' · 当前不可提交'}</option>`).join('')}</select></label><label>生成模式<select id="hf-mode"></select></label><label class="hf-wide">视频名称（可选）<input id="hf-title" maxlength="64" placeholder="为本次视频命名"></label></div><button class="button" id="hf-more-projects" ${ps.next_cursor?'':'hidden'}>加载更多项目</button></section><section class="hf-panel"><h2>输入内容</h2><label>提示词<textarea id="hf-prompt" maxlength="10000" placeholder="描述人物、动作、场景和镜头；说明每项参考素材的作用。"></textarea></label><div id="hf-references"><h3>参考素材</h3><p id="hf-ref-help" class="hf-muted"></p><div id="hf-assets" class="hf-assets"></div><label class="hf-actions">上传图片或视频<input id="hf-upload" type="file" accept="image/png,image/jpeg,image/webp,video/mp4" multiple></label><p class="hf-muted">图片最多 10 MB，视频最多 128 MB。上传中断后重新选择同一文件可续传。</p><p id="hf-upload-state" role="status"></p></div></section><section class="hf-panel"><h2>视频规格</h2><div class="hf-fields"><label>时长（秒）<input id="hf-duration" type="number" step="1"></label><label>分辨率<select id="hf-resolution"></select></label><label>画幅<select id="hf-ratio"></select></label></div></section></div><aside class="hf-panel"><h2>费用与可用性</h2><p id="hf-identity"></p><p class="hf-price"><span id="hf-price">待报价</span> <small>Credits</small></p><p id="hf-quote-state" class="hf-muted">报价有效期 60 秒，提交时再次核验。</p><div class="hf-actions"><button class="button" id="hf-quote">获取报价</button><button class="button primary" id="hf-submit" disabled>提交视频</button><button class="button" id="hf-recover" hidden>查询原提交</button></div><p class="hf-muted">预计消费不等于实际扣费。CLI 使用 Credits；网页 Unlimited 排队权益不适用于此入口。</p></aside></div>`);
+    shell('新建视频', '模型 × 渠道 · 项目素材与会员额度统一使用', `<div class="hf-layout"><div id="hf-inputs">${availabilityHint}<section class="hf-panel"><h2>项目与模型</h2><div class="hf-fields"><label>项目<select id="hf-project"><option value="">请选择项目</option>${projects.map(p=>`<option value="${esc(p.project_id)}">${esc(p.name)}</option>`).join('')}</select></label><label>调用渠道<select disabled><option>Higgsfield</option></select></label><label>模型<select id="hf-model"><option value="">请选择模型</option>${capabilities.map(c=>`<option value="${esc(c.model)}" ${c.can_submit===true?'':'disabled'}>${esc(names[c.model])}${c.can_submit===true?'':' · ' + esc(availability(c))}</option>`).join('')}</select></label><label>生成模式<select id="hf-mode"></select></label><label class="hf-wide">视频名称（可选）<input id="hf-title" maxlength="64" placeholder="为本次视频命名"></label></div><button class="button" id="hf-more-projects" ${ps.next_cursor?'':'hidden'}>加载更多项目</button></section><section class="hf-panel"><h2>输入内容</h2><label>提示词<textarea id="hf-prompt" maxlength="10000" placeholder="描述人物、动作、场景和镜头；说明每项参考素材的作用。"></textarea></label><div id="hf-references"><h3>参考素材</h3><p id="hf-ref-help" class="hf-muted"></p><div id="hf-assets" class="hf-assets"></div><label class="hf-actions">上传图片或视频<input id="hf-upload" type="file" accept="image/png,image/jpeg,image/webp,video/mp4" multiple></label><p class="hf-muted">图片最多 10 MB，视频最多 128 MB。上传中断后重新选择同一文件可续传。</p><p id="hf-upload-state" role="status"></p></div></section><section class="hf-panel"><h2>视频规格</h2><div class="hf-fields"><label>时长（秒）<input id="hf-duration" type="number" step="1"></label><label>分辨率<select id="hf-resolution"></select></label><label>画幅<select id="hf-ratio"></select></label></div></section></div><aside class="hf-panel"><h2>费用与可用性</h2><p id="hf-identity"></p><p class="hf-price"><span id="hf-price">待报价</span> <small>Credits</small></p><p id="hf-quote-state" class="hf-muted">报价有效期 60 秒，提交时再次核验。</p><div class="hf-actions"><button class="button" id="hf-quote">获取报价</button><button class="button primary" id="hf-submit" disabled>提交视频</button><button class="button" id="hf-recover" hidden>查询原提交</button></div><p class="hf-muted">预计消费不等于实际扣费。CLI 使用 Credits；网页 Unlimited 排队权益不适用于此入口。</p></aside></div>`);
     for (const key of ['project','model','title','prompt']) if (draft[key]) $(key).value = draft[key];
     if ($('model').value) { modelChanged(); for (const key of ['mode','duration','resolution','ratio']) if (draft[key]) $(key).value=draft[key]; modeChanged(); }
     selected = new Map(keepSelected.map(a=>[a.artifact_id,a]));
-    const updateIdentity = () => { $('identity').textContent = `${names[$('model').value] || '请选择模型'} × Higgsfield`; };
+    const updateIdentity = () => { updateQuoteButton(); $('identity').textContent = `${names[$('model').value] || '请选择模型'} × Higgsfield`; };
     updateIdentity();
     $('inputs').addEventListener('input', event => { if (event.target.id !== 'hf-upload') { invalidate(); capture(); updateIdentity(); save(); } });
     $('model').onchange = () => { modelChanged(); capture(); updateIdentity(); save(); };
@@ -143,15 +152,15 @@
         $('price').textContent=value.quoted_credits; $('quote-state').textContent=value.can_submit?'当前允许生成 · '+new Date(value.expires_at).toLocaleTimeString()+' 前有效':errors[value.blocked_reason]||'当前不可生成';
         $('submit').disabled=!value.can_submit; message(value.can_submit?'报价已更新。':'当前请求不可提交。',!value.can_submit);
         quoteTimer=setTimeout(()=>{invalidate(); message('报价已过期，请重新报价。');},Math.max(0,Date.parse(value.expires_at)-Date.now()));
-      } catch(e){message(e.message,true);} finally {busy=false;if($('quote'))$('quote').disabled=!!pending;}
+      } catch(e){message(e.message,true);} finally {busy=false;updateQuoteButton();}
     };
     $('submit').onclick = async () => {
       if(busy||pending||!quote?.can_submit||Date.parse(quote.expires_at)<=Date.now())return;
       let submission; try{submission=body();}catch(e){message(e.message,true);return;}
       pending=submission; busy=true; lockInputs(true); $('submit').disabled=true; $('quote').disabled=true; save();
       try { const result=await request('tasks',submission); if(epoch!==generation)return; pending=null;attempt=uuid();save();go('#higgsfield-task-'+result.video_task_id); }
-      catch(e){ if(epoch!==generation)return; if(e.status>=400&&e.status<500){pending=null;lockInputs(false);invalidate();$('quote').disabled=false;message(e.message,true);}else{message('提交结果待确认。请查询原提交，避免重复消费。',true);$('recover').hidden=false;} save(); }
-      finally{busy=false;}
+      catch(e){ if(epoch!==generation)return; if(e.status>=400&&e.status<500){pending=null;lockInputs(false);invalidate();message(e.message,true);}else{message('提交结果待确认。请查询原提交，避免重复消费。',true);$('recover').hidden=false;} save(); }
+      finally{busy=false;updateQuoteButton();}
     };
     $('recover').onclick=()=>recover(generation);
     if(pending){lockInputs(true);$('recover').hidden=false;$('quote').disabled=true;message('上次提交待确认，请查询原提交。');}
@@ -183,7 +192,7 @@
       if(epoch!==generation)return;$('upload-state').textContent=file.name+' · 已导入，请在素材列表中选择';
     }await loadAssets(generation);
     }catch(e){if(epoch===generation)message(e.message+' 上传中断时重新选择原文件可续传。',true);}
-    finally{busy=false;if(epoch===generation){lockInputs(!!pending);$('quote').disabled=!!pending;}}
+    finally{busy=false;if(epoch===generation){lockInputs(!!pending);updateQuoteButton();}}
   }
   async function listPage(generation) {
     shell('Higgsfield 任务', '查看有权访问的项目视频，恢复原任务或下载结果', `<section class="hf-panel"><div class="hf-fields"><label>搜索名称或提示词<input id="hf-search" type="search"></label><label>任务状态<select id="hf-status">${options(['all','queued','running','succeeded','failed'],{all:'全部状态',queued:'排队中',running:'处理中',succeeded:'已完成',failed:'失败'})}</select></label></div></section><div id="hf-cards" class="hf-cards"></div>`);

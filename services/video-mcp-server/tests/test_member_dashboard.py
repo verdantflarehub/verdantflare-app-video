@@ -9,6 +9,7 @@ from starlette.testclient import TestClient
 
 import test_higgsfield as fixture
 from app.dashboard import Dashboard
+from app.channel_errors import ChannelError
 from app.member_dashboard import MemberDashboard
 from app.delivery import CALLER
 
@@ -46,6 +47,32 @@ class MemberDashboardTest(unittest.TestCase):
         self.assertEqual(response.status_code,409)
         self.assertEqual(response.json()['error'],'quote_changed')
         self.assertEqual(self.member.dashboard.records(),[])
+
+    def test_disabled_model_rejects_quote_and_new_submit_before_supplier_call(self):
+        asset = self.executor.artifacts.create_from_chunks(project_id=fixture.PROJECT, operation='import',
+            filename='identity.png', media_type='image/png', chunks=[b'synthetic-media'])
+        self.body.update(model='seedance_2_5_draft', duration_seconds=4, mode='reference_to_video',
+                         references={'images':[{'artifact_id':asset.artifact_id, 'purpose':'reference'}]})
+        error = ChannelError('provider_not_found', source='higgsfield', accepted=False)
+        self.registry_gate.side_effect = error
+        with patch.object(self.executor.higgsfield, 'quote') as quote:
+            for endpoint in ('preflight', 'tasks'):
+                response = self.post(endpoint)
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertEqual(response.json(), {'error':error.public()})
+            quote.assert_not_called()
+        self.registry_gate.assert_called_with('higgsfield', 'seedance_2_5_draft')
+        self.assertEqual(self.member.dashboard.records(), [])
+
+    def test_existing_task_can_be_recovered_after_model_is_disabled(self):
+        self.post('preflight')
+        first = self.post('tasks').json()
+        self.registry_gate.side_effect = ChannelError('provider_not_found', source='higgsfield', accepted=False)
+        with patch.object(self.executor.higgsfield, 'quote') as quote:
+            recovered = self.post('tasks')
+            self.assertEqual(recovered.status_code, 200, recovered.text)
+            self.assertEqual(recovered.json()['video_task_id'], first['video_task_id'])
+            quote.assert_not_called()
 
     def test_channel_errors_retain_safe_envelope_in_member_requests(self):
         from app.channel_errors import ChannelError
