@@ -104,6 +104,7 @@ def task_presentation(record):
     if not model and record.service in local:
         model = "minimax-h3-ref2va"  # Historical H3 contract, never a provider fallback.
     models = {"minimax-h3-ref2va": "MiniMax H3", "minimax-h3": "MiniMax H3",
+              "minimax-h3-max-lip-sync": "MiniMax H3 Max Lip Sync",
               "wan3_0": "Wan 3.0", "grok_video_v15_lite": "Grok Imagine 1.5 Lite",
               "grok-imagine-video": "Grok Imagine", "seedance_2_5": "Seedance 2.5",
               "seedance_2_5_draft": "Seedance 2.5 Draft",
@@ -111,6 +112,7 @@ def task_presentation(record):
               "veo-3.1-fast-generate-preview": "Veo 3.1 Fast",
               "veo-3.1-generate-preview": "Veo 3.1"}
     modes = {"text_to_video": ("T2V", "文生视频"), "image_to_video": ("I2V", "图生视频"),
+             "lip_sync": ("A2V", "音频驱动口型"),
              "first_last_frame_to_video": ("F2V", "首尾帧视频"),
              "reference_to_video": ("R2V", "参考生视频"), "ref2va": ("R2V", "参考生视频")}
     mode = record.request.get("mode")
