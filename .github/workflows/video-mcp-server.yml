@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 env:
   SERVICE: video-mcp-server
-  VERSION: 0.17.59
+  VERSION: 0.17.60
 jobs:
   build:
     runs-on: ubuntu-latest

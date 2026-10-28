@@ -25,12 +25,14 @@ def proof(record, artifacts):
         params = {k: p[k] for k in ('duration_seconds', 'aspect_ratio', 'quality_profile') if k in p}
         params['fps'] = 24
     elif record.service == 'higgsfield' and route == 'higgsfield' and model == 'seedance_2_5':
-        if p.get('mode') != 'text_to_video' or any(p.get('references', {}).values()):
+        refs = [r['artifact_id'] for group in ('images', 'videos', 'audios')
+                for r in p.get('references', {}).get(group, [])]
+        if p.get('mode') not in {'text_to_video', 'reference_to_video'} or bool(refs) != (p.get('mode') == 'reference_to_video'):
             raise ValueError('execution_proof_not_ready')
         m = record.media or {}
         if not (record.provider_state or {}).get('content_ref') or not m.get('sha256') or not m.get('size'):
             raise ValueError('execution_proof_not_ready')
-        inputs = []
+        inputs = [media(artifact_id) for artifact_id in refs]
         outputs = [{'sha256': m['sha256'], 'size': m['size'], 'mime': 'video/mp4'}]
         params = {k: p[k] for k in ('duration_seconds', 'aspect_ratio', 'resolution', 'mode')}
     else:

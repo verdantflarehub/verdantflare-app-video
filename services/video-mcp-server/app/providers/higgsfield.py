@@ -46,13 +46,12 @@ class HiggsfieldAdapter:
         return [{"route": "higgsfield", "provider": "higgsfield", "model": model,
                  "enabled": self.enabled, "configured": self.configured(), "readiness": "not_checked",
                  "limit_scope": "adapter", "duration_seconds": {"minimum": bounds[0], "maximum": bounds[1]},
-                 "resolutions": (["480p"] if model == "seedance_2_5_draft" else
-                                 ["720p"] if model == "seedance_2_5" else ["480p", "720p"]),
+                 "resolutions": (["480p"] if model == "seedance_2_5_draft" else ["480p", "720p"]),
                  "aspect_ratios": sorted(RATIOS | ({"21:9"} if model in {"seedance_2_5", "seedance_2_5_draft"} else set())),
                  "modes": (["reference_to_video"] if model == "seedance_2_5_draft" else
-                           ["text_to_video", "reference_to_video"] if model == "wan3_0" else
+                           ["text_to_video", "reference_to_video"] if model in {"wan3_0", "seedance_2_5"} else
                            ["text_to_video"]),
-                 "reference_limits": {"images": 4, "videos": 1, "audios": 0} if model in {"wan3_0", "seedance_2_5_draft"} else None,
+                 "reference_limits": {"images": 4, "videos": 1, "audios": 0} if model in {"wan3_0", "seedance_2_5", "seedance_2_5_draft"} else None,
                  "poll": True, "cancel": False, "callback": False, "verification_status": "not_recorded"}
                 for model, bounds in MODELS.items()]
 
@@ -114,7 +113,7 @@ class HiggsfieldAdapter:
         refs = {k: references.get(k, []) for k in ("images", "videos", "audios")}
         if any(not isinstance(v, list) for v in refs.values()) or refs["audios"]:
             raise ValueError("unsupported_references")
-        mixed = model in {"wan3_0", "seedance_2_5_draft"}
+        mixed = model in {"wan3_0", "seedance_2_5", "seedance_2_5_draft"}
         if len(refs["images"]) > (4 if mixed else 1) or len(refs["videos"]) > (1 if mixed else 0):
             raise ValueError("unsupported_references")
         has_refs = bool(refs["images"] or refs["videos"])
@@ -150,7 +149,7 @@ class HiggsfieldAdapter:
             if abs(source["width"] * b - source["height"] * a) > max(a, b):
                 raise ValueError("aspect_ratio_conflict")
         resolution = resolution or ("480p" if model == "seedance_2_5_draft" else "720p")
-        if resolution not in ({"480p"} if model == "seedance_2_5_draft" else {"720p"} if model == "seedance_2_5" else {"480p", "720p"}):
+        if resolution not in ({"480p"} if model == "seedance_2_5_draft" else {"480p", "720p"}):
             raise ValueError("unsupported_resolution")
         value = dict(project_id=project_id, model=model, prompt=prompt, duration_seconds=duration_seconds,
                      aspect_ratio=aspect_ratio, references=refs, mode=resolved_mode, resolution=resolution,

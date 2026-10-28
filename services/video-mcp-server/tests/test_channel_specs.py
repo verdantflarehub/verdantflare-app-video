@@ -41,7 +41,7 @@ class ChannelSpecificationTests(unittest.TestCase):
     def test_higgsfield_keeps_each_models_own_modes_resolutions_and_defaults(self):
         routes = self.routes()
         for model, resolutions, modes in [
-            ('seedance_2_5', ['720p'], ['text_to_video']),
+            ('seedance_2_5', ['480p', '720p'], ['text_to_video', 'reference_to_video']),
             ('seedance_2_5_draft', ['480p'], ['reference_to_video']),
             ('wan3_0', ['480p', '720p'], ['text_to_video', 'reference_to_video']),
             ('grok_video_v15_lite', ['480p', '720p'], ['text_to_video'])]:
@@ -50,10 +50,12 @@ class ChannelSpecificationTests(unittest.TestCase):
                 self.assertEqual(route['resolutions'], resolutions)
                 self.assertEqual(route['modes'], modes)
                 self.assertNotIn('models', route)
+        self.assertEqual(routes['higgsfield', 'seedance_2_5']['defaults']['resolution'], '720p')
         self.assertEqual(routes['higgsfield', 'seedance_2_5_draft']['defaults']['resolution'], '480p')
         self.assertEqual(routes['higgsfield', 'wan3_0']['defaults']['resolution'], '720p')
-        self.assertEqual(routes['higgsfield', 'seedance_2_5']['reference_limits']['total'], 0)
+        self.assertEqual(routes['higgsfield', 'seedance_2_5']['reference_limits']['total'], 5)
         self.assertEqual(routes['higgsfield', 'wan3_0']['reference_limits']['total'], 5)
+        self.assertEqual(routes['higgsfield', 'grok_video_v15_lite']['reference_limits']['total'], 0)
 
     def test_fal_h3_and_seedance_have_distinct_constraints_without_borrowing(self):
         routes = self.routes()

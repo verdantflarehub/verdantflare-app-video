@@ -41,7 +41,7 @@ def reference_limits(route, model):
             by_mode={'text_to_video': {'images': 0, 'videos': 0, 'audios': 0, 'total': 0},
                      'image_to_video': {'images': 1, 'videos': 0, 'audios': 0, 'total': 1, 'minimum_total': 1}})
     elif route == 'higgsfield':
-        mixed = model in {'wan3_0', 'seedance_2_5_draft'}
+        mixed = model in {'wan3_0', 'seedance_2_5', 'seedance_2_5_draft'}
         value.update(images=4 if mixed else 0, videos=1 if mixed else 0, audios=0, total=5 if mixed else 0,
             minimum_total=1 if model == 'seedance_2_5_draft' else 0,
             max_bytes={'images': 10 * mib if mixed else 0, 'videos': 128 * mib if mixed else 0, 'audios': 0},
@@ -50,7 +50,7 @@ def reference_limits(route, model):
         if mixed:
             value['by_mode'] = {'reference_to_video': {'images': 4, 'videos': 1, 'audios': 0,
                                                       'total': 5, 'minimum_total': 1}}
-            if model == 'wan3_0':
+            if model in {'wan3_0', 'seedance_2_5'}:
                 value['by_mode']['text_to_video'] = {'images': 0, 'videos': 0, 'audios': 0, 'total': 0}
     return value
 

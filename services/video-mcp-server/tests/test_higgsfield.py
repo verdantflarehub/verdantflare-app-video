@@ -41,6 +41,11 @@ class HiggsfieldTest(unittest.TestCase):
         self.assertEqual(record.request["mode"], "reference_to_video")
         self.assertEqual(record.request["resolution"], "480p")
         self.assertEqual([v["kind"] for v in record.request["sources"]], ["image", "video"])
+        full = self.create(idempotency_key="full-r2v", model="seedance_2_5", duration_seconds=4,
+                           resolution="480p", references=refs)
+        self.assertEqual(full.request["mode"], "reference_to_video")
+        self.assertEqual(full.request["resolution"], "480p")
+        self.assertEqual([v["kind"] for v in full.request["sources"]], ["image", "video"])
         from app import server
         with patch.object(server, "executor", self.executor), patch.object(self.executor.higgsfield, "quote", return_value={
                 'credits':12, 'can_submit': True, 'blocked_reason':None, 'expires_at':'test-expiry'}) as quote:
