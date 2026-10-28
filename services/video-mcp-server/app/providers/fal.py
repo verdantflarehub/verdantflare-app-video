@@ -832,7 +832,7 @@ class FalAdapter:
                         "format=duration:stream=codec_type,codec_name,width,height,r_frame_rate,sample_rate,channels",
                         "-of",
                         "json",
-                        temp,
+                        temp.name,
                     ],
                     check=True,
                     capture_output=True,
