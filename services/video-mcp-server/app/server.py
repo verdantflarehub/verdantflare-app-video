@@ -700,9 +700,11 @@ def video_result(video_task_id: str = "", task_id: str = "", execution_proof_onl
         return _result({**res, **titles.project(t_store, record)})
     artifact = a_store.get(record.artifact_id, record.project_id)
     value = {"task_id": record.video_task_id, "video_task_id": record.video_task_id, "artifact_id": artifact.artifact_id,
+             "status": "succeeded", "project_id": record.project_id,
              "model": record.request.get("model", "minimax-h3-ref2va"), "runtime_version": record.runtime_version or executor.runtime_version,
              "runtime_route": record.runtime_route, "service": record.service,
-             "input_digest": record.input_digest, "media": record.media, "delivery": record.delivery,
+             "input_digest": record.input_digest,
+             "media": {**(record.media or {}), "sha256": artifact.sha256, "size": artifact.size}, "delivery": record.delivery,
              "download_path": a_store.download_path(artifact.artifact_id)}
     return _result({**value, **titles.project(t_store, record)})
 
