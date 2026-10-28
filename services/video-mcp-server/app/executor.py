@@ -194,7 +194,7 @@ class VideoExecutor:
 
     def capabilities(self) -> dict[str, object]:
         """Separate configured adapters, live readiness and unverified GPU combinations."""
-        from .providers.fal import FAL_ASPECT_RATIOS
+        from .providers.fal import FAL_ASPECT_RATIOS, FAL_LIP_PUBLIC_MODEL
         from .singularity import ASPECT_RATIOS
         routes = []
         names = {self.runtime_route, "fal", *self.runtime_routes}
@@ -243,6 +243,13 @@ class VideoExecutor:
                        "modes": ["reference_to_video"],
                        "resolutions": ["480p", "720p"]})
         routes.extend(self.higgsfield.capabilities())
+        routes.append({"route": "fal", "model": FAL_LIP_PUBLIC_MODEL,
+                       "configured": self.fal.connected() and self.fal.lip_sync_declared(),
+                       "readiness": "not_checked", "limit_scope": "adapter",
+                       "modes": ["lip_sync"], "duration_seconds": {"minimum": 5, "maximum": 15},
+                       "duration_basis": "source_audio", "aspect_ratios": ["adaptive"],
+                       "resolutions": ["480p", "768p"], "prompt_usage": "task_description_only",
+                       "reference_limits": {"images": 1, "audios": 1, "videos": 0}})
         catalog = self.catalog_view()
         dynamic_models = []
         for channel, entries in catalog.get("execution", {}).items():
@@ -474,7 +481,9 @@ class VideoExecutor:
         aspect_ratio = aspect_ratio or "16:9"
         quality_profile = quality_profile or "du-0"
         if route == "fal":
-            if mode not in {None, "reference_to_video"} or quality_profile != "du-0":
+            from .providers.fal import FAL_LIP_PUBLIC_MODEL
+            allowed_modes = {None, "lip_sync"} if model == FAL_LIP_PUBLIC_MODEL else {None, "reference_to_video"}
+            if mode not in allowed_modes or quality_profile != "du-0":
                 raise ValueError("unsupported_parameter")
             return self.fal.generate(project_id=project_id, idempotency_key=idempotency_key,
                                      model=model, prompt=prompt, duration_seconds=duration_seconds,

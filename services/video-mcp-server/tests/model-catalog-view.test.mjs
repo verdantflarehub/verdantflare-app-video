@@ -118,6 +118,19 @@ test('fal H3 Max displays discovered endpoints without claiming paid execution',
   assert.match(html, /12 个端点已纳入只读能力目录 · 暂不可提交/);
   assert.doesNotMatch(html, /12 个端点已接入执行适配/);
   assert.doesNotMatch(html, /官方 Schema|href="https:\/\/fal\.ai\//);
+  const connected = capabilities.map((item, index) => index === 6 ? {...item,
+    endpoint_id:'minimax/h3-max/lip-sync/image-to-video',
+    execution_state:'adapter_connected_unverified',
+    input_summary:'一张人物图 · 一段5–15秒音频',
+    output_summary:'与音轨等长的视频 · VF适配480P／768P'} : item);
+  view.set({...data, channel_capabilities:{fal:{...data.channel_capabilities.fal,
+    version:'lip-connected', capabilities:connected}}});
+  const adaptedHtml = nodes['[data-catalog-results]'].innerHTML;
+  assert.match(adaptedHtml, /1 个端点已接入执行适配 · 11 个仅目录收录/);
+  assert.match(adaptedHtml, /Lip Sync Max[\s\S]*供应商最高输出：2K/);
+  assert.match(adaptedHtml, /一张人物图 · 一段5–15秒音频；与音轨等长的视频 · VF适配480P／768P/);
+  assert.equal((adaptedHtml.match(/执行适配已接入，真实生成待验证/g) || []).length, 1);
+  assert.equal((adaptedHtml.match(/仅目录收录，暂不可提交/g) || []).length, 11);
   const second = {...model,id:'fal-h3max-camera',display_name:'MiniMax H3 Max · Camera Controls',
     upstream_model_id:'minimax/h3-max/camera-controls'};
   view.set({...data,snapshot_id:'with-second-entry',

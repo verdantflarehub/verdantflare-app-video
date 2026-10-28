@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
+import wave
 import json
 import os
 import re
@@ -15,6 +17,7 @@ from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
 import httpx
+from PIL import Image
 
 from ..artifacts import MAX_ARTIFACT_BYTES, ArtifactError
 from ..channel_errors import ChannelError, channel_error, check_response
@@ -25,6 +28,8 @@ FAL_PUBLIC_MODEL = "minimax-h3-ref2va"
 FAL_MODEL_ID = "minimax/h3/reference-to-video"
 FAL_SD2_PUBLIC_MODEL = "bytedance-seedance-2.0-reference-to-video"
 FAL_SD2_MODEL_ID = "bytedance/seedance-2.0/reference-to-video"
+FAL_LIP_PUBLIC_MODEL = "minimax-h3-max-lip-sync"
+FAL_LIP_MODEL_ID = "minimax/h3-max/lip-sync/image-to-video"
 FAL_QUEUE_MODEL_ID = "minimax/h3"
 FAL_RUNTIME_VERSION = "video-fal-adapter-v0.2.2"
 FAL_GATEWAY_RUNTIME_VERSION = "video-fal-gateway-v0.1.0"
@@ -114,7 +119,8 @@ class FalAdapter:
                     or not isinstance(item.get("output_resolutions", []), list)):
                 return None
             seen.add(capability_id)
-            if item["model_id"] == "minimax/h3-max" and item["execution_state"] != "catalog_only":
+            if (item["model_id"] == "minimax/h3-max" and item["execution_state"] != "catalog_only"
+                    and item["endpoint_id"] != FAL_LIP_MODEL_ID):
                 # A directory file cannot silently enable a paid adapter.
                 return None
             card_fields = ("card_group", "card_title", "input_summary", "output_summary")
@@ -224,9 +230,10 @@ class FalAdapter:
 
     @staticmethod
     def _reference_duration(payload: bytes, suffix: str) -> float:
-        with tempfile.NamedTemporaryFile(suffix=suffix) as temp:
-            temp.write(payload)
-            temp.flush()
+        with tempfile.TemporaryDirectory() as directory:
+            temp = os.path.join(directory, "reference" + suffix)
+            with open(temp, "wb") as output:
+                output.write(payload)
             try:
                 probe = subprocess.run(
                     [
@@ -237,7 +244,7 @@ class FalAdapter:
                         "format=duration",
                         "-of",
                         "json",
-                        temp.name,
+                        temp,
                     ],
                     check=True,
                     capture_output=True,
@@ -268,7 +275,7 @@ class FalAdapter:
         aspect_ratio: str,
         references: dict[str, list[dict[str, str]]],
     ) -> tuple[dict[str, object], str]:
-        if model not in {FAL_PUBLIC_MODEL, FAL_SD2_PUBLIC_MODEL}:
+        if model not in {FAL_PUBLIC_MODEL, FAL_SD2_PUBLIC_MODEL, FAL_LIP_PUBLIC_MODEL}:
             raise ValueError("model is not enabled for route fal")
         if not prompt.strip() or not (4 if model == FAL_SD2_PUBLIC_MODEL else 5) <= duration_seconds <= 15:
             raise ValueError("prompt or duration_seconds is invalid for route fal")
@@ -288,6 +295,11 @@ class FalAdapter:
             raise ValueError("adaptive aspect ratio is not supported for fal Seedance")
         if model == FAL_SD2_PUBLIC_MODEL and not (images or videos):
             raise ValueError("fal Seedance needs an image or video reference")
+        if model == FAL_LIP_PUBLIC_MODEL:
+            if len(images) != 1 or len(audios) != 1 or videos:
+                raise ValueError("lip sync requires exactly one image and one audio, without video references")
+            if aspect_ratio != "adaptive":
+                raise ValueError("lip sync derives its aspect ratio from the input image; use adaptive")
 
         normalized: dict[str, list[dict[str, str]]] = {"images": [], "videos": [], "audios": []}
         for kind, items, prefix in (
@@ -313,13 +325,54 @@ class FalAdapter:
             "references": normalized,
             "route": "fal",
         }
+        if model == FAL_LIP_PUBLIC_MODEL:
+            self._lip_sync_payload(request)
+            request.update(mode="lip_sync", endpoint_id=FAL_LIP_MODEL_ID,
+                           prompt_usage="task_description_only")
         canonical = json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return request, "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+
+    def _lip_sync_payload(self, request: dict) -> dict[str, object]:
+        """Validate actual immutable media before task persistence or reservation."""
+        refs = request["references"]
+        image = self.executor.artifacts.get(refs["images"][0]["artifact_id"], request["project_id"])
+        audio = self.executor.artifacts.get(refs["audios"][0]["artifact_id"], request["project_id"])
+        if audio.media_type != "audio/wav":
+            raise ValueError("lip sync initially requires PCM WAV audio for measured billing")
+        image_uri, _ = self._artifact_data_uri(image, MAX_FAL_IMAGE_BYTES)
+        with Image.open(io.BytesIO(base64.b64decode(image_uri.split(",", 1)[1]))) as im:
+            if not 0.4 <= im.width / im.height <= 2.5:
+                raise ValueError("lip sync image aspect ratio must be between 0.4 and 2.5")
+            im.verify()
+        audio_uri, seconds = self._artifact_data_uri(audio, MAX_FAL_AUDIO_BYTES, timed=True)
+        try:
+            with wave.open(io.BytesIO(base64.b64decode(audio_uri.split(",", 1)[1])), "rb") as pcm:
+                frames = pcm.getnframes()
+                if (pcm.getcomptype() != "NONE"
+                        or len(pcm.readframes(frames)) != frames * pcm.getnchannels() * pcm.getsampwidth()
+                        or abs(frames / pcm.getframerate() - seconds) > 0.001):
+                    raise ValueError()
+        except (wave.Error, EOFError, ValueError):
+            raise ValueError("lip sync requires intact PCM WAV matching decoded duration") from None
+        if seconds is None or not 5 <= seconds <= 15 or abs(seconds - request["duration_seconds"]) > 0.05:
+            raise ValueError("lip sync audio must be 5-15 seconds and match duration_seconds within 50ms")
+        request["source_audio_duration_seconds"] = seconds
+        return {"image_url": image_uri, "audio_url": audio_uri,
+                "resolution": request.get("resolution", "768p").upper(),
+                "enable_transcription": True, "enable_safety_checker": True}
+
+    def lip_sync_declared(self) -> bool:
+        directory = self.channel_capabilities()
+        return bool(directory and any(item.get("endpoint_id") == FAL_LIP_MODEL_ID
+            and item.get("execution_state") == "adapter_connected_unverified"
+            for item in directory["capabilities"]))
 
     def _payload(self, record: TaskRecord) -> dict[str, object]:
         return self._request_payload(record.request)
 
     def _request_payload(self, request: dict) -> dict[str, object]:
+        if request["model"] == FAL_LIP_PUBLIC_MODEL:
+            return self._lip_sync_payload(request)
         references = request["references"]
         sd2 = request["model"] == FAL_SD2_PUBLIC_MODEL
         payload: dict[str, object] = {
@@ -375,7 +428,11 @@ class FalAdapter:
             aspect_ratio=aspect_ratio,
             references=references,
         )
-        if model == FAL_SD2_PUBLIC_MODEL:
+        if model == FAL_LIP_PUBLIC_MODEL:
+            if resolution not in {None, "480p", "768p"}:
+                raise ValueError("unsupported fal lip sync resolution")
+            request["resolution"] = resolution or "768p"
+        elif model == FAL_SD2_PUBLIC_MODEL:
             if resolution not in {None, "480p", "720p"}:
                 raise ValueError("unsupported fal Seedance resolution")
             request["resolution"] = resolution or "720p"
@@ -407,20 +464,26 @@ class FalAdapter:
     def preflight(self, *, project_id, prompt, model=None, duration_seconds=5, aspect_ratio=None,
                   references, mode=None, resolution=None, quality_profile=None,
                   channel_account_id=None, budget_limit=None):
-        if mode not in {None, 'reference_to_video'} or quality_profile not in {None, 'du-0'}:
+        selected_model = model or FAL_PUBLIC_MODEL
+        expected_mode = 'lip_sync' if selected_model == FAL_LIP_PUBLIC_MODEL else 'reference_to_video'
+        if mode not in {None, expected_mode} or quality_profile not in {None, 'du-0'}:
             raise ChannelError('unsupported_parameter', source='fal', accepted=False)
         if not self.connected():
             raise ChannelError('provider_not_configured', source='fal', accepted=False)
-        request, digest = self._normalize_request(project_id=project_id, model=model or FAL_PUBLIC_MODEL,
-            prompt=prompt, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio or '16:9',
+        request, digest = self._normalize_request(project_id=project_id, model=selected_model,
+            prompt=prompt, duration_seconds=duration_seconds,
+            aspect_ratio=aspect_ratio or ('adaptive' if selected_model == FAL_LIP_PUBLIC_MODEL else '16:9'),
             references=references, resolution=resolution, channel_account_id=channel_account_id,
             budget_limit=budget_limit)
         self.executor.require_channel('fal', request['model'])
+        if selected_model == FAL_LIP_PUBLIC_MODEL and not self.lip_sync_declared():
+            raise ChannelError('capability_not_supported', source='fal', accepted=False)
         try:
             payload = self._request_payload(request)
         except (ArtifactError, OSError, ValueError):
             raise ChannelError('source_integrity_failed', source='fal', accepted=False) from None
-        provider_model = FAL_SD2_MODEL_ID if request['model'] == FAL_SD2_PUBLIC_MODEL else self.model_id
+        provider_model = (FAL_LIP_MODEL_ID if selected_model == FAL_LIP_PUBLIC_MODEL else
+                          FAL_SD2_MODEL_ID if selected_model == FAL_SD2_PUBLIC_MODEL else self.model_id)
         try:
             response = self.executor.client.post(self.gateway_url + '/v1/video-preflight',
                 headers=self._gateway_headers(request['organization_id']),
@@ -460,6 +523,8 @@ class FalAdapter:
             return existing
         if self.connected():
             self.executor.require_channel('fal', model)
+        if model == FAL_LIP_PUBLIC_MODEL and not self.lip_sync_declared():
+            raise ValueError("lip sync channel adapter is not declared available")
         record = self.executor.tasks.create(
             project_id=project_id,
             idempotency_key=idempotency_key,
@@ -497,7 +562,8 @@ class FalAdapter:
                 self.gateway_url + "/v1/calls",
                 headers=self._gateway_headers(str(request["organization_id"])),
                 json={"idempotency_key": record.video_task_id, "task_id": record.video_task_id,
-                      "model_id": FAL_SD2_MODEL_ID if model == FAL_SD2_PUBLIC_MODEL else self.model_id,
+                      "model_id": FAL_LIP_MODEL_ID if model == FAL_LIP_PUBLIC_MODEL else
+                                  FAL_SD2_MODEL_ID if model == FAL_SD2_PUBLIC_MODEL else self.model_id,
                       "capability": "video", "payload": payload,
                       "account_id": request.get('channel_account_id'), "budget_limit": request.get('budget_limit')},
                 timeout=75,
@@ -766,7 +832,7 @@ class FalAdapter:
                         "format=duration:stream=codec_type,codec_name,width,height,r_frame_rate,sample_rate,channels",
                         "-of",
                         "json",
-                        temp.name,
+                        temp,
                     ],
                     check=True,
                     capture_output=True,

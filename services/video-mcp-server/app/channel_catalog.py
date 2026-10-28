@@ -81,17 +81,22 @@ def read_directory(channel, url, token, *, transport=None):
 
 
 def supported_models(executor):
-    from .providers.fal import FAL_MODEL_ID, FAL_PUBLIC_MODEL, FAL_SD2_MODEL_ID, FAL_SD2_PUBLIC_MODEL
+    from .providers.fal import (FAL_MODEL_ID, FAL_PUBLIC_MODEL, FAL_SD2_MODEL_ID, FAL_SD2_PUBLIC_MODEL,
+                                FAL_LIP_MODEL_ID, FAL_LIP_PUBLIC_MODEL)
     from .providers.grok import MODELS as GROK_MODELS
     from .providers.google import MODELS as GOOGLE_MODELS
     from .providers.higgsfield import MODELS as HF_MODELS
-    return {'fal': {FAL_MODEL_ID: FAL_PUBLIC_MODEL, FAL_SD2_MODEL_ID: FAL_SD2_PUBLIC_MODEL},
+    return {'fal': {FAL_MODEL_ID: FAL_PUBLIC_MODEL, FAL_SD2_MODEL_ID: FAL_SD2_PUBLIC_MODEL,
+                    FAL_LIP_MODEL_ID: FAL_LIP_PUBLIC_MODEL},
             'grok': {model: model for model in GROK_MODELS},
             'google': {model: model for model in GOOGLE_MODELS},
             'higgsfield': {model: model for model in HF_MODELS}}
 
 
-def supported_operation(channel, operation):
+def supported_operation(channel, operation, identity=None):
+    from .providers.fal import FAL_LIP_MODEL_ID
+    if channel == 'fal' and identity == FAL_LIP_MODEL_ID:
+        return operation == 'video.transform.lip_sync'
     return operation == ('video.generate.reference' if channel == 'fal' else 'video.generate')
 
 
@@ -192,13 +197,13 @@ def project(executor):
                                  adapter.get('configured') is True and adapter.get('enabled') is True)
                 if state in {'disabled', 'catalog_only'}:
                     pass
-                elif public_model is None or not supported_operation(channel, cap['operation']):
+                elif public_model is None or not supported_operation(channel, cap['operation'], identity):
                     state = 'catalog_only'
                 elif not registered:
                     state = 'unavailable'
                 elif not adapter_ready:
                     state = 'adapter_disconnected'
-                can_submit = (public_model is not None and supported_operation(channel, cap['operation'])
+                can_submit = (public_model is not None and supported_operation(channel, cap['operation'], identity)
                               and state in {'enabled', 'adapter_connected_unverified'}
                               and adapter_ready
                               and registry.permits(channel, cap['capability_id'], registrations)

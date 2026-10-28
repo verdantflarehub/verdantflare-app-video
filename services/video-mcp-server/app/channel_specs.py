@@ -1,7 +1,7 @@
 """Effective Video adapter limits, keyed by the exact execution identity."""
 from copy import deepcopy
 
-from .providers.fal import (FAL_PUBLIC_MODEL, FAL_SD2_PUBLIC_MODEL, MAX_FAL_IMAGE_BYTES,
+from .providers.fal import (FAL_PUBLIC_MODEL, FAL_SD2_PUBLIC_MODEL, FAL_LIP_PUBLIC_MODEL, MAX_FAL_IMAGE_BYTES,
                             MAX_FAL_VIDEO_BYTES, MAX_FAL_AUDIO_BYTES)
 from .providers.google import MAX_SOURCE_IMAGE_BYTES, MAX_SOURCE_IMAGE_PIXELS
 
@@ -9,7 +9,15 @@ from .providers.google import MAX_SOURCE_IMAGE_BYTES, MAX_SOURCE_IMAGE_PIXELS
 def reference_limits(route, model):
     mib = 1024 * 1024
     value = {'scope': 'video_adapter', 'max_total_bytes': None}
-    if route == 'fal':
+    if route == 'fal' and model == FAL_LIP_PUBLIC_MODEL:
+        value.update(images=1, videos=0, audios=1, total=2, minimum_total=2,
+            max_bytes={'images': MAX_FAL_IMAGE_BYTES, 'videos': 0, 'audios': MAX_FAL_AUDIO_BYTES},
+            formats={'images': ['PNG', 'JPEG', 'WebP'], 'videos': [], 'audios': ['WAV/PCM']},
+            duration_seconds={'audios': {'minimum': 5, 'maximum': 15}},
+            image_aspect_ratio={'minimum': 0.4, 'maximum': 2.5},
+            audio_duration_tolerance_seconds=0.05, request_body_max_bytes=96 * mib,
+            request_body_encoding='json_with_base64_media')
+    elif route == 'fal':
         sd2 = model == FAL_SD2_PUBLIC_MODEL
         value.update(images=9, videos=3, audios=3, total=12, minimum_total=1,
             max_bytes={'images': 30 * mib if sd2 else MAX_FAL_IMAGE_BYTES,
@@ -59,6 +67,8 @@ def effective_route(template, declaration, entry):
                          ('aspect_ratio', value.get('aspect_ratios'))]:
         source = props.get(name, {})
         source = source if isinstance(source, dict) else {}
+        if route == 'fal' and model == FAL_LIP_PUBLIC_MODEL and name == 'resolution' and 'enum' in source:
+            source = {**source, 'enum': [item.lower() for item in source['enum'] if isinstance(item, str)]}
         if values is not None:
             enum = [item for item in values if 'enum' not in source or item in source['enum']]
             effective[name] = {**source, 'enum': enum}
@@ -88,6 +98,8 @@ def effective_route(template, declaration, entry):
         value['defaults']['aspect_ratio'] = '16:9'
     elif route == 'fal':
         value['defaults']['mode'] = 'reference_to_video'
+        if model == FAL_LIP_PUBLIC_MODEL:
+            value['defaults'].update(mode='lip_sync', resolution='768p', aspect_ratio='adaptive')
         if model == FAL_PUBLIC_MODEL:
             value['defaults'].pop('resolution')
             value['output_resolutions'] = ['480P']

@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from app.artifacts import ArtifactStore
 from app.executor import VideoExecutor
-from app.providers.fal import FAL_PUBLIC_MODEL, FAL_SD2_PUBLIC_MODEL
+from app.providers.fal import FAL_PUBLIC_MODEL, FAL_SD2_PUBLIC_MODEL, FAL_LIP_PUBLIC_MODEL
 from app.tasks import TaskStore
 
 
@@ -23,7 +23,7 @@ class ChannelSpecificationTests(unittest.TestCase):
         self.addCleanup(self.executor.grok.download_client.close)
         self.catalog = {'execution': {}, 'channel_capabilities': {}}
         for channel, models in {'higgsfield': ['seedance_2_5', 'seedance_2_5_draft', 'wan3_0', 'grok_video_v15_lite'],
-                'fal': [FAL_PUBLIC_MODEL, FAL_SD2_PUBLIC_MODEL],
+                'fal': [FAL_PUBLIC_MODEL, FAL_SD2_PUBLIC_MODEL, FAL_LIP_PUBLIC_MODEL],
                 'grok': ['grok-imagine-video', 'grok-imagine-video-1.5']}.items():
             self.catalog['execution'][channel] = {}
             self.catalog['channel_capabilities'][channel] = {'capabilities': []}
@@ -78,6 +78,18 @@ class ChannelSpecificationTests(unittest.TestCase):
         self.assertEqual(routes['higgsfield', 'wan3_0']['duration_seconds'], {'minimum': 6, 'maximum': 9})
         self.assertEqual(routes['higgsfield', 'wan3_0']['resolutions'], ['720p'])
         self.assertNotIn(('higgsfield', 'future-model'), routes)
+
+    def test_lip_sync_keeps_upstream_resolution_mapping_and_exact_media_contract(self):
+        cap = next(item for item in self.catalog['channel_capabilities']['fal']['capabilities']
+                   if item['capability_id'] == FAL_LIP_PUBLIC_MODEL)
+        cap['parameter_schema'] = {'properties': {'resolution': {'enum': ['480P', '768P']}}}
+        route = self.routes()['fal', FAL_LIP_PUBLIC_MODEL]
+        self.assertEqual(route['resolutions'], ['480p', '768p'])
+        self.assertEqual(route['defaults'], {'mode': 'lip_sync', 'resolution': '768p', 'aspect_ratio': 'adaptive'})
+        self.assertEqual(route['reference_limits']['minimum_total'], 2)
+        self.assertEqual(route['reference_limits']['audios'], 1)
+        self.assertEqual(route['reference_limits']['videos'], 0)
+        self.assertEqual(route['reference_limits']['formats']['audios'], ['WAV/PCM'])
 
     def test_each_grok_row_has_one_execution_identity_and_one_image_limit(self):
         self.executor.grok.channel_mode = True

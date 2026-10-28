@@ -115,6 +115,7 @@ def task_presentation(record, catalog=None):
                 break
     label = label or "未记录模型"
     modes = {"text_to_video": ("T2V", "文生视频"), "image_to_video": ("I2V", "图生视频"),
+             "lip_sync": ("A2V", "音频驱动口型"),
              "first_last_frame_to_video": ("F2V", "首尾帧视频"),
              "reference_to_video": ("R2V", "参考生视频"), "ref2va": ("R2V", "参考生视频")}
     mode = record.request.get("mode")
