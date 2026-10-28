@@ -477,6 +477,19 @@ class FalRouteTest(unittest.TestCase):
         self.assertIn("Audio 1 is the approved dialogue rhythm reference", submitted["prompt"])
         client.close()
 
+    def test_result_probe_passes_a_file_path_to_ffprobe(self) -> None:
+        from app.providers.fal import FalAdapter
+
+        probe = mock.Mock(stdout=json.dumps({
+            "format": {"duration": "4.0"},
+            "streams": [{"codec_type": "video", "codec_name": "h264", "width": 1280, "height": 720, "r_frame_rate": "24/1"}],
+        }))
+        with mock.patch("app.providers.fal.subprocess.run", return_value=probe) as run:
+            FalAdapter._probe(b"payload")
+        target = run.call_args.args[0][-1]
+        self.assertIsInstance(target, str)
+        self.assertTrue(target.endswith(".mp4"))
+
     def test_model_reference_and_result_origin_are_restricted(self) -> None:
         executor = VideoExecutor(self.artifacts, self.tasks)
         with self.assertRaises(ValueError):
