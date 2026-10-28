@@ -16,7 +16,8 @@ from starlette.routing import Route
 from . import titles
 from .artifacts import ArtifactError, ArtifactNotFound
 from .content_rating import include_nsfw_from_headers
-from .dashboard import Submission, public_task
+from .dashboard import Submission
+from .channel_errors import ChannelError
 from .tasks import TaskConflict, TaskNotFound
 
 
@@ -122,13 +123,13 @@ class MemberDashboard:
                     titles.PROVIDED_TITLE.reset(marker)
         # Rating projection may initialize WAL on a second connection. Commit
         # the identity transaction before reading the public representation.
-        return public_task(record, self.executor.tasks)
+        return self.dashboard._public_task(record, self.executor.tasks)
 
     def dispatch(self, action, request, body):
         self.adapter.authorize_member()
         query = request.query_params
         if action == 'capabilities':
-            values = self.adapter.capabilities()
+            values = [value for value in self.executor.capabilities()['routes'] if value['route'] == 'higgsfield']
             for value in values:
                 if value['model'] == 'grok_video_v15_lite':
                     value['modes'] = ['text_to_video']
@@ -189,7 +190,7 @@ class MemberDashboard:
             self.record(record.video_task_id)
             if not include_nsfw and tasks_store.is_record_nsfw(record, ratings_store):
                 return {'state':'not_found'}
-            return {'state':'found', 'task':public_task(record, tasks_store)}
+            return {'state':'found', 'task':self.dashboard._public_task(record, tasks_store)}
         if action == 'tasks' and request.method == 'POST':
             return self.create(body)
         if action == 'tasks':
@@ -204,7 +205,7 @@ class MemberDashboard:
                 except PermissionError:
                     continue
                 items.append({
-                    **public_task(record, tasks_store),
+                    **self.dashboard._public_task(record, tasks_store),
                     'task_id': record.video_task_id,
                     **tasks_store.record_ui_fields(record, ratings_store, can_write=True),
                 })
@@ -243,6 +244,9 @@ class MemberDashboard:
                 raise ValueError('invalid_request')
             value = await run_in_threadpool(self.dispatch, request.url.path.split('/api/higgsfield/')[1], request, body)
             return value if isinstance(value, Response) else JSONResponse(value, headers={'Cache-Control':'no-store'})
+        except ChannelError as error:
+            status = error.http_status if type(error.http_status) is int and 400 <= error.http_status <= 599 else 400
+            return JSONResponse({'error':error.public()}, status_code=status, headers={'Cache-Control':'no-store'})
         except MemberError as error:
             code, status = error.code, error.status
         except PermissionError:

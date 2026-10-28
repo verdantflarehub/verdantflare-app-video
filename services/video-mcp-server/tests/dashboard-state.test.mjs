@@ -27,6 +27,91 @@ function setup() {
   return { listeners, messages, revoked, nodes, flush, run: code => vm.runInContext(code, context) };
 }
 
+test('HTTP 503 keeps distinct channel reasons and original acceptance metadata', async () => {
+  const app = setup();
+  for (const code of ['authorization_required', 'limits_unavailable', 'account_unavailable']) {
+    const failure = await app.run(`(async () => {
+      window.studioRequest = async () => ({ ok: false, status: 503,
+        text: async () => JSON.stringify({error: {code: '${code}', message: 'Channel reason ${code}',
+          source: 'higgsfield', retryable: true, accepted: null, http_status: 503,
+          task_id: 'video_task_' + 'a'.repeat(32)}}) });
+      try { await api('/api/tasks'); } catch (error) {
+        return {message: error.message, code: error.code, source: error.source,
+          accepted: error.accepted, retryable: error.retryable, http_status: error.http_status, task_id: error.task_id};
+      }
+    })()`);
+    assert.equal(failure.code, code);
+    assert.equal(failure.source, 'higgsfield');
+    assert.equal(failure.accepted, null);
+    assert.equal(failure.http_status, 503);
+    assert.equal(failure.retryable, true);
+    assert.equal(failure.task_id, 'video_task_' + 'a'.repeat(32));
+    assert.match(failure.message, /不要重复提交/);
+    assert.ok(failure.message.includes(code));
+    assert.doesNotMatch(failure.message, /未配置访问 Token/);
+  }
+});
+
+test('generic proxy 503 does not invent missing credentials or display response bodies', async () => {
+  const app = setup();
+  const message = await app.run(`(async () => {
+    window.studioRequest = async () => ({ok: false, status: 503, text: async () => '<html>private upstream body</html>'});
+    try { await api('/api/dashboard'); } catch (error) { return error.message; }
+  })()`);
+  assert.match(message, /服务暂时不可用/);
+  assert.doesNotMatch(message, /Token|private|html/);
+  const configured = app.run(`serviceFailure({error:'authentication_not_configured'})`);
+  assert.match(configured.message, /未配置访问 Token/);
+  assert.equal(app.run(`serviceFailure({error:'private-raw-exception'})`), null);
+});
+
+test('safe structured reasons redact credentials, URLs and local paths', () => {
+  const app = setup();
+  const failure = app.run(`serviceFailure({error:{code:'account_unavailable',source:'google',retryable:false,
+    message:'Account unavailable; token=private-value HTTPS://private.invalid/signed?secret=private /internal/config/settings',
+    accepted:false}})`);
+  assert.match(failure.message, /Account unavailable/);
+  assert.doesNotMatch(failure.message, /private-value|private\.invalid|\/internal\/config/);
+  assert.equal(failure.accepted, false);
+});
+
+test('channel authorization failure preserves the Studio session while real session 401 invalidates it', async () => {
+  const app = setup();
+  await app.run(`(async () => {
+    authorized = true; token = 'existing-session';
+    window.studioRequest = async () => ({ok:false,status:401,text:async()=>JSON.stringify({error:{
+      code:'authorization_required',message:'Channel authorization expired',source:'higgsfield',retryable:false,accepted:false}})});
+    try { await api('/api/tasks'); } catch (error) { if (error.accepted !== false) throw error; }
+    if (!authorized || token !== 'existing-session') throw Error('Channel error invalidated Studio session');
+    window.studioRequest = async () => ({ok:false,status:401,text:async()=>''});
+    try { await api('/api/tasks'); } catch {}
+    if (authorized || token) throw Error('Session failure did not invalidate Studio session');
+  })()`);
+});
+
+test('Higgsfield member request preserves the shared safe channel error and legacy quote errors', async () => {
+  const app = setup();
+  app.run(`document.querySelector = () => ({append() {}}); globalThis.crypto = {randomUUID: () => 'test-attempt'};`);
+  const member = readFileSync(new URL('../frontend/higgsfield-member.js', import.meta.url), 'utf8');
+  app.run(member.replace(/\}\)\(\);\s*$/, 'window.testMemberRequest = request; })();'));
+  const error = await app.run(`(async () => {
+    window.studioRequest=async()=>({ok:false,status:503,json:async()=>({error:{
+      code:'limits_unavailable',source:'higgsfield',message:'Membership limits unavailable',accepted:true,retryable:true,http_status:503}})});
+    try { await window.testMemberRequest('tasks'); } catch(e) { return {code:e.code,message:e.message,accepted:e.accepted,http_status:e.http_status}; }
+  })()`);
+  assert.equal(error.code, 'limits_unavailable');
+  assert.equal(error.accepted, true);
+  assert.equal(error.http_status, 503);
+  assert.match(error.message, /Membership limits unavailable/);
+  assert.match(error.message, /不要重复提交/);
+  const legacy = await app.run(`(async () => {
+    window.studioRequest=async()=>({ok:false,status:409,json:async()=>({error:'quote_changed'})});
+    try { await window.testMemberRequest('preflight',{}); } catch(e) { return {code:e.code,message:e.message}; }
+  })()`);
+  assert.equal(legacy.code, 'quote_changed');
+  assert.match(legacy.message, /重新报价/);
+});
+
 test('restoring table view cannot signal list readiness before the first render', () => {
   const app = setup();
   app.run('authorized = true;');

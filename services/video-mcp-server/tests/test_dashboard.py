@@ -131,6 +131,18 @@ class DashboardTest(unittest.TestCase):
         self.env.stop()
         self.temp.cleanup()
 
+    def test_channel_failure_keeps_safe_reason_and_acceptance_in_rest(self):
+        from app.channel_errors import ChannelError
+        for code in ('authorization_required', 'limits_unavailable', 'account_unavailable'):
+            with self.subTest(code=code):
+                error = ChannelError(code, source='higgsfield', http_status=503, accepted=False)
+                with mock.patch('app.dashboard.titles.create', side_effect=error):
+                    response = self.client.post('/api/tasks', json=self.payload, headers=self.headers)
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(response.json(), {'error': error.public()})
+                self.assertFalse(response.json()['error']['accepted'])
+                self.assertEqual(response.headers['cache-control'], 'no-store')
+
     def test_shell_is_public_but_api_requires_token(self):
         page = self.client.get('/dashboard')
         self.assertEqual(page.status_code, 200)

@@ -17,6 +17,7 @@ from starlette.routing import Route
 from starlette.concurrency import run_in_threadpool
 
 from .artifacts import ArtifactError, ArtifactNotFound
+from .channel_errors import ChannelError
 from .content_rating import ContentRatingError, ContentRatingStore, include_nsfw_from_headers
 from .executor import ExecutionError
 from .resources import Resources
@@ -596,6 +597,9 @@ class Dashboard:
                     record, naming = await run_in_threadpool(titles.create, self.executor, model=inputs.model, **kwargs)
                     value = {**self._public_task(record, self.executor.tasks), **naming}
             return JSONResponse(value, headers={"Cache-Control": "no-store"})
+        except ChannelError as error:
+            status = error.http_status if type(error.http_status) is int and 400 <= error.http_status <= 599 else 400
+            return JSONResponse({"error": error.public()}, status_code=status, headers={"Cache-Control": "no-store"})
         except (TaskNotFound, ArtifactNotFound):
             return JSONResponse({"error": "not_found"}, status_code=404)
         except PermissionError:

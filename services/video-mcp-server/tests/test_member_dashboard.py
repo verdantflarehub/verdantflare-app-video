@@ -47,6 +47,25 @@ class MemberDashboardTest(unittest.TestCase):
         self.assertEqual(response.json()['error'],'quote_changed')
         self.assertEqual(self.member.dashboard.records(),[])
 
+    def test_channel_errors_retain_safe_envelope_in_member_requests(self):
+        from app.channel_errors import ChannelError
+        error = ChannelError('limits_unavailable', source='higgsfield', http_status=503, accepted=False)
+        with patch.object(self.member, 'dispatch', side_effect=error):
+            response = self.post('preflight')
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json(), {'error': error.public()})
+        self.assertEqual(response.headers['cache-control'], 'no-store')
+
+    def test_member_models_use_live_effective_routes_and_do_not_fallback_on_missing_directory(self):
+        registered = {'route':'higgsfield', 'model':'seedance_2_5', 'display_name':'Registered name',
+                      'can_submit':False, 'modes':['text_to_video'], 'capability_id':'registered-capability'}
+        with patch.object(self.executor, 'capabilities', return_value={'routes':[registered,
+                {'route':'google','model':'unrelated'}]}):
+            value = self.http.get('/api/higgsfield/capabilities').json()
+        self.assertEqual(value, {'routes':[registered]})
+        with patch.object(self.executor, 'capabilities', return_value={'routes':[]}):
+            self.assertEqual(self.http.get('/api/higgsfield/capabilities').json(), {'routes':[]})
+
     def test_submit_is_durable_and_recovers_once_after_quote_expiry(self):
         self.assertEqual(self.post('preflight').status_code,200)
         first=self.post('tasks')

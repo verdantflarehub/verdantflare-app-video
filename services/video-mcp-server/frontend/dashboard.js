@@ -223,6 +223,53 @@ function invalidate() {
   ].forEach((id) => ($(id).textContent = "—"));
   clearBusiness();
 }
+function serviceFailure(body) {
+  const legacy = {
+    authentication_not_configured: "服务尚未配置访问 Token。",
+    permission_denied: "没有此项目的访问权限。",
+    not_found: "任务或素材不存在。",
+    title_conflict: "名称已被修改，请核对最新名称后重试。",
+    idempotency_conflict: "幂等键与已有请求冲突，请核对原任务。",
+    invalid_request: "请检查参数、参考素材类型及项目归属。",
+    request_too_large: "请求内容过大。",
+    service_not_connected: "所选渠道尚未接入。",
+    preview_unavailable: "结果预览尚不可用。",
+    preview_extraction_failed: "视频首帧提取失败，请稍后重试。",
+    upstream_operation_failed: "上游操作失败；提交结果不确定时请查询原任务。",
+    operation_failed: "操作失败，请稍后查询原任务。",
+  };
+  const candidate = body?.error && typeof body.error === "object" ? body.error : body?.diagnostic;
+  if (!candidate || typeof candidate !== "object") {
+    const code = body?.error;
+    return typeof code === "string" && Object.hasOwn(legacy, code)
+      ? { code, message: legacy[code], source: "video" } : null;
+  }
+  if (!/^[A-Za-z0-9_.-]{1,100}$/.test(candidate.code || "") ||
+      !["video", "studio", "higgsfield", "fal", "grok", "google"].includes(candidate.source) ||
+      typeof candidate.message !== "string") return null;
+  const message = candidate.message
+    .replace(/https?:\/\/\S+/gi, "[已隐藏链接]")
+    .replace(/(["']?(?:api[_-]?key|access_token|refresh_token|token|password|secret|authorization)["']?\s*[:=]\s*)["']?[^\s,}\]]+/gi, "$1[已隐藏]")
+    .replace(/bearer\s+\S+/gi, "Bearer [已隐藏]")
+    .replace(/(?<!\w)\/(?:[\w.-]+\/)+[\w./-]*/g, "[已隐藏路径]")
+    .replace(/\b[a-z]:[\\/][^\s,;]+/gi, "[已隐藏路径]")
+    .replace(/\b[A-Za-z0-9_-]{40,}\b/g, "[已隐藏]")
+    .replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 512);
+  const value = { code: candidate.code, message, source: candidate.source, retryable: candidate.retryable === true };
+  if (candidate.accepted === null || typeof candidate.accepted === "boolean") value.accepted = candidate.accepted;
+  if (Number.isInteger(candidate.http_status) && candidate.http_status >= 100 && candidate.http_status <= 599) value.http_status = candidate.http_status;
+  if (/^video_task_[0-9a-f]{32}$/.test(candidate.task_id || "")) value.task_id = candidate.task_id;
+  return value;
+}
+function failureMessage(failure) {
+  let message = `${failure.message}（${failure.code} · ${failure.source}）`;
+  if (Object.hasOwn(failure, "accepted")) {
+    message += failure.accepted === false ? " 请求未受理。"
+      : failure.accepted === true ? " 原请求已受理，请查询原任务，不要重复提交。"
+      : " 是否受理尚未确认，请查询原任务，不要重复提交。";
+  }
+  return message;
+}
 async function api(path, options = {}) {
   const headers = { Authorization: `Bearer ${token}`, ...options.headers };
   if (options.body) headers["Content-Type"] = "application/json";
@@ -234,7 +281,12 @@ async function api(path, options = {}) {
         cache: "no-store",
       });
   if (!response.ok) {
-    if (response.status === 401) {
+    let failure = null;
+    try {
+      const raw = await response.text();
+      if (raw.length <= 32768) failure = serviceFailure(JSON.parse(raw));
+    } catch { /* Non-JSON proxy failures use the safe HTTP fallback below. */ }
+    if (response.status === 401 && (!failure || ["video", "studio"].includes(failure.source))) {
       token = "";
       storeToken("");
       invalidate();
@@ -251,10 +303,17 @@ async function api(path, options = {}) {
       409: path.endsWith("/title") ? "名称已被修改，请核对最新名称后重试。" : "幂等键冲突或所选服务尚未接入。",
       413: "请求内容过大。",
       422: "视频首帧提取失败，请稍后重试。",
+      429: "请求受到限流，请稍后查询原任务。",
       502: "推理或素材服务暂时不可用。提交结果不确定时请先查询原任务，不要更换幂等键重发。",
-      503: "服务尚未配置访问 Token。",
+      503: "服务暂时不可用；提交结果不确定时请先查询原任务，不要更换幂等键重发。",
     };
-    const error = new Error(messages[response.status] || "操作失败，请稍后重试。");
+    const message = failure ? failureMessage(failure)
+      : messages[response.status] || `操作失败（HTTP ${response.status}），请稍后查询原任务。`;
+    const error = new Error(message);
+    if (failure) {
+      const { message: _message, ...diagnostic } = failure;
+      Object.assign(error, diagnostic);
+    }
     error.status = response.status;
     throw error;
   }
