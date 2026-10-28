@@ -67,6 +67,51 @@ class ImportToolErrorTests(unittest.TestCase):
             self.assertFalse(result.is_error)
             self.assertEqual(result.structured_content, payload)
 
+    def test_prepare_rejects_exact_size_and_format_boundaries_before_allocating(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifacts = ArtifactStore(Path(directory))
+            imports = ImportStore(artifacts, lambda *args: {})
+            base = dict(project_id='project-test', idempotency_key='bounds', filename='input.png',
+                        size=1, sha256='a' * 64, purpose='reference')
+            cases = [({'size': 0}, 'import_size_must_be_1_byte_to_1_GiB'),
+                     ({'size': 1073741825}, 'import_size_must_be_1_byte_to_1_GiB'),
+                     ({'filename': 'input.gif'}, 'unsupported_import_format')]
+            with patch.object(type(server.executor), 'imports', new_callable=PropertyMock, return_value=imports):
+                for changes, expected in cases:
+                    with self.subTest(changes=changes):
+                        result = server.video_import_prepare(**{**base, **changes})
+                        self.assertTrue(result.is_error)
+                        self.assertEqual(result.structured_content['error']['code'], expected)
+                        self.assertEqual(json.loads(result.content[0].text), result.structured_content)
+            with imports._transaction(write=False) as db:
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM imports').fetchone()[0], 0)
+
+    def test_chunk_rejection_preserves_original_offset_and_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifacts = ArtifactStore(Path(directory))
+            imports = ImportStore(artifacts, lambda *args: {})
+            payload = b'x' * (524288 + 1)
+            digest = hashlib.sha256(payload).hexdigest()
+            prepared = imports.prepare(project_id='project-test', idempotency_key='chunk',
+                filename='input.mp4', size=len(payload), sha256=digest, purpose='motion')
+            args = dict(project_id='project-test', import_id=prepared['import_id'])
+            with patch.object(type(server.executor), 'imports', new_callable=PropertyMock, return_value=imports):
+                result = server.video_import_chunk(**args, offset=0,
+                    content_base64=base64.b64encode(payload).decode(), sha256=digest)
+            self.assertEqual(result.structured_content['error']['code'], 'import_chunk_size_or_hash_mismatch')
+            self.assertEqual(imports.status(**args), prepared)
+            self.assertFalse(list(imports.root.glob('*.part')))
+
+    def test_media_format_and_audio_limit_errors_are_specific(self):
+        for code in ('reference_audio_requires_mono_or_stereo', 'reference_audio_sample_rate_exceeded',
+                     'reference_image_must_be_still', 'reference_video_requires_mp4_h264_or_hevc',
+                     'import_final_size_or_hash_mismatch'):
+            with self.subTest(code=code), patch.object(server.executor.imports, 'commit', side_effect=ValueError(code)):
+                result = server.video_import_commit('project-test', 'imp_' + 'a' * 32)
+                self.assertEqual(result.structured_content['error']['code'], code)
+                self.assertEqual(result.structured_content['error']['source'], 'video')
+                self.assertEqual(json.loads(result.content[0].text), result.structured_content)
+
     def test_mcp_schema_retains_original_arguments(self):
         tools = asyncio.run(server.mcp.list_tools())
         tool = next(t for t in tools if t.name == 'video.import_commit')

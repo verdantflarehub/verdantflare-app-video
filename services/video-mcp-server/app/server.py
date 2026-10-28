@@ -24,7 +24,7 @@ from .artifacts import ArtifactError, ArtifactNotFound, ArtifactStore, require_p
 from . import __version__, titles
 from .content_rating import ContentRatingError, ContentRatingStore, include_nsfw_from_headers
 from .executor import ExecutionError, VideoExecutor
-from .channel_errors import tool_errors
+from .channel_errors import MESSAGES, tool_errors
 from .dashboard import Dashboard, public_task
 from .registry import EtcdRegistry
 from .collection import public_collection
@@ -474,14 +474,8 @@ def video_import_commit(project_id: str, import_id: str) -> types.CallToolResult
     except ValueError as exc:
         # Validators carry stable codes, but arbitrary exception text may contain
         # private paths. Never echo it or infer retryability from its wording.
-        messages = {
-            "reference_duration_must_be_2_to_15_seconds": "Reference media must be 2 to 15 seconds long. Use a valid source interval before importing again.",
-            "reference_video_duration_must_be_2_to_15_seconds": "The video stream itself must be 2 to 15 seconds long; a longer audio track does not satisfy this limit.",
-            "reference_pixel_budget_exceeded": "Reference image or video dimensions exceed the supported bounds. Check the media dimensions.",
-            "reference_video_decode_budget_exceeded": "The reference video exceeds the supported frame-rate or decoded-pixel budget.",
-            "reference_media_decode_failed": "The reference media could not be decoded. Check its format and completeness.",
-            "import_incomplete": "The upload is incomplete. Query the original import status and resume from its confirmed offset.",
-        }
+        messages = {code: message for code, message in MESSAGES.items()
+                    if code.startswith(("reference_", "import_", "invalid_import_"))}
         code = str(exc)
         if code not in messages:
             code = "import_validation_failed"
@@ -489,6 +483,7 @@ def video_import_commit(project_id: str, import_id: str) -> types.CallToolResult
             "code": code,
             "message": messages.get(code, "The import could not be validated. Check the media and import parameters."),
             "retryable": code == "import_incomplete",
+            "source": "video",
         }})
         result.is_error = True
         return result

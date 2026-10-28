@@ -62,3 +62,24 @@ class ChannelErrorsTest(unittest.TestCase):
             'source':'fal','message':'Monthly quota exhausted','accepted':False}}, source='fal').public()
         self.assertEqual(error['code'],'provider_quota_exhausted')
         self.assertFalse(error['accepted'])
+
+    def test_known_h3_validation_diagnostics_are_preserved_without_exposing_unknown_text(self):
+        cases = [('too many images references', 'reference_image_count_exceeded'),
+                 ('too many videos references', 'reference_video_count_exceeded'),
+                 ('too many audios references', 'reference_audio_count_exceeded'),
+                 ('Selected route supports at most 12 references', 'reference_total_count_exceeded'),
+                 ('at least one reference is required', 'reference_to_video_required'),
+                 ('duration_seconds must be an integer from 4 to 15 and prompt must not be empty', 'invalid_h3_duration_or_prompt'),
+                 ('videos references exceed 15 seconds in total', 'reference_video_duration_total_exceeded'),
+                 ('audios references exceed 15 seconds in total', 'reference_audio_duration_total_exceeded'),
+                 ('too many images references: token=fixture-secret /private/file', 'invalid_request')]
+        for raw, code in cases:
+            with self.subTest(raw=raw):
+                @tool_errors
+                def invoke():
+                    raise ValueError(raw)
+                result = invoke()
+                self.assertEqual(result.structured_content['error']['code'], code)
+                self.assertEqual(json.loads(result.content[0].text), result.structured_content)
+                self.assertNotIn('fixture-secret', result.model_dump_json())
+                self.assertNotIn('/private/file', result.model_dump_json())

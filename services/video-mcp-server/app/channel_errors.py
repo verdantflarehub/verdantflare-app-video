@@ -113,6 +113,76 @@ MESSAGES.update({
 })
 
 
+# Exact validator diagnostics only; arbitrary ValueError text stays private.
+MESSAGES.update({
+    "reference_image_count_exceeded": "This route accepts at most 9 reference images.",
+    "reference_video_count_exceeded": "This route accepts at most 3 reference videos.",
+    "reference_audio_count_exceeded": "This route accepts at most 3 reference audio files.",
+    "reference_total_count_exceeded": "This route accepts at most 12 reference files in total.",
+    "visual_reference_required": "This route requires at least one image or video reference.",
+    "invalid_h3_duration_or_prompt": "H3 duration must be an integer from 4 to 15 seconds and the prompt must not be empty.",
+    "reference_video_duration_total_exceeded": "Reference videos must total at most 15 seconds.",
+    "reference_audio_duration_total_exceeded": "Reference audio files must total at most 15 seconds.",
+    "import_size_must_be_1_byte_to_1_GiB": "Import file size must be between 1 byte and 1 GiB (1,073,741,824 bytes), inclusive.",
+    "unsupported_import_format": "Import supports PNG, JPEG, WebP, MP4, WAV and MP3 files.",
+    "invalid_import_idempotency_key": "Import requires a nonempty idempotency key of at most 128 characters.",
+    "invalid_import_sha256": "Import requires a SHA-256 digest with 64 lowercase hexadecimal characters.",
+    "import_purpose_required": "Import purpose must contain 1 to 1000 characters.",
+    "fixed_content_ref_required": "Import source must use a fixed store, artifact and version reference.",
+    "invalid_import_id": "The import identifier is invalid.",
+    "import_not_found": "The original import is unavailable in this project.",
+    "import_idempotency_conflict": "This import idempotency key already belongs to different metadata.",
+    "invalid_import_offset": "The import offset must be a nonnegative integer.",
+    "import_chunk_too_large_or_empty": "Each import chunk must contain 1 to 524,288 decoded bytes.",
+    "invalid_import_base64": "The import chunk is not valid Base64.",
+    "import_chunk_size_or_hash_mismatch": "The import chunk exceeds 524,288 bytes, is empty, or does not match its SHA-256 digest.",
+    "import_chunk_exceeds_size": "The import chunk exceeds the declared total file size.",
+    "import_chunk_overlap": "The chunk overlaps the confirmed import offset; resume from the original import status.",
+    "import_repeated_chunk_mismatch": "Repeated chunk bytes differ from the original upload.",
+    "import_offset_or_status_conflict": "The chunk offset or import state has changed; query the original import status.",
+    "import_committed_bytes_missing": "Previously confirmed upload bytes are unavailable; recover the original import before retrying.",
+    "import_incomplete": "The upload is incomplete. Query the original import status and resume from its confirmed offset.",
+    "import_final_size_or_hash_mismatch": "The complete upload does not match the declared file size or SHA-256 digest.",
+    "import_published_artifact_conflict": "The existing artifact does not match the original import identity.",
+    "reference_duration_must_be_2_to_15_seconds": "Reference media must be 2 to 15 seconds long. Use a valid source interval before importing again.",
+    "reference_video_duration_must_be_2_to_15_seconds": "The video stream itself must be 2 to 15 seconds long; a longer audio track does not satisfy this limit.",
+    "reference_pixel_budget_exceeded": "Reference image or video dimensions exceed the supported bounds. Check the media dimensions.",
+    "reference_video_decode_budget_exceeded": "The reference video exceeds the supported frame-rate or decoded-pixel budget.",
+    "reference_media_decode_failed": "The reference media could not be decoded. Check its format and completeness.",
+    "reference_requires_one_visual_stream": "Reference images and videos must contain exactly one visual stream.",
+    "reference_image_format_mismatch": "The decoded image format must match PNG, JPEG or WebP and contain no audio.",
+    "reference_image_must_be_still": "Reference images must contain a single still frame.",
+    "reference_video_requires_mp4_h264_or_hevc": "Reference video must use an MP4 container and H.264 or H.265 encoding.",
+    "reference_video_rotation_must_be_right_angle": "Reference video rotation must be a multiple of 90 degrees.",
+    "reference_requires_one_audio_stream": "Reference audio must contain one audio stream and no visual stream.",
+    "reference_audio_requires_wav_pcm_or_mp3": "Reference audio must use WAV/PCM or MP3 encoding.",
+    "reference_audio_requires_mono_or_stereo": "Reference audio must contain one mono or stereo stream.",
+    "reference_audio_sample_rate_exceeded": "Reference audio sample rate must be positive and at most 192,000 Hz.",
+    "unsupported_reference_type": "This reference media type is not supported.",
+})
+
+VALIDATION_ALIASES = {
+    "verified Studio identity required": "unauthorized",
+    "project access denied": "project_access_denied",
+    "too many images references": "reference_image_count_exceeded",
+    "too many videos references": "reference_video_count_exceeded",
+    "too many audios references": "reference_audio_count_exceeded",
+    "Selected route supports at most 12 references": "reference_total_count_exceeded",
+    "at least one reference is required": "reference_to_video_required",
+    "at least one image or video reference is required": "visual_reference_required",
+    "duration_seconds must be an integer from 4 to 15 and prompt must not be empty": "invalid_h3_duration_or_prompt",
+    "Selected channel duration must be an integer from 5 to 15 seconds": "unsupported_duration",
+    "Unsupported Singularity aspect_ratio": "unsupported_aspect_ratio",
+    "references must contain only images, videos and audios arrays": "unsupported_references",
+    "reference requires only artifact_id and purpose": "invalid_reference",
+    "invalid images reference": "invalid_reference",
+    "invalid videos reference": "invalid_reference",
+    "invalid audios reference": "invalid_reference",
+    "videos references exceed 15 seconds in total": "reference_video_duration_total_exceeded",
+    "audios references exceed 15 seconds in total": "reference_audio_duration_total_exceeded",
+}
+
+
 def safe_code(code, source):
     return isinstance(code, str) and (code in MESSAGES or
         (source == "google" and re.fullmatch(r"google_(?:[a-z_]{1,80}|http_[1-5][0-9]{2})", code)) or
@@ -217,7 +287,7 @@ def tool_errors(function):
             error = ChannelError(code if code in MESSAGES else 'project_access_denied', source='video').public()
         except ValueError as exc:
             code = str(exc)
-            code = {'verified Studio identity required':'unauthorized', 'project access denied':'project_access_denied'}.get(code, code)
+            code = VALIDATION_ALIASES.get(code, code)
             error = ChannelError(code if code in MESSAGES else "invalid_request", source="video").public()
         except RuntimeError as exc:
             code = str(exc)
