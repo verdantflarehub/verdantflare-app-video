@@ -221,7 +221,13 @@ class VideoExecutor:
                 routes[-1]["modes"] = ["reference_to_video"]
             if service == "h3-singularity":
                 routes[-1].update(quality_profiles=["du-0"], gpu_verified_combinations=[],
-                                  verification_status="not_recorded", frame_grid="17k+5", fps=24)
+                                  verification_status="not_recorded", frame_grid="17k+5", fps=24,
+                                  modes=["reference_to_video"],
+                                  defaults={"mode": "reference_to_video", "duration_seconds": 5,
+                                            "aspect_ratio": "16:9", "quality_profile": "du-0"},
+                                  reference_limits={"images": 9, "videos": 3, "audios": 3,
+                                      "minimum_total": 1, "total": 12, "max_file_bytes": MAX_ARTIFACT_BYTES,
+                                      "total_duration_seconds": {"videos": 15, "audios": 15}})
                 if configured:
                     url, headers, version, _ = self.runtime(route)
                     routes[-1]["configured_runtime_version"] = version
@@ -490,7 +496,8 @@ class VideoExecutor:
                                      aspect_ratio=aspect_ratio, references=references,
                                      channel_account_id=channel_account_id, budget_limit=budget_limit,
                                      resolution=resolution)
-        if mode is not None or resolution is not None:
+        allowed_modes = {None, "reference_to_video"} if self._service_for_route(route) == "h3-singularity" else {None}
+        if mode not in allowed_modes or resolution is not None:
             raise ValueError("unsupported_parameter")
         request, digest = self._normalize(project_id, model, prompt, duration_seconds, aspect_ratio,
                                           references, route, quality_profile)

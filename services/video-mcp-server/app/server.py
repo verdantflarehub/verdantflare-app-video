@@ -550,6 +550,8 @@ def video_preflight(project_id: str, prompt: str, references: dict[str, list[dic
             channel_account_id=channel_account_id, budget_limit=budget_limit))
     if selected != "h3-singularity":
         raise ValueError("video.preflight currently supports h3-singularity")
+    if mode not in {None, "reference_to_video"} or resolution is not None:
+        raise ValueError("unsupported_parameter")
     executor.runtime(selected)
     request, digest = executor._normalize(require_project_id(project_id), model or "minimax-h3-ref2va", prompt,
         duration_seconds, aspect_ratio or "16:9", references, selected, quality_profile or "du-0")

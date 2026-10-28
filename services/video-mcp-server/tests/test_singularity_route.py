@@ -78,10 +78,57 @@ class SingularityRouteTest(unittest.TestCase):
             self.executor.generate(**self.kw, route="h3", quality_profile="du-1")
         self.assertFalse(self.calls)
 
+    def test_explicit_reference_mode_reuses_legacy_task_and_digest(self):
+        original = self.executor.generate(**self.kw, route="h3-singularity")
+        reused = self.executor.generate(**self.kw, route="h3-singularity", mode="reference_to_video")
+        self.assertEqual(reused.video_task_id, original.video_task_id)
+        self.assertEqual(reused.input_digest, original.input_digest)
+        self.assertEqual(len([call for call in self.calls if call.method == "POST"]), 1)
+        self.assertNotIn("mode", original.request)
+
+    def test_singularity_capability_declares_existing_reference_contract(self):
+        with patch.object(self.executor, "catalog_view", return_value={}):
+            capability = next(row for row in self.executor.capabilities()["routes"] if row["route"] == "h3-singularity")
+        self.assertEqual(capability["modes"], ["reference_to_video"])
+        self.assertEqual(capability["defaults"], {"mode": "reference_to_video", "duration_seconds": 5,
+                                                "aspect_ratio": "16:9", "quality_profile": "du-0"})
+        self.assertNotIn("resolutions", capability)
+        self.assertEqual(capability["reference_limits"], {"images": 9, "videos": 3, "audios": 3,
+            "minimum_total": 1, "total": 12, "max_file_bytes": 1024**3,
+            "total_duration_seconds": {"videos": 15, "audios": 15}})
+        self.assertEqual(capability["verification_status"], "not_recorded")
+
+    def test_preflight_and_create_reject_unsupported_mode_and_resolution(self):
+        from app import server
+        with patch.object(server, "executor", self.executor):
+            for parameters in ({"mode": "text_to_video"}, {"mode": "image_to_video"}, {"resolution": "768p"}):
+                with self.subTest(parameters=parameters):
+                    args = {**self.kw, "route": "h3-singularity", **parameters}
+                    result = server.video_preflight(**{k: v for k, v in args.items() if k != "idempotency_key"})
+                    self.assertTrue(result.is_error)
+                    with self.assertRaisesRegex(ValueError, "unsupported_parameter"):
+                        self.executor.generate(**args)
+            self.assertFalse(self.calls)
+
+    def test_declared_reference_counts_are_enforced_before_runtime_submission(self):
+        item = self.kw["references"]["images"][0]
+        invalid = ({}, {"images": [item] * 10}, {"videos": [item] * 4},
+                   {"audios": [item] * 4}, {"images": [item] * 9, "videos": [item] * 3, "audios": [item]})
+        for references in invalid:
+            with self.subTest(counts={k: len(v) for k, v in references.items()}), self.assertRaises(ValueError):
+                self.executor.generate(**{**self.kw, "references": references},
+                                       route="h3-singularity", mode="reference_to_video")
+        self.assertFalse(self.calls)
+        row = self.executor.generate(**{**self.kw, "references": {"images": [item] * 9}},
+                                     route="h3-singularity", mode="reference_to_video")
+        self.assertEqual(len(json.loads(self.calls[-1].content)["conditions"]), 9)
+        self.assertEqual(row.request["quality_profile"], "du-0")
+
     def test_preflight_matches_create_without_submitting(self):
         from app import server
         with patch.object(server, "executor", self.executor):
-            args = {**self.kw, "aspect_ratio": "16:9", "duration_seconds": 15, "route": "h3-singularity"}
+            args = {**self.kw, "aspect_ratio": "16:9", "duration_seconds": 15, "route": "h3-singularity",
+                    "mode": "reference_to_video"}
             preflight = server.video_preflight(**{k: v for k, v in args.items() if k != "idempotency_key"}).structured_content
             self.assertFalse(self.calls)
             self.assertIsNone(self.tasks.find_idempotency(args["project_id"], args["idempotency_key"]))
