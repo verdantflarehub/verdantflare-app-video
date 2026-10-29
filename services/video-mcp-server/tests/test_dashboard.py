@@ -367,6 +367,8 @@ class DashboardTest(unittest.TestCase):
             res_local = self.client.get(f"/api/tasks/{local_task.video_task_id}/thumbnail", headers=self.headers)
             self.assertEqual(res_local.status_code, 200)
             self.assertEqual(res_local.headers["content-type"], "image/jpeg")
+            self.assertEqual(res_local.headers["cache-control"], "private, max-age=2592000, immutable")
+            self.assertEqual(res_local.headers["etag"], f'"{video_art.sha256}-v1"')
             self.assertTrue(res_local.content.startswith(b"\xff\xd8"))
             self.assertEqual(len(ffmpeg_calls), 1)
 
@@ -376,6 +378,21 @@ class DashboardTest(unittest.TestCase):
             self.assertEqual(res_local_cached.status_code, 200)
             self.assertEqual(res_fal.status_code, 200)
             self.assertEqual(len(ffmpeg_calls), 1)
+
+            # Conditional request with matching ETag returns 304 Not Modified without running ffmpeg.
+            res_304 = self.client.get(
+                f"/api/tasks/{local_task.video_task_id}/thumbnail",
+                headers={**self.headers, "If-None-Match": res_local.headers["etag"]},
+            )
+            self.assertEqual(res_304.status_code, 304)
+            self.assertEqual(res_304.headers["etag"], res_local.headers["etag"])
+            self.assertEqual(len(ffmpeg_calls), 1)
+
+            # Lock-free fast path: holding result_lock or another digest's lock does not block cached thumbnail hit.
+            with self.dashboard.result_lock, self.dashboard._get_thumb_lock("other-digest"):
+                res_lockfree = self.client.get(f"/api/tasks/{local_task.video_task_id}/thumbnail", headers=self.headers)
+                self.assertEqual(res_lockfree.status_code, 200)
+                self.assertTrue(res_lockfree.content.startswith(b"\xff\xd8"))
 
             res_hf = self.client.get(f"/api/tasks/{hf_task.video_task_id}/thumbnail", headers=self.headers)
             self.assertEqual(res_hf.status_code, 200)

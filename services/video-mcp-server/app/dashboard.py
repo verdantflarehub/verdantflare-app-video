@@ -12,7 +12,7 @@ from pathlib import Path
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, RedirectResponse
+from starlette.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 from starlette.concurrency import run_in_threadpool
 
@@ -160,14 +160,56 @@ def public_task(record, store=None, ratings_store=None, catalog=None):
             **ui_fields}
 
 
+def _is_valid_jpeg(path: Path) -> bool:
+    try:
+        st = path.stat()
+        if st.st_size <= 4:
+            return False
+        with path.open("rb") as f:
+            head = f.read(4)
+        return len(head) == 4 and head.startswith(b"\xff\xd8")
+    except OSError:
+        return False
+
+
+def _etag_matches(if_none_match: str | None, etag: str) -> bool:
+    if not if_none_match:
+        return False
+    target = etag.strip()
+    if target.startswith("W/"):
+        target = target[2:].strip()
+    for raw in if_none_match.split(","):
+        candidate = raw.strip()
+        if candidate == "*":
+            return True
+        if candidate.startswith("W/"):
+            candidate = candidate[2:].strip()
+        if candidate == target:
+            return True
+    return False
+
+
 class Dashboard:
     def __init__(self, executor):
         self.executor = executor
         self.resources = Resources()
         self.result_lock = threading.Lock()
+        self._thumb_locks_guard = threading.Lock()
+        self._thumb_locks: dict[str, threading.Lock] = {}
+        self._ffmpeg_sem = threading.Semaphore(2)
+        self._records_cache_lock = threading.RLock()
+        self._records_cache: dict[Path, tuple[int, int, TaskRecord]] = {}
         self.services = {"h3": "unknown", "h3-sol": "not_connected", "fal": "not_connected", "mcp": "ready"}
         self.sync_errors = 0
         self.synced_at = None
+
+    def _get_thumb_lock(self, digest: str) -> threading.Lock:
+        with self._thumb_locks_guard:
+            lock = self._thumb_locks.get(digest)
+            if lock is None:
+                lock = threading.Lock()
+                self._thumb_locks[digest] = lock
+            return lock
 
     def _public_task(self, record, store=None, ratings_store=None):
         # Labels may use a short-lived display cache; submission never uses it.
@@ -195,11 +237,27 @@ class Dashboard:
         store = tasks_store or self.executor.tasks
         store.ensure_ready()
         records = []
+        seen_paths = set()
         for path in store.root.glob("video_task_*.json"):
+            seen_paths.add(path)
             try:
-                records.append(TaskRecord.model_validate_json(path.read_text()))
+                st = path.stat()
+                key = (st.st_mtime_ns, st.st_size)
+                with self._records_cache_lock:
+                    cached = self._records_cache.get(path)
+                if cached is not None and (cached[0], cached[1]) == key:
+                    records.append(cached[2])
+                    continue
+                parsed = TaskRecord.model_validate_json(path.read_text())
+                with self._records_cache_lock:
+                    self._records_cache[path] = (st.st_mtime_ns, st.st_size, parsed)
+                records.append(parsed)
             except (OSError, ValueError):
                 logging.getLogger(__name__).warning("Invalid task record omitted from dashboard")
+        with self._records_cache_lock:
+            stale = [p for p in self._records_cache if p not in seen_paths and p.parent == store.root]
+            for p in stale:
+                self._records_cache.pop(p, None)
         return sorted(records, key=lambda x: (x.created_at, x.video_task_id), reverse=True)
 
     def sync(self):
@@ -417,44 +475,56 @@ class Dashboard:
         if not Path(source_path).is_file():
             return JSONResponse({"error": "preview_unavailable"}, status_code=404)
         directory = artifacts_store.root / "previews"
-        directory.mkdir(parents=True, exist_ok=True)
         output = directory / f"{digest}.jpg"
-        with self.result_lock:
-            valid_cached = False
-            if output.is_file():
-                try:
-                    cached = output.read_bytes()
-                    valid_cached = len(cached) > 4 and cached.startswith(b"\xff\xd8")
-                except OSError:
-                    valid_cached = False
-            if not valid_cached:
+        etag = f'"{digest}-v1"'
+        cache_headers = {
+            "Cache-Control": "private, max-age=2592000, immutable",
+            "ETag": etag,
+        }
+        # Lock-free fast path on disk cache hit.
+        if _is_valid_jpeg(output):
+            if request is not None and _etag_matches(request.headers.get("if-none-match"), etag):
+                return Response(status_code=304, headers=cache_headers)
+            return FileResponse(output, media_type="image/jpeg", headers=cache_headers)
+
+        directory.mkdir(parents=True, exist_ok=True)
+        with self._get_thumb_lock(digest):
+            if not _is_valid_jpeg(output):
                 temp_path = None
                 try:
-                    with tempfile.NamedTemporaryFile(suffix=".jpg", dir=directory, delete=False) as temporary:
-                        temp_path = Path(temporary.name)
-                    subprocess.run(
-                        [
-                            "ffmpeg", "-v", "error", "-nostdin", "-y", "-i",
-                            str(source_path),
-                            "-frames:v", "1", "-vf", "scale=480:320:force_original_aspect_ratio=decrease",
-                            str(temp_path),
-                        ],
-                        check=True,
-                        capture_output=True,
-                        timeout=30,
-                    )
-                    extracted = temp_path.read_bytes()
-                    if len(extracted) <= 4 or not extracted.startswith(b"\xff\xd8"):
-                        raise ValueError("Invalid JPEG preview")
-                    temp_path.replace(output)
-                    temp_path = None
+                    with self._ffmpeg_sem:
+                        with tempfile.NamedTemporaryFile(suffix=".jpg", dir=directory, delete=False) as temporary:
+                            temp_path = Path(temporary.name)
+                        subprocess.run(
+                            [
+                                "ffmpeg", "-v", "error", "-nostdin", "-y", "-i",
+                                str(source_path),
+                                "-frames:v", "1", "-vf", "scale=480:320:force_original_aspect_ratio=decrease",
+                                str(temp_path),
+                            ],
+                            check=True,
+                            capture_output=True,
+                            timeout=30,
+                        )
+                        if not _is_valid_jpeg(temp_path):
+                            raise ValueError("Invalid JPEG preview")
+                        temp_path.replace(output)
+                        temp_path = None
                 except (subprocess.SubprocessError, OSError, ValueError):
                     output.unlink(missing_ok=True)
                     return JSONResponse({"error": "preview_extraction_failed"}, status_code=422)
                 finally:
                     if temp_path is not None:
                         temp_path.unlink(missing_ok=True)
-        return FileResponse(output, media_type="image/jpeg", headers={"Cache-Control": "private, no-store"})
+        if request is not None and _etag_matches(request.headers.get("if-none-match"), etag):
+            return Response(status_code=304, headers=cache_headers)
+        return FileResponse(output, media_type="image/jpeg", headers=cache_headers)
+
+    def prewarm_thumbnail(self, task_id: str, request: Request | None = None) -> None:
+        try:
+            self.thumbnail(task_id, request)
+        except Exception:
+            pass
 
     async def endpoint(self, request: Request):
         try:
@@ -482,8 +552,16 @@ class Dashboard:
                 if record.service != "higgsfield":
                     return JSONResponse({"error": "not_found"}, status_code=404)
                 path = await run_in_threadpool(self.executor.higgsfield.content_path, record)
+                digest = (record.media or {}).get("sha256") or record.video_task_id
+                etag = f'"{digest}"'
+                cache_headers = {
+                    "Cache-Control": "private, max-age=2592000, immutable",
+                    "ETag": etag,
+                }
+                if _etag_matches(request.headers.get("if-none-match"), etag):
+                    return Response(status_code=304, headers=cache_headers)
                 return FileResponse(path, media_type="video/mp4", filename=record.video_task_id + ".mp4",
-                                    headers={"Cache-Control": "private, no-store"})
+                                    headers=cache_headers)
             elif request.method == "GET":
                 value = await run_in_threadpool(self.detail, request.path_params["task_id"], request)
             elif request.method == "DELETE" or action.endswith("/delete"):
@@ -504,6 +582,7 @@ class Dashboard:
                     if record.service == "fal":
                         self.executor.fal.authorize_record(record)
                     self.executor.result(request.path_params["task_id"])
+                    self.prewarm_thumbnail(request.path_params["task_id"], request)
                     return self.detail(request.path_params["task_id"], request)
                 value = await run_in_threadpool(result)
             else:

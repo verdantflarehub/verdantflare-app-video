@@ -278,7 +278,7 @@ async function api(path, options = {}) {
     : await fetch(`${base}${path}`, {
         ...options,
         headers,
-        cache: "no-store",
+        cache: options.blob ? "default" : "no-store",
       });
   if (!response.ok) {
     let failure = null;

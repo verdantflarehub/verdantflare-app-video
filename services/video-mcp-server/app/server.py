@@ -25,7 +25,7 @@ from . import __version__, titles
 from .content_rating import ContentRatingError, ContentRatingStore, include_nsfw_from_headers
 from .executor import ExecutionError, VideoExecutor
 from .channel_errors import MESSAGES, tool_errors
-from .dashboard import Dashboard, public_task
+from .dashboard import Dashboard, _etag_matches, public_task
 from .registry import EtcdRegistry
 from .collection import public_collection
 from .tasks import TaskConflict, TaskNotFound, TaskStore
@@ -861,7 +861,19 @@ async def artifact_content(request: Request) -> Response:
             linked_task = t_store.find_by_artifact_or_task(artifact_id)
             if linked_task is not None and t_store.is_record_nsfw(linked_task, r_store):
                 return JSONResponse({"error": "artifact_not_found"}, status_code=404)
-        return FileResponse(a_store.content_path(record), media_type=record.media_type, filename=record.filename)
+        etag = f'"{record.sha256}"'
+        cache_headers = {
+            "Cache-Control": "private, max-age=2592000, immutable",
+            "ETag": etag,
+        }
+        if _etag_matches(request.headers.get("if-none-match"), etag):
+            return Response(status_code=304, headers=cache_headers)
+        return FileResponse(
+            a_store.content_path(record),
+            media_type=record.media_type,
+            filename=record.filename,
+            headers=cache_headers,
+        )
     except (ValueError, ArtifactNotFound):
         return JSONResponse({"error": "artifact_not_found"}, status_code=404)
 
