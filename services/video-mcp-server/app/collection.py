@@ -1,6 +1,7 @@
 """Bounded, restart-safe collection of completed native Video MCP results."""
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 import time
@@ -8,6 +9,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
 from .tasks import TaskRecord
+from .artifacts import ArtifactError
+
+MANAGED_COLLECTORS = {"higgsfield", "grok", "google", "h3-latent-upscale"}
 
 
 def public_collection(record):
@@ -34,7 +38,44 @@ class ResultCollector:
         # machine; never duplicate their central Artifact or delivery workflow.
         needs_preview = record.service in {"depth", "sr", "interpolate"} and not (record.media or {}).get("preview_artifact_id")
         return (record.status == "succeeded" and (not record.artifact_id or needs_preview)
-                and record.service not in {"higgsfield", "grok", "google", "h3-latent-upscale"})
+                and record.service not in MANAGED_COLLECTORS)
+
+    @staticmethod
+    def stale_cached(record):
+        return (record.status == "succeeded" and bool(record.artifact_id)
+                and record.service not in MANAGED_COLLECTORS
+                and (record.collection or {}).get("state") in {"downloading", "retry_wait"})
+
+    def reconcile_cached(self, record):
+        """Called under the existing task lock; never fetch or generate media."""
+        if not self.stale_cached(record) or self.eligible(record):
+            return record
+        ids = [record.artifact_id]
+        if record.service in {"depth", "sr", "interpolate"}:
+            ids.append(record.media["preview_artifact_id"])
+        completed = []
+        try:
+            for artifact_id in ids:
+                artifact = self.executor.artifacts.get(artifact_id, record.project_id)
+                path = self.executor.artifacts.content_path(artifact)
+                if path.stat().st_size != artifact.size:
+                    return record
+                with path.open("rb") as content:
+                    if hashlib.file_digest(content, "sha256").hexdigest() != artifact.sha256:
+                        return record
+                try:
+                    stamp = datetime.fromisoformat(artifact.created_at)
+                    completed.append(stamp.astimezone(UTC) if stamp.tzinfo else None)
+                except (ValueError, TypeError):
+                    completed.append(None)
+        except (ArtifactError, OSError, ValueError):
+            return record
+        # File creation is evidence of reception, unlike generation completion.
+        # Missing historical time remains unknown; do not invent an old duration.
+        completed_at = max(completed).isoformat() if all(completed) else None
+        state = dict(record.collection)
+        state.update(state="ready", next_attempt_at=0, last_error=None, completed_at=completed_at)
+        return self.tasks.update(record, collection=state)
 
     def sync(self):
         with self.lock:
@@ -55,7 +96,7 @@ class ResultCollector:
                 try:
                     record = TaskRecord.model_validate_json(path.read_text())
                     due = float((record.collection or {}).get("next_attempt_at", 0))
-                    if self.eligible(record) and due <= time.time() and record.video_task_id not in self.active:
+                    if (self.eligible(record) or self.stale_cached(record)) and due <= time.time() and record.video_task_id not in self.active:
                         candidates.append((due, record.created_at, record.video_task_id))
                 except (OSError, ValueError, TypeError):
                     continue
@@ -68,6 +109,14 @@ class ResultCollector:
             if not acquired:
                 return
             record = self.tasks.get(task_id)
+            if self.stale_cached(record) and not self.eligible(record):
+                reconciled = self.reconcile_cached(record)
+                if (reconciled.collection or {}).get("state") != "ready":
+                    # Broken cached bytes need investigation, not a tight hash
+                    # loop or an automatic replacement of the original output.
+                    self.tasks.update(record, collection={**record.collection,
+                        "next_attempt_at": time.time() + 300})
+                return
             if not self.eligible(record):
                 return
             state = dict(record.collection or {})
@@ -79,19 +128,19 @@ class ResultCollector:
             self.tasks.update(record, collection=state)
             try:
                 result = self.executor.result(task_id)
-                if not result.artifact_id:
+                result = self.reconcile_cached(self.tasks.get(task_id))
+                if not result.artifact_id or (result.collection or {}).get("state") != "ready":
                     raise ValueError("result_not_ready")
             except Exception:
+                current = self.reconcile_cached(self.tasks.get(task_id))
+                if (current.collection or {}).get("state") == "ready":
+                    return
                 # Never persist exception text: provider URLs may contain credentials.
                 delay = min(300, 5 * 2 ** min(attempts - 1, 6))
                 state.update(state="retry_wait", next_attempt_at=time.time() + delay,
                              last_error="result_collection_failed")
                 self.tasks.update(self.tasks.get(task_id), collection=state)
                 logging.getLogger(__name__).warning("Video result collection deferred: %s", task_id)
-            else:
-                state.update(state="ready", next_attempt_at=0, last_error=None,
-                             completed_at=datetime.now(UTC).isoformat())
-                self.tasks.update(result, collection=state)
 
     def close(self):
         with self.lock:

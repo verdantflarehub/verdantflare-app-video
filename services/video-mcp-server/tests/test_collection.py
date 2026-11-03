@@ -189,3 +189,121 @@ class CollectionTest(unittest.TestCase):
                 200, content=b'video', headers={'content-type': 'video/mp4'}))) as client:
             with patch.object(self.executor, 'client', client), patch('app.providers.fal.time.monotonic', side_effect=lambda: next(clock, 100)):
                 self.assertEqual(self.executor.fal._download('https://v3.fal.media/result.mp4'), b'video')
+
+    def stale_collection(self, record):
+        return self.tasks.update(record, collection={
+            'state': 'retry_wait', 'attempts': 11,
+            'started_at': '2026-10-28T09:07:28+00:00',
+            'completed_at': None, 'next_attempt_at': time.time() + 300,
+            'last_error': 'result_collection_failed'})
+
+    def test_manual_recovery_clears_retry_without_changing_generation_or_identity(self):
+        record = self.stale_collection(self.task())
+        before = record.model_dump()
+        with patch.object(self.executor.fal, 'result', side_effect=self.collected) as result:
+            ready = self.executor.result(record.video_task_id)
+            again = self.executor.result(record.video_task_id)
+        self.assertEqual(result.call_count, 2)
+        self.assertEqual(ready.collection['state'], 'ready')
+        self.assertEqual(ready.collection['attempts'], 11)
+        self.assertIsNone(ready.collection['last_error'])
+        self.assertEqual(ready.collection['next_attempt_at'], 0)
+        artifact = self.executor.artifacts.get(ready.artifact_id, 'demo')
+        self.assertEqual(ready.collection['completed_at'], artifact.created_at)
+        for key in ('video_task_id', 'input_digest', 'runtime_task_id', 'created_at', 'completed_at', 'request'):
+            self.assertEqual(ready.model_dump()[key], before[key])
+        self.assertEqual(again.artifact_id, ready.artifact_id)
+        self.assertEqual(again.collection, ready.collection)
+        self.assertEqual(again.updated_at, ready.updated_at)
+
+    def test_background_reconciles_cached_result_without_provider_or_download(self):
+        record = self.stale_collection(self.collected(self.task()))
+        record = self.tasks.update(record, collection={**record.collection, 'next_attempt_at': 0})
+        artifact = self.executor.artifacts.get(record.artifact_id, 'demo')
+        with patch.object(self.executor, 'result') as result, patch.object(self.executor, 'generate') as generate:
+            self.collector.sync()
+            for future in list(self.collector.active.values()):
+                future.result(2)
+        recovered = TaskStore(Path(self.tmp.name)).get(record.video_task_id)
+        self.assertEqual(recovered.collection['state'], 'ready')
+        self.assertEqual(recovered.collection['completed_at'], artifact.created_at)
+        self.assertEqual(recovered.collection['attempts'], 11)
+        self.assertEqual(recovered.artifact_id, record.artifact_id)
+        result.assert_not_called()
+        generate.assert_not_called()
+
+    def test_cached_artifact_must_be_same_project_present_and_hash_verified(self):
+        for failure in ('missing', 'corrupt', 'other_project'):
+            with self.subTest(failure=failure):
+                record = self.stale_collection(self.collected(self.task()))
+                artifact = self.executor.artifacts.get(record.artifact_id, 'demo')
+                path = self.executor.artifacts.content_path(artifact)
+                if failure == 'missing':
+                    path.unlink()
+                elif failure == 'corrupt':
+                    path.write_bytes(b'corrupted-video')  # same size, different digest
+                else:
+                    record = self.tasks.update(record, project_id='other-project')
+                record = self.tasks.update(record, collection={**record.collection, 'next_attempt_at': 0})
+                with patch.object(self.executor, 'result') as result:
+                    self.collector.sync()
+                    for future in list(self.collector.active.values()):
+                        future.result(2)
+                current = self.tasks.get(record.video_task_id)
+                self.assertEqual(current.collection['state'], 'retry_wait')
+                self.assertEqual(current.collection['attempts'], 11)
+                self.assertGreater(current.collection['next_attempt_at'], time.time())
+                result.assert_not_called()
+
+    def test_manual_incomplete_preview_does_not_become_ready(self):
+        record = self.stale_collection(self.collected(self.task('sr')))
+        with patch.object(self.executor.processing['sr'], 'result', return_value=record):
+            returned = self.executor.result(record.video_task_id)
+        self.assertEqual(returned.collection['state'], 'retry_wait')
+
+    def test_late_collection_error_does_not_regress_persisted_result(self):
+        record = self.stale_collection(self.task())
+        self.tasks.update(record, collection={**record.collection, 'next_attempt_at': 0})
+        def committed_then_lost_response(rec):
+            self.collected(rec)
+            raise FalError('response_lost_after_save')
+        with patch.object(self.executor.fal, 'result', side_effect=committed_then_lost_response):
+            self.collector.collect(record.video_task_id)
+        current = self.tasks.get(record.video_task_id)
+        self.assertEqual(current.collection['state'], 'ready')
+        self.assertIsNone(current.collection['last_error'])
+
+    def test_preview_bytes_required_and_completion_uses_last_artifact(self):
+        record = self.stale_collection(self.collected(self.task('sr')))
+        preview = self.executor.artifacts.create_from_chunks(project_id='demo', operation='video.preview',
+            filename='preview.mp4', media_type='video/mp4', chunks=[b'preview'])
+        record = self.tasks.update(record, media={'preview_artifact_id': preview.artifact_id})
+        path = self.executor.artifacts.content_path(preview)
+        path.write_bytes(b'corrupt')
+        with patch.object(self.executor.processing['sr'], 'result', return_value=record):
+            self.assertEqual(self.executor.result(record.video_task_id).collection['state'], 'retry_wait')
+            path.write_bytes(b'preview')
+            ready = self.executor.result(record.video_task_id)
+        self.assertEqual(ready.collection['state'], 'ready')
+        self.assertEqual(ready.collection['completed_at'], preview.created_at)
+
+    def test_unknown_artifact_time_stays_unknown_after_reconciliation(self):
+        record = self.stale_collection(self.collected(self.task()))
+        artifact = self.executor.artifacts.get(record.artifact_id, 'demo')
+        metadata = self.executor.artifacts.artifacts_root / artifact.artifact_id / 'metadata.json'
+        metadata.write_text(artifact.model_copy(update={'created_at': 'not-a-time'}).model_dump_json())
+        with patch.object(self.executor.fal, 'result', return_value=record):
+            ready = self.executor.result(record.video_task_id)
+        self.assertEqual(ready.collection['state'], 'ready')
+        self.assertIsNone(ready.collection['completed_at'])
+
+    def test_reconciling_legacy_record_does_not_invent_generation_time(self):
+        record = self.stale_collection(self.collected(self.task()))
+        record = record.model_copy(update={'completed_at': None, 'dispatched_at': None})
+        self.tasks._write(record)
+        with patch.object(self.executor.fal, 'result', return_value=record):
+            ready = self.executor.result(record.video_task_id)
+        self.assertEqual(ready.collection['state'], 'ready')
+        self.assertIsNone(ready.completed_at)
+        self.assertIsNone(ready.dispatched_at)
+        self.assertIsNone(ready.timing['total_seconds'])

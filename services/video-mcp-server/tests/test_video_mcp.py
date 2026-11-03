@@ -78,7 +78,7 @@ class VideoMCPTest(unittest.TestCase):
                               references={"images": [], "videos": [],
                                           "audios": [{"artifact_id": audio.artifact_id, "purpose": "rhythm"}]})
 
-    def test_status_marks_runtime_task_lost_after_restart(self) -> None:
+    def test_status_preserves_uncertain_execution_after_runtime_404(self) -> None:
         self.tasks.create(project_id="promo-test", idempotency_key="unit/attempt_01",
                           input_digest="sha256:test", request={"model": "minimax-h3-ref2va"},
                           runtime_task_id="missing-runtime-task", status="queued")
@@ -87,7 +87,7 @@ class VideoMCPTest(unittest.TestCase):
                                      lambda request: httpx.Response(404))))
         record = next(self.tasks.root.glob("video_task_*.json"))
         task = executor.status(record.stem)
-        self.assertEqual(task.status, "failed")
+        self.assertEqual(task.status, "queued")
         self.assertEqual(task.error["code"], "runtime_task_lost")
 
     def test_result_accepts_h3_temporal_bucket_edit_handle(self) -> None:

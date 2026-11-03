@@ -78,7 +78,7 @@ class ReferenceMediaTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "still|format_mismatch"):
             validate_reference_media(animated, "image/png")
         source = self.make("plain.mp4", ["-f", "lavfi", "-i", "testsrc2=size=64x96:rate=24:duration=2", "-c:v", "libx264"])
-        rotated = self.make("rotated.mp4", ["-display_rotation", "90", "-i", str(source), "-c", "copy"])
+        rotated = self.make("rotated.mp4", ["-i", str(source), "-c", "copy", "-metadata:s:v:0", "rotate=90"])
         media = validate_reference_media(rotated, "video/mp4")
         self.assertEqual((media["width"], media["height"]), (96, 64))
 

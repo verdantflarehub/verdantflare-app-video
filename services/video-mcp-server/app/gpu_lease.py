@@ -138,10 +138,7 @@ class K8sApi:
             response = self._request("PUT", path, json=body)
         else:
             response = self._request("POST", f"/apis/coordination.k8s.io/v1/namespaces/{self.namespace}/leases", json=body)
-            if response.status_code == 409:
-                current = self.get_lease(name) or {}
-                body["metadata"]["resourceVersion"] = current.get("metadata", {}).get("resourceVersion")
-                response = self._request("PUT", path, json=body)
+            # A competing creator must be re-observed, never overwritten.
         if response.status_code in {200, 201}:
             return response.status_code
         return response.status_code
@@ -267,6 +264,11 @@ class GpuCoordinator:
 
     def _write(self, holder: str) -> bool:
         current = self.api.get_lease(self.lease_name)
+        identity = ((current or {}).get("spec") or {}).get("holderIdentity")
+        if not holder and identity != self.holder:
+            return False
+        if holder and held_by_other(current, self.holder, self._now()):
+            return False
         version = None if current is None else current.get("metadata", {}).get("resourceVersion")
         acquire_time = None
         if current and (current.get("spec") or {}).get("holderIdentity") == self.holder:
@@ -281,6 +283,10 @@ class GpuCoordinator:
             current = self.api.get_lease(self.lease_name)
             if held_by_other(current, self.holder, now):
                 return False
+            if held_by_other(current, "", now) == self.holder:
+                # Keep an already admitted role alive while a peer briefly
+                # writes its own claim before observing this role.
+                return self._write(self.holder)
             if not self._write(self.holder):
                 return False
             if self.peer_holder():
@@ -307,11 +313,16 @@ class GpuCoordinator:
     def renew(self) -> None:
         if not self.enabled:
             return
-        current = self.api.get_lease(self.lease_name)
-        identity = ((current or {}).get("spec") or {}).get("holderIdentity")
-        if identity not in {None, "", self.holder}:
+        self.try_acquire()
+
+    def renew_existing(self) -> None:
+        """Maintain a live lease without admitting a not-yet-started call."""
+        if not self.enabled:
             return
-        self._write(self.holder)
+        with self._lock:
+            current = self.api.get_lease(self.lease_name)
+            if held_by_other(current, "", self._now()) == self.holder:
+                self._write(self.holder)
 
     def release(self) -> None:
         if not self.enabled:

@@ -4,6 +4,7 @@ import base64
 import binascii
 import hashlib
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -573,7 +574,6 @@ class VideoExecutor:
         if service in {"h3-sol", "h3-vdn", "h3-singularity"}:
             payload["idempotency_key"] = reserved.video_task_id
         acquired = False
-        submitted = False
         if self.gpu.enabled and service in LOCAL_H3_SERVICES:
             try:
                 self.gpu.acquire_for_queue()
@@ -586,7 +586,8 @@ class VideoExecutor:
             runtime_task_id = response.json()["id"]
             if not isinstance(runtime_task_id, str) or not runtime_task_id.strip():
                 raise ValueError("Invalid runtime task id")
-            submitted = True
+            return self.tasks.update(reserved, runtime_task_id=runtime_task_id,
+                                     dispatched_at=datetime.now(UTC).isoformat())
         except (httpx.ConnectError, httpx.ConnectTimeout):
             return self.tasks.update(reserved, status="failed", error={
                 "code": "runtime_unavailable", "message": "H3 runtime is unreachable; generation was not submitted"})
@@ -600,33 +601,54 @@ class VideoExecutor:
             return self.tasks.update(reserved, status="queued" if service == "h3-singularity" else "failed", error={"code": "submission_unconfirmed",
                               "message": "Runtime submission could not be confirmed; do not resubmit automatically"})
         finally:
-            if acquired and not submitted:
-                self.gpu.release()
-        return self.tasks.update(reserved, runtime_task_id=runtime_task_id,
-                                 dispatched_at=datetime.now(UTC).isoformat())
+            if acquired:
+                # A failed HTTP observation is not evidence of stopped GPU
+                # work. Reconcile the durable task set, including unknowns.
+                try:
+                    self.reconcile_gpu()
+                except Exception:
+                    # Keep the persisted receipt and original result/error.
+                    logging.getLogger(__name__).warning("GPU lease reconciliation deferred after dispatch")
 
     def reconcile_gpu(self) -> None:
         if not self.gpu.enabled:
             return
-        if self._local_h3_active():
-            try:
-                self.gpu.renew()
-            except Exception:
-                pass
+        # generate() owns this lock through reservation, admission, dispatch
+        # and receipt persistence. A background scan must not release midway.
+        if not self._lock.acquire(blocking=False):
+            self.gpu.renew_existing()
             return
-        self.gpu.release()
+        try:
+            try:
+                active = self._local_h3_active()
+            except Exception:
+                self.gpu.renew_existing()
+                raise
+            if active:
+                if not self.gpu.try_acquire():
+                    logging.getLogger(__name__).warning("GPU lease recovery waiting for existing holder")
+            else:
+                self.gpu.release()
+        finally:
+            self._lock.release()
 
     def _local_h3_active(self) -> bool:
         root = getattr(self.tasks, "root", None)
-        if root is None or not root.exists():
-            return False
-        for path in root.glob("video_task_*.json"):
-            try:
-                record = TaskRecord.model_validate_json(path.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            if record.service in LOCAL_H3_SERVICES and record.status not in TERMINAL_TASK_STATUS and record.runtime_task_id:
-                return True
+        if root is None or not root.is_dir():
+            raise ExecutionError("GPU task reconciliation storage is unavailable")
+        # scandir propagates unreadable-directory errors; glob can silently
+        # produce an empty collection and incorrectly imply an idle backend.
+        with os.scandir(root) as entries:
+            for entry in entries:
+                if not entry.name.startswith("video_task_") or not entry.name.endswith(".json"):
+                    continue
+                record = TaskRecord.model_validate_json(Path(entry.path).read_text(encoding="utf-8"))
+                if record.service in LOCAL_H3_SERVICES and (
+                    record.status not in TERMINAL_TASK_STATUS or
+                    (record.status == "failed" and (record.error or {}).get("code") in
+                     {"submission_unconfirmed", "runtime_task_lost"})
+                ):
+                    return True
         return False
 
     @task_serialized
@@ -695,9 +717,9 @@ class VideoExecutor:
         try:
             response = self.client.get(f"{runtime_url}/v1/videos/{record.runtime_task_id}", timeout=10, headers=runtime_headers)
             if response.status_code == 404:
-                return self.tasks.update(record, status="failed", error={
+                return self.tasks.update(record, error={
                     "code": "runtime_task_lost",
-                    "message": "H3 runtime task no longer exists",
+                    "message": "H3 runtime task could not be found; execution outcome remains unconfirmed",
                 })
             response.raise_for_status()
             runtime_data = response.json()
@@ -726,6 +748,9 @@ class VideoExecutor:
 
     @task_serialized
     def result(self, video_task_id: str) -> TaskRecord:
+        return self.collector.reconcile_cached(self._result(video_task_id))
+
+    def _result(self, video_task_id: str) -> TaskRecord:
         record = self.tasks.get(video_task_id)
         if record.service == "higgsfield":
             return self.higgsfield.result(record)

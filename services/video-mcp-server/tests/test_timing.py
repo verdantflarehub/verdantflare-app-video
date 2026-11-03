@@ -37,6 +37,54 @@ class TimingTests(unittest.TestCase):
         self.assertIsNone(timing['queue_seconds'])
         self.assertGreaterEqual(timing['queue_elapsed_seconds'], 0)
 
+    def test_invalid_dispatch_does_not_block_persisted_task_or_dashboard(self):
+        for stamp in ('bad', '2026-11-03T00:00:01', '2026-99-03T00:00:01Z'):
+            with self.subTest(stamp=stamp):
+                record = self.record.model_copy(update=dict(
+                    created_at='2026-11-03T00:00:00Z', dispatched_at=stamp,
+                    completed_at='2026-11-03T00:00:03Z', status='succeeded',
+                    artifact_id='retained-output'))
+                self.store._write(record)
+                loaded = TaskStore(Path(self.tmp.name)).get(record.video_task_id)
+                view = public_task(loaded)
+                self.assertEqual(loaded.dispatched_at, stamp)
+                self.assertEqual(view['artifact_id'], 'retained-output')
+                self.assertEqual(view['status'], 'succeeded')
+                self.assertIsNone(view['timing']['queue_seconds'])
+                self.assertIsNone(view['timing']['processing_seconds'])
+                self.assertEqual(view['timing']['total_seconds'], 3)
+
+    def test_reversed_intervals_remain_unknown_not_zero(self):
+        record = self.record.model_copy(update=dict(
+            created_at='2026-11-03T00:00:00Z',
+            dispatched_at='2026-11-03T00:00:01Z',
+            completed_at='2026-11-02T23:59:59Z', status='succeeded'))
+        timing = public_task(record)['timing']
+        self.assertEqual(timing['queue_seconds'], 1)
+        self.assertIsNone(timing['processing_seconds'])
+        self.assertIsNone(timing['total_seconds'])
+
+    def test_timezone_offsets_and_real_zero_duration_remain_valid(self):
+        record = self.record.model_copy(update=dict(
+            created_at='2026-11-03T08:00:00+08:00',
+            dispatched_at='2026-11-03T00:00:00Z',
+            completed_at='2026-11-03T01:00:03+01:00', status='succeeded'))
+        timing = public_task(record)['timing']
+        self.assertEqual((timing['queue_seconds'], timing['processing_seconds'],
+                          timing['total_seconds']), (0, 3, 3))
+
+    def test_running_invalid_time_does_not_invent_elapsed_duration(self):
+        for stamp in ('bad', '2026-11-03T00:00:01', '9999-12-31T00:00:00Z'):
+            with self.subTest(stamp=stamp):
+                queued = self.record.model_copy(update={'created_at': stamp})
+                self.assertIsNone(public_task(queued)['timing']['queue_elapsed_seconds'])
+                running = self.record.model_copy(update={
+                    'dispatched_at': stamp, 'status': 'running'})
+                timing = public_task(running)['timing']
+                self.assertIsNone(timing['processing_elapsed_seconds'])
+                self.assertIsNone(timing['processing_seconds'])
+                self.assertIsNone(timing['total_seconds'])
+
     def test_higgsfield_generation_stops_before_delayed_delivery(self):
         record = self.record.model_copy(update=dict(service='higgsfield',
             created_at='2026-10-14T16:11:40+00:00', dispatched_at='2026-10-14T16:11:48+00:00',

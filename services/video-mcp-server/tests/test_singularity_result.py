@@ -21,9 +21,14 @@ class SingularityResultTests(unittest.TestCase):
     def setUpClass(cls):
         cls.media_temp = tempfile.TemporaryDirectory()
         path = Path(cls.media_temp.name) / "sample.mp4"
+        silent = path.with_name("video.mp4")
+        # Build the exact video grid first. Older production FFmpeg releases
+        # stop audio encoding early when -frames:v terminates a combined mux.
         subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=size=1344x768:rate=24",
-            "-f", "lavfi", "-i", "anullsrc=r=32000:cl=stereo", "-frames:v", "362", "-t", "15.083333",
-            "-c:v", "libx264", "-preset", "ultrafast", "-threads", "2", "-c:a", "aac", str(path)], check=True)
+            "-frames:v", "362", "-c:v", "libx264", "-preset", "ultrafast", "-threads", "2", str(silent)], check=True)
+        subprocess.run(["ffmpeg", "-v", "error", "-i", str(silent), "-f", "lavfi", "-i",
+            "anullsrc=r=32000:cl=stereo:d=15.083333333", "-map", "0:v:0", "-map", "1:a:0",
+            "-c:v", "copy", "-c:a", "aac", str(path)], check=True)
         cls.payload = path.read_bytes()
 
     @classmethod

@@ -197,7 +197,13 @@ class TaskStore:
     def with_timing(record: TaskRecord) -> TaskRecord:
         def seconds(a, b):
             if not a or not b: return None
-            return max(0.0, (datetime.fromisoformat(b) - datetime.fromisoformat(a)).total_seconds())
+            try:
+                start, end = datetime.fromisoformat(a), datetime.fromisoformat(b)
+                if start.tzinfo is None or end.tzinfo is None or end < start:
+                    return None
+                return (end - start).total_seconds()
+            except (ValueError, TypeError, OverflowError):
+                return None
         dispatched = record.dispatched_at
         completed = record.completed_at
         now = datetime.now(UTC).isoformat()
@@ -230,7 +236,10 @@ class TaskStore:
 
     def _update_current(self, record: TaskRecord, **values: object) -> TaskRecord:
         now = datetime.now(UTC).isoformat()
-        if not record.completed_at:
+        # Reception bookkeeping is not new evidence of generation completion.
+        # Preserve missing historical timestamps instead of inferring them from
+        # an unrelated last update while repairing a cached result's state.
+        if not record.completed_at and set(values) != {"collection"}:
             if record.status in {"succeeded", "failed", "cancelled"}:
                 values["completed_at"] = record.updated_at
             elif values.get("status") in {"succeeded", "failed", "cancelled"}:
