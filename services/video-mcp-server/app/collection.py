@@ -5,6 +5,7 @@ import hashlib
 import logging
 import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
@@ -31,6 +32,8 @@ class ResultCollector:
         self.active = {}
         self.lock = threading.Lock()
         self.closed = False
+        self.scan_samples = deque(maxlen=30)
+        self.last_scan_log = 0.0
 
     @staticmethod
     def eligible(record):
@@ -91,8 +94,11 @@ class ResultCollector:
             available = self.workers - len(self.active)
             if not available:
                 return
+            scan_started = time.perf_counter()
+            scanned = 0
             candidates = []
             for path in self.tasks.root.glob("video_task_*.json"):
+                scanned += 1
                 try:
                     record = TaskRecord.model_validate_json(path.read_text())
                     due = float((record.collection or {}).get("next_attempt_at", 0))
@@ -100,8 +106,27 @@ class ResultCollector:
                         candidates.append((due, record.created_at, record.video_task_id))
                 except (OSError, ValueError, TypeError):
                     continue
-            for _, _, task_id in sorted(candidates)[:available]:
+            due_candidates = sorted(candidates)[:available]
+            self.observe_scan(scanned, time.perf_counter() - scan_started)
+            for _, _, task_id in due_candidates:
                 self.active[task_id] = self.pool.submit(self.collect, task_id)
+
+    def observe_scan(self, files, elapsed):
+        self.scan_samples.append(elapsed)
+        now = time.monotonic()
+        if now - self.last_scan_log < 60:
+            return
+        self.last_scan_log = now
+        samples = sorted(self.scan_samples)
+        p95_ms = samples[(len(samples) * 95 + 99) // 100 - 1] * 1000
+        # The service runs under Uvicorn, whose error logger emits INFO by
+        # default; the module logger would hide healthy samples.
+        logger = logging.getLogger("uvicorn.error")
+        message = "Video collection scan: files=%d p95_ms=%.1f samples=%d"
+        if files >= 5000 or p95_ms >= 200:
+            logger.warning(message, files, p95_ms, len(samples))
+        else:
+            logger.info(message, files, p95_ms, len(samples))
 
     def collect(self, task_id):
         # Another MCP caller/worker may already be collecting the same result.

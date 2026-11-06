@@ -39,6 +39,17 @@ class CollectionTest(unittest.TestCase):
             filename='video.mp4', media_type='video/mp4', chunks=[b'validated-video'])
         return self.tasks.update(record, artifact_id=artifact.artifact_id)
 
+    def test_scan_observation_reports_scale_without_task_identity(self):
+        with self.assertLogs('uvicorn.error', level='INFO') as logs:
+            self.collector.observe_scan(491, 0.025)
+        self.assertIn('files=491', logs.output[0])
+        self.assertIn('p95_ms=25.0', logs.output[0])
+        self.assertNotIn('video_task_', logs.output[0])
+        self.collector.last_scan_log = 0
+        with self.assertLogs('uvicorn.error', level='WARNING') as logs:
+            self.collector.observe_scan(5000, 0.201)
+        self.assertIn('files=5000', logs.output[0])
+
     def test_retry_is_durable_and_does_not_regenerate(self):
         record = self.task()
         with patch.object(self.executor.fal, 'result', side_effect=FalError('secret-signed-url')) as result, patch.object(self.executor, 'generate') as generate:
