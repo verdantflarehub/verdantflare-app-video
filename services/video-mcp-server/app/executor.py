@@ -229,6 +229,10 @@ class VideoExecutor:
                 routes[-1].update(quality_profiles=["du-0"], gpu_verified_combinations=[],
                                   verification_status="not_recorded", frame_grid="17k+5", fps=24,
                                   modes=["reference_to_video"],
+                                  audio_guidance={"modes": ["reference"], "default": "reference",
+                                      "timeline_experimental": True, "gpu_verified": False,
+                                      "timeline_audio_format": "pcm_wav", "timeline_maximum_requested_seconds": 14,
+                                      "exact_audio_preservation": False, "lip_sync_verified": False},
                                   defaults={"mode": "reference_to_video", "duration_seconds": 5,
                                             "aspect_ratio": "16:9", "quality_profile": "du-0"},
                                   reference_limits={"images": 9, "videos": 3, "audios": 3,
@@ -244,6 +248,9 @@ class VideoExecutor:
                         if response.status_code == 200:
                             routes[-1]["runtime_version"] = health.get("runtime_version", "unknown")
                             routes[-1]["runtime_capabilities"] = health.get("capabilities", {})
+                            from .singularity import runtime_supports_timeline
+                            if runtime_supports_timeline(health):
+                                routes[-1]["audio_guidance"]["modes"].append("timeline")
                     except (httpx.HTTPError, ValueError, AttributeError):
                         routes[-1]["readiness"] = "unreachable"
         routes.append(self.grok.capability())
@@ -373,10 +380,12 @@ class VideoExecutor:
 
     def _normalize(self, project_id: str, model: str, prompt: str, duration_seconds: int,
                    aspect_ratio: str, references: dict[str, list[dict[str, str]]],
-                   route: str = "h3", quality_profile: str = "du-0") -> tuple[dict[str, object], str]:
+                   route: str = "h3", quality_profile: str = "du-0", audio_guidance: str | None = None) -> tuple[dict[str, object], str]:
         if not isinstance(route, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", route):
             raise ValueError("route must be a lowercase slug")
         service = self._service_for_route(route)
+        from .singularity import check_audio_guidance
+        check_audio_guidance(audio_guidance, service)
         if quality_profile not in {"du-0", "du-1", "du-2", "du-3", "hr-refine-tile-v1", "hr-refine-global-v2"}:
             raise ValueError("quality_profile must be du-0, du-1, du-2, du-3, hr-refine-tile-v1, or hr-refine-global-v2")
         if service != "h3-singularity" and quality_profile != "du-0":
@@ -403,6 +412,10 @@ class VideoExecutor:
             raise ValueError("at least one image or video reference is required")
         if service in {"h3-vdn", "h3-singularity"} and sum(len(references.get(k, [])) for k in limits) > 12:
             raise ValueError("Selected route supports at most 12 references")
+        if audio_guidance == "timeline" and (len(references.get("audios", [])) != 1 or references.get("videos")):
+            raise ValueError("timeline_requires_one_audio_and_no_video")
+        if audio_guidance == "timeline" and duration_seconds > 14:
+            raise ValueError("timeline_audio_requested_seconds_must_be_4_to_14")
         reference_bytes = 0
         media_by_kind = {kind: [] for kind in limits}
         normalized: dict[str, list[dict[str, str]]] = {}
@@ -429,12 +442,20 @@ class VideoExecutor:
                    "duration_seconds": duration_seconds, "aspect_ratio": aspect_ratio,
                    "references": normalized, "quality_profile": quality_profile}
         request["route"] = route
+        if audio_guidance is not None:
+            request["audio_guidance"] = audio_guidance
         if service == "h3-singularity":
             for kind in ("videos", "audios"):
                 if sum(m["duration_seconds"] for m in media_by_kind[kind]) > 15.001:
                     raise ValueError(f"{kind} references exceed 15 seconds in total")
             visuals = media_by_kind["images"] or media_by_kind["videos"]
             request["resolved_output"] = output_spec(aspect_ratio, duration_seconds, visuals[0] if visuals else None)
+            if audio_guidance == "timeline":
+                from .singularity import validate_timeline_wav
+                audio = self.artifacts.get(normalized["audios"][0]["artifact_id"], project_id)
+                if audio.media_type != "audio/wav":
+                    raise ValueError("timeline_audio_requires_pcm_wav")
+                request["timeline_audio"] = validate_timeline_wav(self.artifacts.content_path(audio), request["resolved_output"]["frames"])
             for media in media_by_kind["videos"]:
                 count = min(media["resampled_frames"], request["resolved_output"]["frames"])
                 count -= (count - 5) % 17
@@ -463,11 +484,13 @@ class VideoExecutor:
                  quality_profile: str | None = None, mode: str | None = None,
                  resolution: str | None = None, postprocess: dict | None = None,
                  channel_account_id: str | None = None, budget_limit: str | None = None,
-                 price_ceiling: float | None = None) -> TaskRecord:
+                 price_ceiling: float | None = None, audio_guidance: str | None = None) -> TaskRecord:
         project_id = require_project_id(project_id)
         if not idempotency_key.strip() or len(idempotency_key) > 128:
             raise ValueError("idempotency_key is invalid")
         route = route or self.runtime_route
+        from .singularity import check_audio_guidance
+        check_audio_guidance(audio_guidance, self._service_for_route(route))
         if route != "higgsfield" and price_ceiling is not None:
             raise ValueError("price_ceiling_not_supported")
         if route not in {'fal', 'grok', 'google'} and (channel_account_id is not None or budget_limit is not None):
@@ -506,7 +529,7 @@ class VideoExecutor:
         if mode not in allowed_modes or resolution is not None:
             raise ValueError("unsupported_parameter")
         request, digest = self._normalize(project_id, model, prompt, duration_seconds, aspect_ratio,
-                                          references, route, quality_profile)
+                                          references, route, quality_profile, audio_guidance)
         request, digest = self.delivery.prepare(request, digest, postprocess, check=False)
         service = self._service_for_route(route)
         authority = authorize(self.client, project_id) if postprocess is not None else None
@@ -541,6 +564,8 @@ class VideoExecutor:
                    "num_outputs_per_prompt": 1, "num_inference_steps": 4 if service in {"h3-vdn", "h3-sol", "h3-singularity"} else 21, "flow_shift": 12.0,
                    "audio_flow_shift": 3.0, "seed": 7,
                    "quality_profile": quality_profile}
+        if "audio_guidance" in request:
+            payload["audio_guidance"] = request["audio_guidance"]
         # Persist the attempt before calling the runtime. An ambiguous network
         # failure must not permit a duplicate GPU request under the same key.
         reserved = self.tasks.create(project_id=project_id, idempotency_key=idempotency_key,
@@ -560,6 +585,11 @@ class VideoExecutor:
                 health_data = health.json()
                 if not isinstance(health_data, dict) or not isinstance(health_data.get("ready"), bool):
                     raise ValueError("Invalid readiness response")
+                if audio_guidance == "timeline":
+                    from .singularity import runtime_supports_timeline
+                    if not runtime_supports_timeline(health_data):
+                        return self.tasks.update(reserved, status="failed", error={"code": "timeline_audio_not_supported",
+                            "message": "Selected runtime does not support timeline audio; generation was not submitted"})
                 if not health_data["ready"]:
                     return self.tasks.update(reserved, status="failed", error={
                         "code": "runtime_not_ready", "message": "H3 runtime is not ready; generation was not submitted"})
@@ -687,6 +717,8 @@ class VideoExecutor:
                                 'duration_seconds': float(req['duration_seconds'])},
                             'num_outputs_per_prompt': 1, 'num_inference_steps': 4, 'flow_shift': 12.0,
                             'audio_flow_shift': 3.0, 'seed': 7, 'quality_profile': req['quality_profile']}
+                        if 'audio_guidance' in req:
+                            payload['audio_guidance'] = req['audio_guidance']
                         response = self.client.post(f'{url}/v1/videos', headers=headers, json=payload, timeout=30)
                     else:
                     # A delayed submission can still arrive; absence is not

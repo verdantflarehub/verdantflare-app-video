@@ -22,7 +22,7 @@ def proof(record, artifacts):
         inputs = [media(r['artifact_id']) for group in ('images', 'videos', 'audios')
                   for r in p.get('references', {}).get(group, [])]
         outputs = [media(record.artifact_id)]
-        params = {k: p[k] for k in ('duration_seconds', 'aspect_ratio', 'quality_profile') if k in p}
+        params = {k: p[k] for k in ('duration_seconds', 'aspect_ratio', 'quality_profile', 'audio_guidance') if k in p}
         params['fps'] = 24
     elif record.service == 'higgsfield' and route == 'higgsfield' and model == 'seedance_2_5':
         refs = [r['artifact_id'] for group in ('images', 'videos', 'audios')

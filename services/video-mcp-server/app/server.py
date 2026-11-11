@@ -92,6 +92,7 @@ VIDEO_TOOLS_SCHEMA = [
                 "duration_seconds": {"type": "integer", "minimum": 1, "maximum": 15, "default": 5},
                 "route": {"type": "string", "description": "Execution channel; omitted uses the host default from video.capabilities"},
                 "quality_profile": {"type": "string", "description": "H3 only; omit for Grok"},
+                "audio_guidance": {"type": "string", "enum": ["reference", "timeline"], "description": "H3 Singularity only; timeline is experimental full-duration PCM audio conditioning, not guaranteed lip sync"},
                 "mode": {"type": "string", "enum": ["text_to_video", "image_to_video", "reference_to_video"]},
                 "resolution": {"type": "string", "enum": ["480p", "720p"]},
                 "references": {"type": "object", "description": "Reference assets mapping"},
@@ -498,9 +499,11 @@ def video_preflight(project_id: str, prompt: str, references: dict[str, list[dic
                     quality_profile: str | None = None, mode: str | None = None,
                   resolution: str | None = None, postprocess: dict | None = None,
                   channel_account_id: str | None = None, budget_limit: str | None = None,
-                  price_ceiling: float | None = None) -> types.CallToolResult:
+                  price_ceiling: float | None = None, audio_guidance: str | None = None) -> types.CallToolResult:
     """Validate exact media and parameters and read the selected channel's real pricing and admission."""
     selected = route or executor.runtime_route
+    from .singularity import check_audio_guidance, runtime_supports_timeline
+    check_audio_guidance(audio_guidance, executor._service_for_route(selected))
     normalize_postprocess(postprocess, selected)
     if selected not in {'fal', 'grok', 'google'} and (channel_account_id is not None or budget_limit is not None):
         raise ValueError('channel_budget_not_supported')
@@ -550,7 +553,14 @@ def video_preflight(project_id: str, prompt: str, references: dict[str, list[dic
         raise ValueError("unsupported_parameter")
     executor.runtime(selected)
     request, digest = executor._normalize(require_project_id(project_id), model or "minimax-h3-ref2va", prompt,
-        duration_seconds, aspect_ratio or "16:9", references, selected, quality_profile or "du-0")
+        duration_seconds, aspect_ratio or "16:9", references, selected, quality_profile or "du-0", audio_guidance)
+    if audio_guidance == "timeline":
+        url, headers, _, _ = executor.runtime(selected)
+        response = executor.client.get(f"{url}/health", headers=headers, timeout=10)
+        response.raise_for_status()
+        health = response.json()
+        if not runtime_supports_timeline(health) or health.get("ready") is not True:
+            raise ValueError("timeline_audio_not_supported_or_not_ready")
     if postprocess is not None:
         authorize(executor.client, project_id)
     request, digest = executor.delivery.prepare(request, digest, postprocess)
@@ -558,7 +568,9 @@ def video_preflight(project_id: str, prompt: str, references: dict[str, list[dic
     return _result({"status": "validated", "gpu_verified": False, "input_digest": digest,
                     "delivery_output": delivery_output, "postprocess": postprocess,
                     "resolved_output": request["resolved_output"], "reference_mapping": request["reference_mapping"],
-                    "reference_media": request["reference_media"], "prompt": request["prompt"]})
+                    "reference_media": request["reference_media"], "prompt": request["prompt"],
+                    **({"audio_guidance": request["audio_guidance"], "timeline_audio": request.get("timeline_audio")}
+                       if "audio_guidance" in request else {})})
 
 
 # Publish the registered parameter schemas instead of maintaining a second
@@ -588,13 +600,14 @@ def video_create(prompt: str,
                  quality_profile: str | None = None, mode: str | None = None,
                   resolution: str | None = None, postprocess: dict | None = None, title: object = None,
                   channel_account_id: str | None = None, budget_limit: str | None = None,
-                  price_ceiling: float | None = None) -> types.CallToolResult:
+                  price_ceiling: float | None = None, audio_guidance: str | None = None) -> types.CallToolResult:
     """Create an asynchronous video generation task."""
     record, naming = titles.create(executor, title=title, project_id=project_id, idempotency_key=idempotency_key, model=model,
                                prompt=prompt, duration_seconds=duration_seconds,
                                aspect_ratio=aspect_ratio, references=references or {}, route=route,
                                quality_profile=quality_profile, mode=mode, resolution=resolution, postprocess=postprocess,
-                               channel_account_id=channel_account_id, budget_limit=budget_limit, price_ceiling=price_ceiling)
+                               channel_account_id=channel_account_id, budget_limit=budget_limit, price_ceiling=price_ceiling,
+                               audio_guidance=audio_guidance)
     return _result({**naming, "task_id": record.video_task_id, "video_task_id": record.video_task_id,
                     "status": record.status, "created_at": record.created_at, "error": record.error, "delivery": record.delivery,
                     "resolved_output": record.request.get("resolved_output"),
@@ -609,7 +622,7 @@ def video_generate(project_id: str, idempotency_key: str, model: str, prompt: st
                    quality_profile: str | None = None, mode: str | None = None,
                   resolution: str | None = None, postprocess: dict | None = None, title: object = None,
                   channel_account_id: str | None = None, budget_limit: str | None = None,
-                  price_ceiling: float | None = None) -> types.CallToolResult:
+                  price_ceiling: float | None = None, audio_guidance: str | None = None) -> types.CallToolResult:
     """Generate with a business model and an explicitly selected runtime route.
 
     `route` selects a configured channel such as h3-sol, h3-vdn, or fal.
@@ -621,7 +634,8 @@ def video_generate(project_id: str, idempotency_key: str, model: str, prompt: st
                                prompt=prompt, duration_seconds=duration_seconds,
                                aspect_ratio=aspect_ratio, references=references, route=route,
                                quality_profile=quality_profile, mode=mode, resolution=resolution, postprocess=postprocess,
-                               channel_account_id=channel_account_id, budget_limit=budget_limit, price_ceiling=price_ceiling)
+                               channel_account_id=channel_account_id, budget_limit=budget_limit, price_ceiling=price_ceiling,
+                               audio_guidance=audio_guidance)
     return _result({**naming, "task_id": record.video_task_id, "video_task_id": record.video_task_id,
                     "status": record.status, "created_at": record.created_at, "error": record.error, "delivery": record.delivery})
 

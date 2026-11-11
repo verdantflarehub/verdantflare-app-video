@@ -14,6 +14,7 @@ from .media import load_audio, load_image, load_video, align_video_reference, mu
 from .errors import RuntimeErrorCode
 from . import __version__
 from .contract import ASPECT_RATIOS, resolve_geometry, resolve_timing
+from .audio_guidance import validate_timeline_pcm, anchor_encoded_audio
 from .hr_refine import (
     audio_range,
     h3_resize_video,
@@ -335,6 +336,8 @@ class Engine:
             "gpu_count": torch.cuda.device_count(),
             "cpu_offload": True,
             "capabilities": {"aspect_ratios": list(ASPECT_RATIOS), "quality_profiles": ["du-0"],
+                             "audio_guidance_modes": ["reference", "timeline"],
+                             "timeline_audio_experimental": True, "timeline_audio_gpu_verified": False,
                              "duration_seconds": {"minimum": 4, "maximum": 15},
                              "frame_grid": "17k+5", "fps": 24,
                              "canvases": {ratio: resolve_geometry(ratio) for ratio in ASPECT_RATIOS if ratio != "adaptive"}},
@@ -661,6 +664,11 @@ class Engine:
             if audio is not None:
                 video_audios[f"ref_video_audio_{index}"] = audio
         audios = [load_audio(path) for path in files.get("audios", [])]
+        timeline_audio = None
+        if request.get("audio_guidance", "reference") == "timeline":
+            if len(audios) != 1 or videos:
+                raise RuntimeErrorCode("timeline_requires_one_audio_and_no_video")
+            timeline_audio = validate_timeline_pcm(audios[0], timing["frames"])
         source_size = (int(images[0].shape[2]), int(images[0].shape[1])) if images else first_video_size
         geometry = resolve_geometry(target.get("aspect_ratio", "9:16"),
                                     source_size)
@@ -681,6 +689,8 @@ class Engine:
             "vae_decoder_tile_size": self.vae_decoder_tile_size,
         }
         self._active_timings = timings
+        if timeline_audio is not None:
+            timings["timeline_audio"] = timeline_audio
         if not images and not videos and not audios:
             raise RuntimeErrorCode("reference_required")
         set_stage("warming")
@@ -775,6 +785,10 @@ class Engine:
                 {f"ref_video_{i}": video for i, video in enumerate(videos)},
                 video_audios, {f"ref_audio_{i}": audio for i, audio in enumerate(audios)},
             )
+            if timeline_audio is not None:
+                audio_ticks = int(latent["samples"].tensors[1].shape[-1])
+                conditioning = anchor_encoded_audio(conditioning, audio_ticks)
+                timings["timeline_audio"]["encoded_ticks"] = audio_ticks
         finally:
             self.vae.encode = original_video_encode
             self.audio_vae.encode = original_audio_encode
