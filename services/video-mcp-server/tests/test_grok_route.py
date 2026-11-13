@@ -278,7 +278,7 @@ class GoogleChannelRouteTest(unittest.TestCase):
         self.env = patch.dict('os.environ', {
             'VIDEO_GOOGLE_CHANNEL_URL': 'http://google-channel:8001',
             'VIDEO_GOOGLE_CHANNEL_TOKEN': self.token,
-            'GOOGLE_VIDEO_MODEL': 'gemini-omni-1.1-flash',
+            'GOOGLE_VIDEO_MODEL': 'gemini-omni-1.2-flash',
             'VIDEO_PROJECT_SERVICE_URL': 'http://project',
             'VIDEO_PROJECT_SERVICE_TOKEN': 'p' * 40,
         })
@@ -319,10 +319,10 @@ class GoogleChannelRouteTest(unittest.TestCase):
         ex.require_channel = Mock()
         ex.grok.probe = lambda p: {'duration_ms': 4000, 'frame_rate': 24, 'width': 1280, 'height': 720}
         task = ex.generate(project_id='demo', idempotency_key='google-ch-1', route='google',
-                           model='gemini-omni-1.1-flash', prompt='Ocean waves', duration_seconds=4,
+                           model='gemini-omni-1.2-flash', prompt='Ocean waves', duration_seconds=4,
                            aspect_ratio='16:9', references={})
         self.assertEqual(task.runtime_task_id, call_id)
-        ex.require_channel.assert_called_once_with('google', 'gemini-omni-1.1-flash')
+        ex.require_channel.assert_called_once_with('google', 'gemini-omni-1.2-flash')
         state = dict(task.provider_state or {})
         state['next_poll_at'] = 0
         ex.tasks.update(task, provider_state=state)

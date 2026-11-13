@@ -42,14 +42,14 @@ class GoogleVideoTest(unittest.TestCase):
                         'message': 'The Google video price table has expired.', 'retryable': False}})
                 return httpx.Response(200, json={'schema_version': 1, 'channel_id': 'google',
                     'model_id': DEFAULT_MODEL, 'can_submit': True, 'blocked_reason': None,
-                    'quote': {'amount': None, 'known_amount': '0.5068', 'unit': 'USD', 'source': 'price_table'}})
+                    'quote': {'amount': None, 'known_amount': '0.34752', 'unit': 'USD', 'source': 'price_table'}})
             if request.method == 'POST':
                 if self.mode == 'timeout':
                     raise httpx.ReadTimeout('synthetic timeout', request=request)
                 if self.mode == 'error':
                     return httpx.Response(409, json={'error': 'budget_exceeded', 'accepted': False})
                 return httpx.Response(200, json={'call_id': self.channel_call, 'accepted': True,
-                    'state': 'in_progress', 'pricing': {'amount': None, 'known_amount': '0.5068'}})
+                    'state': 'in_progress', 'pricing': {'amount': None, 'known_amount': '0.34752'}})
             if request.url.path.endswith('/result'):
                 return httpx.Response(200, content=b'google-video-test', headers={'content-type': 'video/mp4'})
             if self.mode == 'failed':
@@ -100,7 +100,7 @@ class GoogleVideoTest(unittest.TestCase):
         request, _ = self.adapter.normalize(**self.inputs())
         result = self.adapter.preflight(request, budget_limit='0')
         self.assertIsNone(result['quote']['amount'])
-        self.assertEqual(result['quote']['known_amount'], '0.5068')
+        self.assertEqual(result['quote']['known_amount'], '0.34752')
         posted = json.loads(self.requests[-1].content)
         self.assertEqual(posted['budget_limit'], '0')
         self.assertEqual(posted['payload']['duration_seconds'], 5)

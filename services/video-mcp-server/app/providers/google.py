@@ -26,8 +26,11 @@ RETIRED_MODELS = {
     "veo-3.1-fast-generate-preview",
     "veo-3.1-generate-preview",
 }
-DEFAULT_MODEL = "gemini-omni-1.1-flash"
-MODELS = {DEFAULT_MODEL, *RETIRED_MODELS}
+LEGACY_OMNI_MODELS = {
+    "gemini-omni-1.1-flash",
+}
+DEFAULT_MODEL = "gemini-omni-1.2-flash"
+MODELS = {DEFAULT_MODEL, *LEGACY_OMNI_MODELS, *RETIRED_MODELS}
 VERSION = "google-channel-v1"
 MAX_SOURCE_IMAGE_BYTES = 24 * 1024 * 1024
 MAX_SOURCE_IMAGE_PIXELS = 16 * 1024 * 1024
@@ -214,7 +217,7 @@ class GoogleVideoAdapter:
                         or old_state.get("budget_limit") != provider_state["budget_limit"]):
                     raise TaskConflict("idempotency_conflict")
                 return old
-            if request["model"] in RETIRED_MODELS:
+            if request["model"] in RETIRED_MODELS or request["model"] in LEGACY_OMNI_MODELS:
                 raise ChannelError("model_retired", source="google", accepted=False)
             if not self.enabled or not self.configured():
                 raise ChannelError("channel_unavailable", source="google", accepted=False)
@@ -423,7 +426,7 @@ class GoogleVideoAdapter:
                 if hashlib.file_digest(stream, "sha256").hexdigest() != state["result_sha256"]:
                     return self.error(rec, "result_integrity_failed", terminal=True)
             media = self.executor.grok.probe(output)
-            if rec.request.get("model") == DEFAULT_MODEL:
+            if rec.request.get("model") in {DEFAULT_MODEL, *LEGACY_OMNI_MODELS}:
                 expected_size = (720, 1280) if rec.request["aspect_ratio"] == "9:16" else (1280, 720)
                 actual_duration = media.get("duration_ms")
                 if ((media.get("width"), media.get("height")) != expected_size

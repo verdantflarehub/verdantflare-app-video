@@ -10,7 +10,7 @@ class NativeResultMetadataTests(unittest.TestCase):
         task_id, artifact_id = "video_task_" + "a" * 32, "art_" + "b" * 32
         record = SimpleNamespace(video_task_id=task_id, artifact_id=artifact_id,
             project_id="project-test", status="succeeded", service="google", runtime_route="google",
-            request={"model": "gemini-omni-1.1-flash"}, runtime_version="0.1.27", input_digest="input",
+            request={"model": "gemini-omni-1.2-flash"}, runtime_version="0.1.27", input_digest="input",
             media={"sha256": "stale", "size": 1, "duration_seconds": 4}, delivery=None)
         tasks, artifacts = MagicMock(), MagicMock()
         tasks.get.return_value = record
