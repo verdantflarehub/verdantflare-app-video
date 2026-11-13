@@ -40,11 +40,14 @@ def resolve_timing(seconds: int) -> dict:
 
 def validate_request(payload: dict, reference_base_url: str):
     required = {"idempotency_key", "model", "task", "prompt", "seconds", "conditions", "target"}
-    allowed = required | {"num_inference_steps", "num_outputs_per_prompt", "flow_shift", "audio_flow_shift", "seed", "quality_profile", "audio_guidance"}
+    allowed = required | {"num_inference_steps", "num_outputs_per_prompt", "flow_shift", "audio_flow_shift", "seed", "quality_profile", "audio_guidance", "image_guidance"}
     if not isinstance(payload, dict) or not required <= payload.keys() or payload.keys() - allowed:
         raise RuntimeErrorCode("invalid_request_fields")
     if payload["model"] != "MiniMaxAI/MiniMax-H3" or payload["task"] != "ref2va":
         raise RuntimeErrorCode("unsupported_model_or_task")
+    image_guidance = payload.get("image_guidance", "reference")
+    if not isinstance(image_guidance, str) or image_guidance not in {"reference", "first_frame"}:
+        raise RuntimeErrorCode("unsupported_image_guidance")
     audio_guidance = payload.get("audio_guidance", "reference")
     if not isinstance(audio_guidance, str) or audio_guidance not in {"reference", "timeline"}:
         raise RuntimeErrorCode("unsupported_audio_guidance")
@@ -89,6 +92,8 @@ def validate_request(payload: dict, reference_base_url: str):
         counts[item["type"]] += 1
     if counts["image"] > 9 or counts["video"] > 3 or counts["audio"] > 3:
         raise RuntimeErrorCode("too_many_references_of_type")
+    if image_guidance == "first_frame" and not counts["image"]:
+        raise RuntimeErrorCode("first_frame_requires_image")
     if audio_guidance == "timeline" and (counts["audio"] != 1 or counts["video"]):
         raise RuntimeErrorCode("timeline_requires_one_audio_and_no_video")
     if ratio == "adaptive" and not counts["image"] and not counts["video"]:

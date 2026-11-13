@@ -56,3 +56,18 @@ def runtime_supports_timeline(health):
     capabilities = health.get('capabilities', {}) if isinstance(health, dict) else {}
     modes = capabilities.get('audio_guidance_modes', []) if isinstance(capabilities, dict) else []
     return isinstance(modes, list) and 'timeline' in modes
+
+
+def check_image_guidance(mode, service):
+    if mode is None:
+        return
+    if service != 'h3-singularity':
+        raise ValueError('image_guidance_requires_h3_singularity')
+    if not isinstance(mode, str) or mode not in {'reference', 'first_frame'}:
+        raise ValueError('unsupported_image_guidance')
+
+
+def runtime_supports_first_frame(health):
+    capabilities = health.get('capabilities', {}) if isinstance(health, dict) else {}
+    modes = capabilities.get('image_guidance_modes', []) if isinstance(capabilities, dict) else []
+    return isinstance(modes, list) and 'first_frame' in modes

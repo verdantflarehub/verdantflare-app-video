@@ -14,6 +14,7 @@ from .media import load_audio, load_image, load_video, align_video_reference, mu
 from .errors import RuntimeErrorCode
 from . import __version__
 from .contract import ASPECT_RATIOS, resolve_geometry, resolve_timing
+from .image_guidance import validate_first_image, anchor_first_image
 from .audio_guidance import validate_timeline_pcm, anchor_encoded_audio
 from .hr_refine import (
     audio_range,
@@ -337,6 +338,8 @@ class Engine:
             "cpu_offload": True,
             "capabilities": {"aspect_ratios": list(ASPECT_RATIOS), "quality_profiles": ["du-0"],
                              "audio_guidance_modes": ["reference", "timeline"],
+                             "image_guidance_modes": ["reference", "first_frame"],
+                             "first_frame_experimental": True, "first_frame_gpu_verified": False,
                              "timeline_audio_experimental": True, "timeline_audio_gpu_verified": False,
                              "duration_seconds": {"minimum": 4, "maximum": 15},
                              "frame_grid": "17k+5", "fps": 24,
@@ -675,6 +678,8 @@ class Engine:
         width, height = geometry["width"], geometry["height"]
         if quality_profile != "du-0":
             raise RuntimeErrorCode("quality_profile_not_available")
+        if request.get("image_guidance") == "first_frame":
+            validate_first_image(images, width, height)
         generation_width, generation_height = width, height
         timing = resolve_timing(request["seconds"])
         timings = {
@@ -785,6 +790,9 @@ class Engine:
                 {f"ref_video_{i}": video for i, video in enumerate(videos)},
                 video_audios, {f"ref_audio_{i}": audio for i, audio in enumerate(audios)},
             )
+            if request.get("image_guidance") == "first_frame":
+                conditioning = anchor_first_image(conditioning, generation_width, generation_height)
+                timings["image_guidance"] = {"mode": "first_frame", "image_index": 0, "start_frame": 0}
             if timeline_audio is not None:
                 audio_ticks = int(latent["samples"].tensors[1].shape[-1])
                 conditioning = anchor_encoded_audio(conditioning, audio_ticks)
