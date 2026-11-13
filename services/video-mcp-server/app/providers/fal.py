@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import tempfile
+from pathlib import Path
 import time
 import uuid
 from contextlib import nullcontext
@@ -819,9 +820,9 @@ class FalAdapter:
 
     @staticmethod
     def _probe(payload: bytes) -> dict[str, object]:
-        with tempfile.NamedTemporaryFile(suffix=".mp4") as temp:
-            temp.write(payload)
-            temp.flush()
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory) / "payload.mp4"
+            temp.write_bytes(payload)
             try:
                 probe = subprocess.run(
                     [
@@ -832,7 +833,7 @@ class FalAdapter:
                         "format=duration:stream=codec_type,codec_name,width,height,r_frame_rate,sample_rate,channels",
                         "-of",
                         "json",
-                        temp.name,
+                        str(temp),
                     ],
                     check=True,
                     capture_output=True,
