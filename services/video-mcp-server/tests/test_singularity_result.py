@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -40,8 +41,19 @@ class SingularityResultTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.assets = ArtifactStore(self.root)
         self.tasks = TaskStore(self.root)
-        self.env = patch.dict(os.environ, {"H3_RUNTIME_ROUTE": "h3-singularity", "H3_RUNTIME_ROUTES": "",
-            "H3_RUNTIME_URL": "http://runtime.example", "H3_SINGULARITY_RUNTIME_TOKEN": "test-token"})
+        self.env = patch.dict(os.environ, {
+            "H3_RUNTIME_ROUTE": "h3-fasth3",
+            "H3_RUNTIME_URL": "http://fasth3.example",
+            "H3_FASTH3_RUNTIME_TOKEN": "fasth3-token",
+            "H3_SINGULARITY_RUNTIME_TOKEN": "test-token",
+            "H3_RUNTIME_ROUTES": json.dumps({
+                "h3-singularity": {
+                    "url": "http://runtime.example",
+                    "version": "video-minimax-h3-singularity-v0.1.40",
+                    "requires_token": True,
+                }
+            }),
+        })
         self.env.start()
         self.http = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, content=self.payload)))
         self.executor = VideoExecutor(self.assets, self.tasks, self.http)
@@ -79,6 +91,34 @@ class SingularityResultTests(unittest.TestCase):
         with self.assertRaisesRegex(ExecutionError, "SHA-256"):
             self.executor.result(row.video_task_id)
         self.assertFalse(list(self.assets.artifacts_root.glob("art_*")))
+
+    def test_archived_legacy_singularity_record_remains_readable_when_cold_standby_unreachable(self):
+        from app.dashboard import Dashboard, task_channel, task_presentation
+
+        archived = self.executor.result(self.record().video_task_id)
+        self.assertTrue(archived.artifact_id)
+        with patch.dict(os.environ, {"H3_RUNTIME_ROUTES": "{}"}):
+            dead_client = httpx.Client(
+                transport=httpx.MockTransport(
+                    lambda req: (_ for _ in ()).throw(httpx.ConnectError("cold standby replicas=0", request=req))
+                )
+            )
+            self.addCleanup(dead_client.close)
+            offline_exec = VideoExecutor(self.assets, self.tasks, dead_client)
+            status_row = offline_exec.status(archived.video_task_id)
+            result_row = offline_exec.result(archived.video_task_id)
+            listed_rows, _ = offline_exec.tasks.list_tasks(project_id="project-test")
+            listed_ids = [r.video_task_id for r in listed_rows]
+            self.assertEqual(status_row.status, "succeeded")
+            self.assertEqual(result_row.artifact_id, archived.artifact_id)
+            self.assertIn(archived.video_task_id, listed_ids)
+            self.assertEqual(task_channel(result_row), "local")
+            pres = task_presentation(result_row)
+            self.assertEqual(pres["channel_id"], "local")
+            self.assertEqual(pres["channel_label"], "本地")
+            pub = Dashboard(offline_exec)._public_task(result_row, self.tasks)
+            self.assertEqual(pub["service"], "h3-singularity")
+            self.assertEqual(pub["artifact_id"], archived.artifact_id)
 
 
 if __name__ == "__main__":

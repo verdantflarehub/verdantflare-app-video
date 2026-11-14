@@ -7,10 +7,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends tini && rm -rf 
 WORKDIR /opt/h3-singularity
 COPY pyproject.toml ./
 COPY src ./src
-RUN python3 -m pip install --no-deps . && python3 -m compileall -q /opt/h3-singularity/src
+RUN python3 -m pip install --no-deps --no-cache-dir . && python3 -m compileall -q /opt/h3-singularity/src
 
-LABEL org.opencontainers.image.title="VerdantFlare MiniMax H3 Singularity Ref2VA & 2K IC" \
-      org.opencontainers.image.version="0.1.39" \
+LABEL org.opencontainers.image.title="VerdantFlare MiniMax H3 Singularity Ref2VA" \
+      org.opencontainers.image.version="0.1.40" \
       org.opencontainers.image.licenses="Apache-2.0 AND MIT AND LicenseRef-MiniMax-H3-Community"
 
 ENV PYTHONPATH=/opt/h3-singularity/src:/opt/comfy \
@@ -20,7 +20,6 @@ ENV PYTHONPATH=/opt/h3-singularity/src:/opt/comfy \
     H3_BASE_MODEL_ROOT=/models/MiniMax-H3 \
     H3_COMPONENT_MODEL_ROOT=/models/singularity \
     SINGULARITY_TASK_ROOT=/data/projects/singularity/tasks \
-    SINGULARITY_ARTIFACT_ROOT=/source/video \
     SINGULARITY_MIN_FREE_VRAM_MIB=28672
 
 EXPOSE 8000

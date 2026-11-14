@@ -36,6 +36,8 @@ from app.tasks import TaskConflict, TaskStore
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 APP_VIDEO_ROOT = Path(__file__).resolve().parents[3]
+FASTH3_SRC = APP_VIDEO_ROOT / "services" / "video-minimax-h3-fasth3" / "src"
+REGEN2K_SRC = APP_VIDEO_ROOT / "services" / "video-minimax-h3-regenerate-2k" / "src"
 SINGULARITY_SRC = APP_VIDEO_ROOT / "services" / "video-minimax-h3-singularity" / "src"
 RIFE_SRC = APP_VIDEO_ROOT / "services" / "video-frame-interpolation-api"
 
@@ -228,6 +230,8 @@ def _make_p3_result_payload(
 
 class CrossRepoPureContractTest(unittest.TestCase):
     def test_cross_repo_preview_geometry_2k_grid_and_windows_are_byte_identical(self):
+        fasth3_contract = _load_sibling_module(FASTH3_SRC, "h3_fasth3.contract")
+        regen_contract = _load_sibling_module(REGEN2K_SRC, "h3_regenerate_2k.contract")
         sing_contract = _load_sibling_module(SINGULARITY_SRC, "h3_singularity.contract")
         rife_media = _load_sibling_module(RIFE_SRC, "video_interpolation.media")
 
@@ -241,8 +245,11 @@ class CrossRepoPureContractTest(unittest.TestCase):
         }
         for (w, h), expected in golden_previews.items():
             self.assertEqual(preview_geometry(w, h), expected)
-            self.assertEqual(sing_contract.preview_geometry(w, h), expected)
+            self.assertEqual(regen_contract.preview_geometry(w, h), expected)
             self.assertEqual(rife_media.preview_geometry(w, h), expected)
+
+        self.assertEqual(fasth3_contract.resolve_geometry("16:9", None), sing_contract.resolve_geometry("16:9", None))
+        self.assertEqual(fasth3_contract.resolve_timing(15), sing_contract.resolve_timing(15))
 
         from types import SimpleNamespace
         rife_req = SimpleNamespace(target_fps_num=48, target_fps_den=1)
@@ -262,13 +269,13 @@ class CrossRepoPureContractTest(unittest.TestCase):
         for sw, sh in native_canvases:
             for gmode in ("budget_1440p", "exact_2x"):
                 mcp_geo = resolve_2k_target_geometry(sw, sh, gmode)
-                sing_geo = sing_contract.resolve_2k_target_geometry(sw, sh, gmode)
-                self.assertEqual(mcp_geo, sing_geo)
+                regen_geo = regen_contract.resolve_2k_target_geometry(sw, sh, gmode)
+                self.assertEqual(mcp_geo, regen_geo)
                 self.assertLessEqual(max(mcp_geo["target_w"], mcp_geo["target_h"]), 3072)
                 self.assertTrue(is_2k_canvas(mcp_geo["target_w"], mcp_geo["target_h"]))
 
         for frames in range(107, 363, 17):
-            self.assertEqual(temporal_windows(frames), sing_contract.temporal_windows(frames))
+            self.assertEqual(temporal_windows(frames), regen_contract.temporal_windows(frames))
 
 
 class Regenerate2kChainAndTimeoutTest(unittest.TestCase):
@@ -279,10 +286,23 @@ class Regenerate2kChainAndTimeoutTest(unittest.TestCase):
         self.env_patch = patch.dict(
             os.environ,
             {
-                "H3_RUNTIME_URL": "http://singularity.local:8000",
-                "H3_RUNTIME_ROUTE": "h3-singularity",
+                "H3_RUNTIME_URL": "http://fasth3.local:8000",
+                "H3_RUNTIME_ROUTE": "h3-fasth3",
+                "H3_RUNTIME_VERSION": "video-minimax-h3-fasth3-v0.1.0",
+                "H3_FASTH3_RUNTIME_TOKEN": "fasth3-token",
                 "H3_SINGULARITY_RUNTIME_TOKEN": "sing-token",
-                "H3_SINGULARITY_DEFAULT_QUALITY_PROFILE": "fasth3-nvfp4",
+                "H3_RUNTIME_ROUTES": json.dumps(
+                    {
+                        "h3-singularity": {
+                            "url": "http://singularity.local:8000",
+                            "version": "video-minimax-h3-singularity-v0.1.40",
+                            "requires_token": True,
+                        }
+                    }
+                ),
+                "VIDEO_REGENERATE_2K_RUNTIME_URL": "http://regenerate2k.local:8000",
+                "VIDEO_REGENERATE_2K_RUNTIME_TOKEN": "regen2k-token",
+                "VIDEO_REGENERATE_2K_RUNTIME_VERSION": "video-minimax-h3-regenerate-2k-v0.1.0",
                 "VIDEO_INTERPOLATION_RUNTIME_URL": "http://rife.local:8080",
                 "VIDEO_PROJECT_SERVICE_URL": "http://project.local",
                 "VIDEO_PROJECT_SERVICE_TOKEN": "proj-token",
@@ -307,6 +327,11 @@ class Regenerate2kChainAndTimeoutTest(unittest.TestCase):
         self.p3_started_at = datetime.now(UTC).isoformat()
         self.p3_worker_settled = True
         self.health_default_profile = "fasth3-nvfp4"
+        self.fasth3_gpu_active = False
+        self.regen2k_gpu_active = False
+        self.regen2k_ready = True
+        self.singularity_reachable = True
+        self.singularity_ready = True
         self.singularity_gpu_active = False
         self.rife_gpu_active = False
 
@@ -342,26 +367,24 @@ class Regenerate2kChainAndTimeoutTest(unittest.TestCase):
         if host == "project.local" and path == "/internal/v1/project/open":
             return httpx.Response(200, json={"ok": True})
 
-        if host == "singularity.local":
+        if host == "fasth3.local":
             if path == "/health":
                 return httpx.Response(
                     200,
                     json={
                         "ready": True,
                         "default_quality_profile": self.health_default_profile,
-                        "gpu_worker_active": self.singularity_gpu_active,
-                        "active_task_ids": ["active-1"] if self.singularity_gpu_active else [],
+                        "gpu_worker_active": self.fasth3_gpu_active,
+                        "active_task_ids": ["fasth3-active-1"] if self.fasth3_gpu_active else [],
                         "capabilities": {
-                            "quality_profiles": ["fasth3-nvfp4", "du-0"],
-                            "regenerate_2k_profiles": ["open_h3_2k_ic"],
-                            "regenerate_2k_grid_modes": ["budget_1440p", "exact_2x"],
-                            "image_guidance": ["reference", "first_frame"],
-                            "audio_guidance": ["reference", "timeline"],
+                            "quality_profiles": ["fasth3-nvfp4"],
+                            "image_guidance_modes": ["reference", "first_frame"],
+                            "audio_guidance_modes": ["reference", "timeline"],
                         },
                     },
                 )
             if path == "/v1/videos" and request.method == "POST":
-                return httpx.Response(202, json={"id": "singularity_" + "1" * 32, "status": "queued"})
+                return httpx.Response(202, json={"id": "fasth3_" + "1" * 32, "status": "queued"})
             if path.startswith("/v1/videos/") and request.method == "DELETE":
                 self.deleted_paths.append(path)
                 return httpx.Response(
@@ -379,7 +402,7 @@ class Regenerate2kChainAndTimeoutTest(unittest.TestCase):
                 return httpx.Response(
                     200,
                     json={
-                        "id": "singularity_" + "1" * 32,
+                        "id": "fasth3_" + "1" * 32,
                         "status": self.p1_status,
                         "stage": "completed" if self.p1_status == "completed" else "generating",
                         "started_at": self.p1_started_at,
@@ -391,6 +414,55 @@ class Regenerate2kChainAndTimeoutTest(unittest.TestCase):
                             "height": 768,
                             "frames": 124,
                             "fps": 24,
+                        },
+                    },
+                )
+
+        if host == "singularity.local":
+            if not self.singularity_reachable:
+                raise httpx.ConnectError("cold standby replicas=0", request=request)
+            if path == "/health":
+                return httpx.Response(
+                    200,
+                    json={
+                        "ready": self.singularity_ready,
+                        "default_quality_profile": "du-0",
+                        "gpu_worker_active": self.singularity_gpu_active,
+                        "active_task_ids": ["sing-active-1"] if self.singularity_gpu_active else [],
+                        "capabilities": {
+                            "quality_profiles": ["du-0"],
+                            "image_guidance_modes": ["reference", "first_frame"],
+                            "audio_guidance_modes": ["reference", "timeline"],
+                        },
+                    },
+                )
+            if path == "/v1/videos" and request.method == "POST":
+                return httpx.Response(202, json={"id": "singularity_" + "1" * 32, "status": "queued"})
+            if path.startswith("/v1/videos/") and request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": path.rsplit("/", 1)[-1],
+                        "status": self.p1_status,
+                        "stage": "completed" if self.p1_status == "completed" else "generating",
+                        "started_at": self.p1_started_at,
+                        "worker_settled": self.p1_worker_settled,
+                    },
+                )
+
+        if host == "regenerate2k.local":
+            if path == "/health":
+                return httpx.Response(
+                    200,
+                    json={
+                        "ready": self.regen2k_ready,
+                        "status": "ok" if self.regen2k_ready else "degraded",
+                        "service": "regenerate_2k",
+                        "gpu_worker_active": self.regen2k_gpu_active,
+                        "active_task_ids": ["regen-active-1"] if self.regen2k_gpu_active else [],
+                        "capabilities": {
+                            "regenerate_2k_profiles": ["open_h3_2k_ic"],
+                            "regenerate_2k_grid_modes": ["budget_1440p", "exact_2x"],
                         },
                     },
                 )
@@ -416,7 +488,6 @@ class Regenerate2kChainAndTimeoutTest(unittest.TestCase):
             if path.startswith("/v1/regenerate-2k/") and request.method == "GET":
                 tid = path.rsplit("/", 1)[-1]
                 rec = self.tasks.get(tid)
-                body = self.p2_submitted.get(tid, {})
                 frames = 124
                 if isinstance(rec.provider_state, dict) and isinstance(rec.provider_state.get("source_frames"), int):
                     frames = rec.provider_state["source_frames"]
@@ -495,8 +566,8 @@ class Regenerate2kChainAndTimeoutTest(unittest.TestCase):
 
         raise AssertionError(f"Unhandled mock request: {request.method} {request.url}")
 
-    def _base_gen_kwargs(self, key: str = "k-1", duration_seconds: int = 5) -> dict:
-        return {
+    def _base_gen_kwargs(self, key: str = "k-1", duration_seconds: int = 5, route: str | None = None) -> dict:
+        kw = {
             "project_id": "proj_1",
             "idempotency_key": key,
             "model": "minimax-h3-ref2va",
@@ -508,10 +579,18 @@ class Regenerate2kChainAndTimeoutTest(unittest.TestCase):
                 "videos": [],
                 "audios": [],
             },
-            "route": "h3-singularity",
         }
+        if route is not None:
+            kw["route"] = route
+        return kw
 
-    def _seed_native_h3_task(self, key: str = "seed-m1", frames: int = 124) -> tuple[str, str]:
+    def _seed_native_h3_task(
+        self,
+        key: str = "seed-m1",
+        frames: int = 124,
+        *,
+        route: str = "h3-singularity",
+    ) -> tuple[str, str]:
         m1_art = self.artifacts.create_from_chunks(
             project_id="proj_1",
             operation="video.generate",
@@ -519,6 +598,7 @@ class Regenerate2kChainAndTimeoutTest(unittest.TestCase):
             media_type="video/mp4",
             chunks=[self.m1_bytes],
         )
+        prefix = "fasth3_" if route == "h3-fasth3" else "singularity_"
         with self.tasks.exclusive():
             rec = self.tasks.create(
                 project_id="proj_1",
@@ -526,12 +606,12 @@ class Regenerate2kChainAndTimeoutTest(unittest.TestCase):
                 input_digest=f"sha256:{key}",
                 request={
                     "project_id": "proj_1",
-                    "route": "h3-singularity",
+                    "route": route,
                     "model": "minimax-h3-ref2va",
                     "prompt": "cinematic portrait in rain",
                     "resolved_output": {"width": 1344, "height": 768, "frames": frames, "fps": 24},
                 },
-                runtime_task_id="singularity_" + "2" * 32,
+                runtime_task_id=prefix + "2" * 32,
                 status="succeeded",
             )
             rec = self.tasks.update(
@@ -549,9 +629,140 @@ class Regenerate2kChainAndTimeoutTest(unittest.TestCase):
             )
         return rec.video_task_id, m1_art.artifact_id
 
-    def test_legacy_interpolate_only_postprocess_is_byte_identical_and_uses_legacy_child_key(self):
+    def test_v1_v2_v7_default_fasth3_route_profile_rejection_and_capabilities(self):
+        self.assertEqual(normalize({"interpolate": {"profile": "rife_2x"}}, "h3-fasth3"), OPTION)
         self.assertEqual(normalize({"interpolate": {"profile": "rife_2x"}}, "h3-singularity"), OPTION)
+
+        # V2: mismatched quality_profile rejected before persistence or HTTP dispatch.
+        with self.assertRaisesRegex(ValueError, "quality_profile_not_available"):
+            self.executor.generate(**self._base_gen_kwargs("bad-fh3-du0", route="h3-fasth3"), quality_profile="du-0")
+        with self.assertRaisesRegex(ValueError, "quality_profile_not_available"):
+            self.executor.generate(
+                **self._base_gen_kwargs("bad-sing-fh3", route="h3-singularity"),
+                quality_profile="fasth3-nvfp4",
+            )
+        self.assertEqual(len(list(self.tasks.root.glob("video_task_*.json"))), 0)
+        self.assertEqual(len([r for r in self.requests if r.method == "POST"]), 0)
+
+        # V1 & V7: video.create without route defaults to h3-fasth3 + fasth3-nvfp4 + 8 NFE.
+        with patch.object(self.executor, "catalog_view", return_value={}):
+            caps = self.executor.capabilities()
+        self.assertEqual(caps["default_route"], "h3-fasth3")
+        self.assertEqual(caps["postprocess"]["regenerate_2k"]["generation_routes"], ["h3-fasth3", "h3-singularity"])
+        self.assertEqual(caps["postprocess"]["interpolate"]["generation_routes"], ["h3-fasth3", "h3-singularity"])
+
+        row = self.executor.generate(**self._base_gen_kwargs("v1-default"))
+        self.assertEqual(row.service, "h3-fasth3")
+        self.assertEqual(row.runtime_route, "h3-fasth3")
+        self.assertEqual(row.request["route"], "h3-fasth3")
+        self.assertEqual(row.request["quality_profile"], "fasth3-nvfp4")
+        post_reqs = [r for r in self.requests if r.url.path == "/v1/videos" and r.method == "POST"]
+        self.assertEqual(len(post_reqs), 1)
+        self.assertEqual(post_reqs[0].url.host, "fasth3.local")
+        self.assertEqual(post_reqs[0].headers["Authorization"], "Bearer fasth3-token")
+        body = json.loads(post_reqs[0].content)
+        self.assertEqual(body["quality_profile"], "fasth3-nvfp4")
+        self.assertEqual(body["num_inference_steps"], 8)
+
+    def test_v5_v6_i1_i2_i3_i5_i6_cold_standby_isolation_and_regenerate_2k_decoupling(self):
+        # V5: route_unavailable (unregistered h3-singularity) writes zero record and acquires zero lease/slot.
+        with patch.dict(os.environ, {"H3_RUNTIME_ROUTES": "{}"}):
+            unreg_exec = VideoExecutor(self.artifacts, self.tasks, self.client)
+            with patch.object(unreg_exec, "acquire_local_gpu") as acq:
+                with self.assertRaisesRegex(ExecutionError, "route_unavailable"):
+                    unreg_exec.generate(**self._base_gen_kwargs("cold-unreg", route="h3-singularity"))
+                acq.assert_not_called()
+        self.assertEqual(len(list(self.tasks.root.glob("video_task_*.json"))), 0)
+
+        # V5: runtime_not_ready (registered h3-singularity with replicas=0 / unreachable or ready=False) writes zero record & acquires zero lease.
+        self.singularity_reachable = False
+        with patch.object(self.executor, "acquire_local_gpu") as acq:
+            with self.assertRaisesRegex(ExecutionError, "runtime_not_ready"):
+                self.executor.generate(**self._base_gen_kwargs("cold-down", route="h3-singularity"))
+            acq.assert_not_called()
+        self.singularity_reachable = True
+        self.singularity_ready = False
+        with patch.object(self.executor, "acquire_local_gpu") as acq:
+            with self.assertRaisesRegex(ExecutionError, "runtime_not_ready"):
+                self.executor.generate(**self._base_gen_kwargs("cold-not-ready", route="h3-singularity"))
+            acq.assert_not_called()
+        self.assertEqual(len(list(self.tasks.root.glob("video_task_*.json"))), 0)
+        self.singularity_ready = True
+
+        # I6: cold standby unreachable /health with zero active h3-singularity tasks must NOT hold gpu-task-h3.
+        self.singularity_reachable = False
+        self.assertFalse(self.executor._local_h3_active())
+
+        # I1, I2, V6 & I3: historical 0.17.67 h3-singularity record remains byte-identical on disk, readable offline,
+        # and standalone regenerate_2k inherits parent prompt while posting strictly to VIDEO_REGENERATE_2K_RUNTIME_URL.
+        legacy_tid, m1_id = self._seed_native_h3_task("legacy-sing-01767", route="h3-singularity")
+        disk_before = (self.tasks.root / f"{legacy_tid}.json").read_bytes()
+        self.assertEqual(self.executor.status(legacy_tid).status, "succeeded")
+        self.assertEqual(self.executor.result(legacy_tid).artifact_id, m1_id)
+        self.assertEqual((self.tasks.root / f"{legacy_tid}.json").read_bytes(), disk_before)
+
+        regen_rec = self.executor.processing["regenerate_2k"].generate(
+            project_id="proj_1",
+            idempotency_key="v6-from-legacy-sing",
+            source_artifact_id=m1_id,
+            profile="open_h3_2k_ic",
+            grid_mode="budget_1440p",
+            prompt=None,
+        )
+        self.assertEqual(regen_rec.runtime_route, "h3-regenerate-2k")
+        self.assertEqual(regen_rec.request["prompt"], "cinematic portrait in rain")
+        regen_posts = [r for r in self.requests if r.url.path == "/v1/regenerate-2k" and r.method == "POST"]
+        self.assertEqual(len(regen_posts), 1)
+        self.assertEqual(regen_posts[0].url.host, "regenerate2k.local")
+        self.assertEqual(regen_posts[0].headers["Authorization"], "Bearer regen2k-token")
+
+        # V6 negative: missing VIDEO_REGENERATE_2K_RUNTIME_URL never falls back to H3_RUNTIME_URL or SINGULARITY_RUNTIME_URL.
+        with patch.dict(
+            os.environ,
+            {
+                "VIDEO_REGENERATE_2K_RUNTIME_URL": "",
+                "SINGULARITY_RUNTIME_URL": "http://singularity.local:8000",
+            },
+        ):
+            no_regen_exec = VideoExecutor(self.artifacts, self.tasks, self.client)
+            regen_cap = no_regen_exec.delivery.regenerate_capability()
+            self.assertFalse(regen_cap["configured"])
+            self.assertNotEqual(regen_cap["readiness"], "ready")
+            with self.assertRaises(ExecutionError):
+                no_regen_exec.processing["regenerate_2k"].generate(
+                    project_id="proj_1",
+                    idempotency_key="v6-no-fallback",
+                    source_artifact_id=m1_id,
+                )
+
+        # I5: non-terminal record on unregistered route settles to failed(route_unavailable) without raising;
+        # registered unreachable route preserves retryable transient handling without faking worker_settled.
+        with self.tasks.exclusive():
+            orphan = self.tasks.create(
+                project_id="proj_1",
+                idempotency_key="i5-orphan",
+                input_digest="sha256:i5",
+                request={"project_id": "proj_1", "route": "h3-singularity", "quality_profile": "du-0"},
+                runtime_task_id="singularity_" + "7" * 32,
+                status="running",
+            )
+            orphan = self.tasks.update(orphan, provider_state={"worker_settled": False})
+        with self.assertRaises(ExecutionError):
+            self.executor.status(orphan.video_task_id)
+        self.assertEqual(self.tasks.get(orphan.video_task_id).status, "running")
+        self.assertFalse(self.tasks.get(orphan.video_task_id).provider_state.get("worker_settled", True))
+
+        with patch.dict(os.environ, {"H3_RUNTIME_ROUTES": "{}"}):
+            unreg_exec2 = VideoExecutor(self.artifacts, self.tasks, self.client)
+            settled = unreg_exec2.status(orphan.video_task_id)
+        self.assertEqual(settled.status, "failed")
+        self.assertEqual(settled.error["code"], "route_unavailable")
+        self.assertFalse(settled.error["retryable"])
+
+    def test_legacy_interpolate_only_postprocess_is_byte_identical_and_uses_legacy_child_key(self):
+        self.assertEqual(normalize({"interpolate": {"profile": "rife_2x"}}, "h3-fasth3"), OPTION)
         parent = self.executor.generate(**self._base_gen_kwargs("p1-p3"), postprocess=OPTION)
+        self.assertEqual(parent.service, "h3-fasth3")
         self.assertEqual(parent.request["quality_profile"], "fasth3-nvfp4")
         p1_posts = [r for r in self.requests if r.url.path == "/v1/videos" and r.method == "POST"]
         self.assertEqual(json.loads(p1_posts[0].content)["num_inference_steps"], 8)
@@ -751,7 +962,7 @@ class Regenerate2kChainAndTimeoutTest(unittest.TestCase):
             def _chain_transport(req: httpx.Request) -> httpx.Response:
                 resp = orig_transport(req)
                 if (
-                    req.url.host == "singularity.local"
+                    req.url.host == "regenerate2k.local"
                     and req.url.path.startswith("/v1/regenerate-2k/")
                     and not req.url.path.endswith(("/content", "/preview"))
                     and req.method == "GET"
@@ -809,17 +1020,22 @@ class Regenerate2kChainAndTimeoutTest(unittest.TestCase):
     def test_pre_upgrade_du0_idempotency_is_preserved_and_preflight_checks_default_profile(self):
         from app import server
 
-        with patch.dict(os.environ, {"H3_SINGULARITY_DEFAULT_QUALITY_PROFILE": "du-0"}):
-            legacy = self.executor.generate(**self._base_gen_kwargs("pre-upgrade"))
+        # V4 & I4: existing h3-singularity (du-0) task retried WITHOUT route or quality_profile after default route
+        # switched to h3-fasth3 MUST inherit stored route & quality_profile and return original record with zero new POST.
+        legacy = self.executor.generate(**self._base_gen_kwargs("pre-upgrade", route="h3-singularity"))
+        self.assertEqual(legacy.service, "h3-singularity")
         self.assertEqual(legacy.request["quality_profile"], "du-0")
+        post_count_before = len([r for r in self.requests if r.method == "POST"])
 
-        # Upgrade flips env default to fasth3-nvfp4; retrying without quality_profile must NOT raise TaskConflict.
-        retried = self.executor.generate(**self._base_gen_kwargs("pre-upgrade"))
-        self.assertEqual(retried.video_task_id, legacy.video_task_id)
+        self.singularity_reachable = False
+        retried_no_route = self.executor.generate(**self._base_gen_kwargs("pre-upgrade"))
+        self.assertEqual(retried_no_route.video_task_id, legacy.video_task_id)
+        self.assertEqual(len([r for r in self.requests if r.method == "POST"]), post_count_before)
+        self.singularity_reachable = True
 
-        # Explicit conflicting quality_profile still raises TaskConflict.
+        # Explicit conflicting route or quality_profile still raises TaskConflict.
         with self.assertRaises(TaskConflict):
-            self.executor.generate(**self._base_gen_kwargs("pre-upgrade"), quality_profile="fasth3-nvfp4")
+            self.executor.generate(**self._base_gen_kwargs("pre-upgrade", route="h3-fasth3"))
 
         self.health_default_profile = "du-0"
         args = self._base_gen_kwargs("preflight-mismatch")
@@ -837,13 +1053,13 @@ class Regenerate2kChainAndTimeoutTest(unittest.TestCase):
         self.p1_status = "in_progress"
         self.p1_worker_settled = False
 
-        # Task A claims the single local GPU stage slot.
+        # Task A claims the single local GPU stage slot on h3-fasth3.
         task_a = self.executor.generate(
             **self._base_gen_kwargs("slot-holder-a"),
             postprocess={"regenerate_2k": {"profile": "open_h3_2k_ic"}},
         )
         self.assertTrue(task_a.runtime_task_id)
-        self.assertEqual(self.executor.stage_slot.current_holder(), (task_a.video_task_id, "h3-singularity"))
+        self.assertEqual(self.executor.stage_slot.current_holder(), (task_a.video_task_id, "h3-fasth3"))
 
         # Task B (local H3) and Task C (standalone regenerate_2k) must return immediately as queued (gpu_dispatched=False).
         t0 = _time.monotonic()
@@ -1136,25 +1352,58 @@ class CatalogAndPresentation2kTest(unittest.TestCase):
         pub = dashboard._public_task(rec, tasks)
         self.assertEqual(pub["grid_mode"], "budget_1440p")
 
+        with tasks.exclusive():
+            fh3_rec = tasks.create(
+                project_id="proj_1",
+                idempotency_key="fasth3-ui",
+                input_digest="sha256:fh3ui",
+                request={
+                    "project_id": "proj_1",
+                    "route": "h3-fasth3",
+                    "model": "minimax-h3-ref2va",
+                    "quality_profile": "fasth3-nvfp4",
+                },
+                runtime_task_id="fasth3_" + "3" * 32,
+                status="succeeded",
+            )
+            fh3_rec = tasks.update(fh3_rec, media={"width": 1344, "height": 768, "frames": 124, "frame_rate": "24"})
+        fh3_pres = task_presentation(fh3_rec)
+        self.assertEqual(task_channel(fh3_rec), "local")
+        self.assertEqual(fh3_pres["channel_id"], "local")
+        self.assertEqual(fh3_pres["channel_label"], "本地")
+
         for w, h in [(2464, 1408), (1408, 2464), (2560, 1120), (3072, 1344), (1536, 2688)]:
             self.assertTrue(is_2k_canvas(w, h), f"Expected 2K canvas for {w}x{h}")
         for w, h in [(1920, 1080), (1344, 768), (3840, 2160)]:
             self.assertFalse(is_2k_canvas(w, h), f"Did not expect 2K canvas for {w}x{h}")
 
-    def test_v0_1_2_catalog_three_way_sha256_schema_and_pending_vs_approved_load(self):
-        local_cm_path = (
+    def test_v0_1_3_catalog_three_way_sha256_schema_immutability_and_pending_vs_approved_load(self):
+        v012_cm_path = (
             REPO_ROOT
             / "deploys"
             / "k8s.dev.verdantflarehub.com"
             / "verdantflare-app"
             / "video-models-local-v0-1-2.yaml"
         )
+        v012_cm = yaml.safe_load(v012_cm_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            hashlib.sha256(v012_cm["data"]["channel-catalog.yaml"].encode("utf-8")).hexdigest(),
+            "125552bd18b2f4d738240f3a74c44c3afb74eebc58787a34b7a9d1ecf750d48c",
+        )
+
+        local_cm_path = (
+            REPO_ROOT
+            / "deploys"
+            / "k8s.dev.verdantflarehub.com"
+            / "verdantflare-app"
+            / "video-models-local-v0-1-3.yaml"
+        )
         channels_cm_path = (
             REPO_ROOT
             / "deploys"
             / "k8s.dev.verdantflarehub.com"
             / "verdantflare-app"
-            / "video-model-channels-v0-1-5.yaml"
+            / "video-model-channels-v0-1-6.yaml"
         )
         schema_path = (
             APP_VIDEO_ROOT
@@ -1172,6 +1421,7 @@ class CatalogAndPresentation2kTest(unittest.TestCase):
         channels_doc = yaml.safe_load(channels_cm["data"]["channels.yaml"])
         local_sel = next(ch for ch in channels_doc["channels"] if ch["channel_id"] == "local")
 
+        self.assertEqual(local_sel["channel_version"], "0.1.3")
         self.assertEqual(review_doc["candidate_sha256"], computed_sha)
         self.assertEqual(local_sel["sha256"], computed_sha)
         self.assertIn(review_doc["decision"], ("pending", "approved"))
@@ -1181,9 +1431,9 @@ class CatalogAndPresentation2kTest(unittest.TestCase):
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         catalog_doc = yaml.safe_load(catalog_bytes.decode("utf-8"))
         Draft202012Validator(schema).validate(catalog_doc)
-        design_src = next(s for s in catalog_doc["sources"] if s["id"] == "h3-5090-2k-ic-design")
-        design_sha = hashlib.sha256((REPO_ROOT / design_src["evidence_ref"]).read_bytes()).hexdigest()
-        self.assertEqual(design_src["sha256"], design_sha)
+        r5_src = next(s for s in catalog_doc["sources"] if s["id"] == "h3-5090-r5-service-split")
+        design_sha = hashlib.sha256((REPO_ROOT / r5_src["evidence_ref"]).read_bytes()).hexdigest()
+        self.assertEqual(r5_src["sha256"], design_sha)
 
         # Mount simulation: pending review fails closed; live approved manifest loads ready with local-h3-regenerate-2k-ic.
         temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)

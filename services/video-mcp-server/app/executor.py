@@ -25,9 +25,9 @@ from .artifacts import MAX_ARTIFACT_BYTES, ArtifactRecord, ArtifactStore, requir
 from .channel_errors import MESSAGES
 from .gpu_lease import GpuCoordinator, LeaseBusy, LocalGpuStageSlot
 from .regenerate import (
-    SINGULARITY_PROFILE_NFE,
-    SINGULARITY_QUALITY_PROFILES,
-    default_singularity_quality_profile,
+    H3_PROFILE_NFE,
+    ROUTE_QUALITY_PROFILE,
+    route_quality_profile,
 )
 from .tasks import TaskConflict, TaskRecord, TaskStore
 
@@ -39,7 +39,8 @@ MEDIA_TYPES = {
 }
 H3_DURATION_TOLERANCE_MS = 1000
 MAX_INLINE_IMAGE_BYTES = 3 * 1024 * 1024
-LOCAL_H3_SERVICES = {"h3", "h3-vdn", "h3-sol", "h3-singularity"}
+MODERN_H3_SERVICES = {"h3-fasth3", "h3-singularity"}
+LOCAL_H3_SERVICES = {"h3", "h3-vdn", "h3-sol", *MODERN_H3_SERVICES}
 LOCAL_GPU_SERVICES = LOCAL_H3_SERVICES | {"regenerate_2k", "interpolate"}
 TERMINAL_TASK_STATUS = {"succeeded", "failed", "cancelled", "canceled"}
 
@@ -122,6 +123,7 @@ class VideoExecutor:
         self.sol_route = os.environ.get("H3_SOL_RUNTIME_ROUTE", "minimax-h3-sol-ref2va")
         self.sol_token = os.environ.get("H3_SOL_RUNTIME_TOKEN", "")
         self.vdn_token = os.environ.get("H3_VDN_RUNTIME_TOKEN", "")
+        self.fasth3_token = os.environ.get("H3_FASTH3_RUNTIME_TOKEN", "")
         self.singularity_token = os.environ.get("H3_SINGULARITY_RUNTIME_TOKEN", "")
         self.runtime_version = os.environ.get("H3_RUNTIME_VERSION", "video-minimax-h3-api-v0.3.0")
         self.allowed_origins = frozenset(x.strip() for x in os.environ.get("VIDEO_ASSET_IMPORT_ORIGINS", "").split(",") if x.strip())
@@ -318,6 +320,7 @@ class VideoExecutor:
         return ("google" if route == "google" else "grok" if route == "grok" else "fal" if route == "fal" else
                 "h3-vdn" if route == "h3-vdn" else
                 "h3-sol" if route.startswith("h3-sol") else
+                "h3-fasth3" if route == "h3-fasth3" else
                 "h3-singularity" if route == "h3-singularity" else "h3")
 
     def runtime(self, route=None):
@@ -325,17 +328,26 @@ class VideoExecutor:
         service = self._service_for_route(selected)
         if selected in self.runtime_routes:
             config = self.runtime_routes[selected]
-            if config["requires_token"] or service in {"h3-vdn", "h3-singularity"}:
-                token = (self.vdn_token if service == "h3-vdn" else
-                         self.singularity_token if service == "h3-singularity" else self.sol_token)
+            if config["requires_token"] or service in {"h3-fasth3", "h3-vdn", "h3-singularity"}:
+                token = (
+                    self.fasth3_token if service == "h3-fasth3" else
+                    self.vdn_token if service == "h3-vdn" else
+                    self.singularity_token if service == "h3-singularity" else self.sol_token
+                )
                 if not token:
                     raise ExecutionError("Selected runtime route is not connected")
                 return config["url"], {"Authorization": f"Bearer {token}"}, config["version"], selected
             return config["url"], {}, config["version"], selected
+        if service == "h3-fasth3":
+            if selected == self.runtime_route:
+                if not self.fasth3_token:
+                    raise ExecutionError("Selected runtime is not connected")
+                return self.runtime_url, {"Authorization": f"Bearer {self.fasth3_token}"}, self.runtime_version, selected
+            raise ExecutionError("route_unavailable")
+        if service == "h3-singularity":
+            raise ExecutionError("route_unavailable")
         if service == "h3" and selected in {"h3", self.runtime_route}:
             return self.runtime_url, {}, self.runtime_version, selected
-        if service == "h3-singularity" and selected == self.runtime_route and self.singularity_token:
-            return self.runtime_url, {"Authorization": f"Bearer {self.singularity_token}"}, self.runtime_version, selected
         if service == "h3-sol" and selected in {"h3-sol", self.sol_route} and self.sol_url and self.sol_token:
             return self.sol_url, {"Authorization": f"Bearer {self.sol_token}"}, self.sol_version, self.sol_route
         raise ExecutionError("Selected runtime is not connected")
@@ -344,7 +356,11 @@ class VideoExecutor:
         route = record.request.get("route")
         if isinstance(route, str) and route:
             return route
+        if isinstance(record.runtime_route, str) and record.runtime_route:
+            return record.runtime_route
         # Read old records created before route became the public selector.
+        if record.service in {"h3-fasth3", "h3-singularity", "h3-vdn"}:
+            return record.service
         return self.sol_route if record.service == "h3-sol" else self.runtime_route
 
     def catalog_view(self) -> dict[str, object]:
@@ -388,13 +404,13 @@ class VideoExecutor:
                 "readiness": "not_checked",
                 "limit_scope": "adapter",  # These are implementation limits, not model limits.
                 "duration_seconds": {"minimum": 5 if service in {"fal", "h3-sol", "h3-vdn"} else 4, "maximum": 15},
-                "aspect_ratios": sorted(FAL_ASPECT_RATIOS) if route == "fal" else list(ASPECT_RATIOS) if service == "h3-singularity" else ["9:16"],
+                "aspect_ratios": sorted(FAL_ASPECT_RATIOS) if route == "fal" else list(ASPECT_RATIOS) if service in MODERN_H3_SERVICES else ["9:16"],
             })
             if route == "fal":
                 routes[-1]["modes"] = ["reference_to_video"]
-            if service == "h3-singularity":
-                default_qp = default_singularity_quality_profile()
-                routes[-1].update(quality_profiles=list(SINGULARITY_QUALITY_PROFILES), gpu_verified_combinations=[],
+            if service in MODERN_H3_SERVICES:
+                default_qp = route_quality_profile(route)
+                routes[-1].update(quality_profiles=[default_qp], gpu_verified_combinations=[],
                                   verification_status="not_recorded", frame_grid="17k+5", fps=24,
                                   modes=["reference_to_video"],
                                   image_guidance={"modes": ["reference"], "default": "reference",
@@ -555,17 +571,29 @@ class VideoExecutor:
 
     def _normalize(self, project_id: str, model: str, prompt: str, duration_seconds: int,
                    aspect_ratio: str, references: dict[str, list[dict[str, str]]],
-                   route: str = "h3", quality_profile: str = "du-0", audio_guidance: str | None = None, image_guidance: str | None = None) -> tuple[dict[str, object], str]:
+                   route: str = "h3", quality_profile: str | None = None,
+                   audio_guidance: str | None = None, image_guidance: str | None = None,
+                   *, allow_legacy_profile: bool = False) -> tuple[dict[str, object], str]:
         if not isinstance(route, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", route):
             raise ValueError("route must be a lowercase slug")
         service = self._service_for_route(route)
+        if quality_profile is None:
+            quality_profile = route_quality_profile(route) if service in MODERN_H3_SERVICES else "du-0"
         from .singularity import check_audio_guidance, check_image_guidance
         check_audio_guidance(audio_guidance, service)
         check_image_guidance(image_guidance, service)
-        if quality_profile not in {"fasth3-nvfp4", "du-0", "du-1", "du-2", "du-3", "hr-refine-tile-v1", "hr-refine-global-v2"}:
+        if quality_profile not in {"fasth3-nvfp4", "du-0"}:
             raise ValueError("quality_profile_not_available")
-        if service != "h3-singularity" and quality_profile != "du-0":
-            raise ValueError("quality_profile fasth3-nvfp4, du-1, du-2, du-3, hr-refine-tile-v1, and hr-refine-global-v2 require h3-singularity")
+        if service in MODERN_H3_SERVICES:
+            allowed_profiles = (
+                {"fasth3-nvfp4", "du-0"}
+                if (allow_legacy_profile and service == "h3-singularity")
+                else {route_quality_profile(route)}
+            )
+            if quality_profile not in allowed_profiles:
+                raise ValueError("quality_profile_not_available")
+        elif quality_profile != "du-0":
+            raise ValueError("quality_profile_not_available")
         if service in {"h3-sol", "h3-vdn"} and not 5 <= duration_seconds <= 15:
             raise ValueError("Selected channel duration must be an integer from 5 to 15 seconds")
         if model != "minimax-h3-ref2va":
@@ -573,20 +601,18 @@ class VideoExecutor:
         if type(duration_seconds) is not int or not 4 <= duration_seconds <= 15 or not prompt.strip():
             raise ValueError("duration_seconds must be an integer from 4 to 15 and prompt must not be empty")
         from .singularity import ASPECT_RATIOS, output_spec
-        if service == "h3-singularity" and quality_profile not in SINGULARITY_QUALITY_PROFILES:
-            raise ValueError("Selected Singularity production route supports only du-0 or fasth3-nvfp4")
-        if service == "h3-singularity" and aspect_ratio not in ASPECT_RATIOS:
+        if service in MODERN_H3_SERVICES and aspect_ratio not in ASPECT_RATIOS:
             raise ValueError("Unsupported Singularity aspect_ratio")
-        if service != "h3-singularity" and aspect_ratio != "9:16":
+        if service not in MODERN_H3_SERVICES and aspect_ratio != "9:16":
             raise ValueError("Selected local H3 channel supports only 9:16; query video.capabilities before submission")
         limits = {"images": 9, "videos": 3, "audios": 3}
         if not isinstance(references, dict) or set(references) - limits.keys() or any(not isinstance(v, list) for v in references.values()):
             raise ValueError("references must contain only images, videos and audios arrays")
-        if service == "h3-singularity" and not any(references.values()):
+        if service in MODERN_H3_SERVICES and not any(references.values()):
             raise ValueError("at least one reference is required")
-        if service != "h3-singularity" and not references.get("images") and not references.get("videos"):
+        if service not in MODERN_H3_SERVICES and not references.get("images") and not references.get("videos"):
             raise ValueError("at least one image or video reference is required")
-        if service in {"h3-vdn", "h3-singularity"} and sum(len(references.get(k, [])) for k in limits) > 12:
+        if service in {"h3-vdn", *MODERN_H3_SERVICES} and sum(len(references.get(k, [])) for k in limits) > 12:
             raise ValueError("Selected route supports at most 12 references")
         if audio_guidance == "timeline" and (len(references.get("audios", [])) != 1 or references.get("videos")):
             raise ValueError("timeline_requires_one_audio_and_no_video")
@@ -609,7 +635,7 @@ class VideoExecutor:
                 if not artifact.media_type.startswith(expected_prefix) or not item.get("purpose", "").strip():
                     raise ValueError(f"invalid {kind} reference")
                 normalized[kind].append({"artifact_id": artifact.artifact_id, "purpose": item["purpose"].strip()})
-                if service == "h3-singularity":
+                if service in MODERN_H3_SERVICES:
                     from .media_validation import validate_reference_media
                     media_by_kind[kind].append(validate_reference_media(self.artifacts.content_path(artifact), artifact.media_type))
         if service == "h3-vdn" and reference_bytes > 2 * 1024**3:
@@ -622,7 +648,7 @@ class VideoExecutor:
             request["image_guidance"] = image_guidance
         if audio_guidance is not None:
             request["audio_guidance"] = audio_guidance
-        if service == "h3-singularity":
+        if service in MODERN_H3_SERVICES:
             for kind in ("videos", "audios"):
                 if sum(m["duration_seconds"] for m in media_by_kind[kind]) > 15.001:
                     raise ValueError(f"{kind} references exceed 15 seconds in total")
@@ -672,7 +698,10 @@ class VideoExecutor:
             project_id = require_project_id(project_id)
             if not idempotency_key.strip() or len(idempotency_key) > 128:
                 raise ValueError("idempotency_key is invalid")
-            route = route or self.runtime_route
+            explicit_route = route
+            explicit_qp = quality_profile
+            existing_hint = self.tasks.find_idempotency(project_id, idempotency_key) if explicit_route is None else None
+            route = explicit_route if explicit_route is not None else (self._record_route(existing_hint) if existing_hint is not None else self.runtime_route)
             service = self._service_for_route(route)
             from .singularity import check_audio_guidance, check_image_guidance
             check_audio_guidance(audio_guidance, service)
@@ -715,7 +744,7 @@ class VideoExecutor:
                                              aspect_ratio=aspect_ratio, references=references,
                                              channel_account_id=channel_account_id, budget_limit=budget_limit,
                                              resolution=resolution)
-            allowed_modes = {None, "reference_to_video"} if service == "h3-singularity" else {None}
+            allowed_modes = {None, "reference_to_video"} if service in MODERN_H3_SERVICES else {None}
             if mode not in allowed_modes or resolution is not None:
                 raise ValueError("unsupported_parameter")
 
@@ -723,19 +752,34 @@ class VideoExecutor:
             try:
                 with self.tasks.exclusive():
                     existing = self.tasks.find_idempotency(project_id, idempotency_key)
-                    if quality_profile is None:
-                        if existing is not None and isinstance(existing.request.get("quality_profile"), str):
+                    route = explicit_route if explicit_route is not None else (self._record_route(existing) if existing is not None else self.runtime_route)
+                    service = self._service_for_route(route)
+                    check_audio_guidance(audio_guidance, service)
+                    check_image_guidance(image_guidance, service)
+                    normalize(postprocess, route)
+                    allowed_modes = {None, "reference_to_video"} if service in MODERN_H3_SERVICES else {None}
+                    if mode not in allowed_modes or resolution is not None:
+                        raise ValueError("unsupported_parameter")
+                    allow_legacy_profile = False
+                    if explicit_qp is None:
+                        if (
+                            existing is not None
+                            and self._record_route(existing) == route
+                            and isinstance(existing.request.get("quality_profile"), str)
+                        ):
                             resolved_qp = existing.request["quality_profile"]
-                        elif service == "h3-singularity":
-                            resolved_qp = default_singularity_quality_profile()
+                            allow_legacy_profile = True
+                        elif service in MODERN_H3_SERVICES:
+                            resolved_qp = route_quality_profile(route)
                         else:
                             resolved_qp = "du-0"
                     else:
-                        resolved_qp = quality_profile
+                        resolved_qp = explicit_qp
 
                     request, digest = self._normalize(
                         project_id, model, prompt, duration_seconds, aspect_ratio,
                         references, route, resolved_qp, audio_guidance, image_guidance,
+                        allow_legacy_profile=allow_legacy_profile,
                     )
                     request, digest = self.delivery.prepare(request, digest, postprocess, check=False)
                     authority = authorize(self.client, project_id) if postprocess is not None else None
@@ -746,6 +790,22 @@ class VideoExecutor:
                     if postprocess is not None:
                         self.delivery.prepare(request, digest, postprocess)
                     runtime_url, runtime_headers, runtime_version, runtime_route = self.runtime(route)
+                    prefetched_health: dict[str, object] | None = None
+                    if service == "h3-singularity":
+                        try:
+                            health_resp = self.client.get(f"{runtime_url}/health", headers=runtime_headers, timeout=10)
+                            if health_resp.status_code != 200:
+                                raise ExecutionError("runtime_not_ready")
+                            health_json = health_resp.json()
+                            if not isinstance(health_json, dict) or health_json.get("ready") is not True:
+                                raise ExecutionError("runtime_not_ready")
+                            if health_json.get("default_quality_profile") not in (None, "du-0"):
+                                raise ExecutionError("runtime_not_ready")
+                            prefetched_health = health_json
+                        except ExecutionError:
+                            raise
+                        except (httpx.HTTPError, ValueError) as exc:
+                            raise ExecutionError("runtime_not_ready") from exc
                     conditions = []
                     material_tags = []
                     singular = {"images": "image", "videos": "video", "audios": "audio"}
@@ -758,14 +818,14 @@ class VideoExecutor:
                             conditions.append({"type": singular[kind],
                                                "uri": f"{self.runtime_artifact_url}/runtime-artifacts/{item['artifact_id']}/content",
                                                "role": "reference"})
-                            if service in {"h3-sol", "h3-vdn", "h3-singularity"}:
+                            if service in {"h3-sol", "h3-vdn", *MODERN_H3_SERVICES}:
                                 asset = self.artifacts.get(item["artifact_id"], project_id)
                                 conditions[-1].update(sha256=asset.sha256, size=asset.size)
                             material_tags.append(f"<{tag_name[kind]} {index}> is the approved {item['purpose']} reference")
-                    compiled_prompt = request["prompt"] if service == "h3-singularity" else "; ".join(material_tags) + ". " + request["prompt"]
+                    compiled_prompt = request["prompt"] if service in MODERN_H3_SERVICES else "; ".join(material_tags) + ". " + request["prompt"]
                     steps = (
-                        SINGULARITY_PROFILE_NFE[resolved_qp]
-                        if service == "h3-singularity"
+                        H3_PROFILE_NFE[resolved_qp]
+                        if service in MODERN_H3_SERVICES
                         else (4 if service in {"h3-vdn", "h3-sol"} else 21)
                     )
                     payload = {"model": "MiniMaxAI/MiniMax-H3", "task": "ref2va", "prompt": compiled_prompt,
@@ -794,9 +854,14 @@ class VideoExecutor:
 
         if service == "h3-vdn":
             payload["project_id"] = project_id
-        if service in {"h3-sol", "h3-vdn", "h3-singularity"}:
+        if service in {"h3-sol", "h3-vdn", *MODERN_H3_SERVICES}:
             payload["idempotency_key"] = reserved.video_task_id
-        return self._dispatch_local_generation(reserved, payload=payload, already_marked_submitting=True)
+        return self._dispatch_local_generation(
+            reserved,
+            payload=payload,
+            already_marked_submitting=True,
+            prefetched_health=prefetched_health,
+        )
 
     def _build_local_generation_payload(self, record: TaskRecord) -> dict[str, object]:
         service = record.service
@@ -817,18 +882,18 @@ class VideoExecutor:
                     "uri": f"{self.runtime_artifact_url}/runtime-artifacts/{item['artifact_id']}/content",
                     "role": "reference",
                 })
-                if service in {"h3-sol", "h3-vdn", "h3-singularity"}:
+                if service in {"h3-sol", "h3-vdn", *MODERN_H3_SERVICES}:
                     asset = self.artifacts.get(item["artifact_id"], project_id)
                     conditions[-1].update(sha256=asset.sha256, size=asset.size)
                 material_tags.append(f"<{tag_name[kind]} {index}> is the approved {item['purpose']} reference")
         compiled_prompt = (
             request["prompt"]
-            if service == "h3-singularity"
+            if service in MODERN_H3_SERVICES
             else "; ".join(material_tags) + ". " + request["prompt"]
         )
         steps = (
-            SINGULARITY_PROFILE_NFE[resolved_qp]
-            if service == "h3-singularity"
+            H3_PROFILE_NFE[resolved_qp]
+            if service in MODERN_H3_SERVICES
             else (4 if service in {"h3-vdn", "h3-sol"} else 21)
         )
         payload: dict[str, object] = {
@@ -855,7 +920,7 @@ class VideoExecutor:
             payload["audio_guidance"] = request["audio_guidance"]
         if service == "h3-vdn":
             payload["project_id"] = project_id
-        if service in {"h3-sol", "h3-vdn", "h3-singularity"}:
+        if service in {"h3-sol", "h3-vdn", *MODERN_H3_SERVICES}:
             payload["idempotency_key"] = record.video_task_id
         return payload
 
@@ -865,6 +930,7 @@ class VideoExecutor:
         *,
         payload: dict[str, object] | None = None,
         already_marked_submitting: bool = False,
+        prefetched_health: dict[str, object] | None = None,
     ) -> TaskRecord:
         if not already_marked_submitting:
             with self._state_guard:
@@ -872,8 +938,6 @@ class VideoExecutor:
 
         service = record.service
         route = self._record_route(record)
-        runtime_url, runtime_headers, _, _ = self.runtime(route)
-        runtime_url = record.runtime_endpoint or runtime_url
         image_guidance = record.request.get("image_guidance")
         audio_guidance = record.request.get("audio_guidance")
 
@@ -902,6 +966,16 @@ class VideoExecutor:
                 }
             return self.tasks.update(record, **updates)
 
+        try:
+            runtime_url, runtime_headers, _, _ = self.runtime(route)
+        except ExecutionError as exc:
+            with self._state_guard:
+                self._submitting_tasks.discard(record.video_task_id)
+            if str(exc) == "route_unavailable":
+                return _fail_pre_submit("route_unavailable", MESSAGES["route_unavailable"])
+            raise
+        runtime_url = record.runtime_endpoint or runtime_url
+
         acquired = False
         try:
             if service in LOCAL_H3_SERVICES and (self.gpu.enabled or self.stage_slot.enabled):
@@ -912,17 +986,20 @@ class VideoExecutor:
                 if not acquired:
                     return self.defer_local_gpu_queue(record)
 
-            if service in {"h3-vdn", "h3-singularity"}:
+            if service in {"h3-vdn", *MODERN_H3_SERVICES}:
                 try:
-                    health = self.client.get(f"{runtime_url}/health", headers=runtime_headers, timeout=10)
-                    if health.status_code == 503:
-                        return _fail_pre_submit(
-                            "runtime_not_ready",
-                            "H3 runtime is not ready; generation was not submitted",
-                            retryable=True,
-                        )
-                    health.raise_for_status()
-                    health_data = health.json()
+                    if prefetched_health is not None:
+                        health_data = prefetched_health
+                    else:
+                        health = self.client.get(f"{runtime_url}/health", headers=runtime_headers, timeout=10)
+                        if health.status_code == 503:
+                            return _fail_pre_submit(
+                                "runtime_not_ready",
+                                "H3 runtime is not ready; generation was not submitted",
+                                retryable=True,
+                            )
+                        health.raise_for_status()
+                        health_data = health.json()
                     if not isinstance(health_data, dict) or not isinstance(health_data.get("ready"), bool):
                         raise ValueError("Invalid readiness response")
                     if image_guidance == "first_frame":
@@ -991,7 +1068,7 @@ class VideoExecutor:
                     )
                 return self.tasks.update(
                     record,
-                    status="queued" if service == "h3-singularity" else "failed",
+                    status="queued" if service in MODERN_H3_SERVICES else "failed",
                     error={
                         "code": "submission_unconfirmed",
                         "message": "Runtime submission could not be confirmed; do not resubmit automatically",
@@ -1000,7 +1077,7 @@ class VideoExecutor:
             except (httpx.HTTPError, KeyError, ValueError, TypeError):
                 return self.tasks.update(
                     record,
-                    status="queued" if service == "h3-singularity" else "failed",
+                    status="queued" if service in MODERN_H3_SERVICES else "failed",
                     error={
                         "code": "submission_unconfirmed",
                         "message": "Runtime submission could not be confirmed; do not resubmit automatically",
@@ -1064,7 +1141,7 @@ class VideoExecutor:
                 ):
                     return True
                 if (record.delivery or {}).get("status") in {"queued", "running"} and (
-                    record.service in LOCAL_GPU_SERVICES or record.request.get("route") == "h3-singularity"
+                    record.service in LOCAL_GPU_SERVICES or record.request.get("route") in MODERN_H3_SERVICES
                 ):
                     return True
                 if record.service in LOCAL_GPU_SERVICES and (record.provider_state or {}).get("worker_settled") is False:
@@ -1083,9 +1160,15 @@ class VideoExecutor:
                 return True
 
         health_targets: list[tuple[str, dict[str, str]]] = []
+        for candidate_route in ("h3-fasth3", "h3-singularity"):
+            try:
+                c_url, c_headers, _, _ = self.runtime(candidate_route)
+                health_targets.append((f"{c_url}/health", c_headers))
+            except ExecutionError:
+                pass
         try:
-            s_url, s_headers, _, _ = self.runtime("h3-singularity")
-            health_targets.append((f"{s_url}/health", s_headers))
+            r2k_url, r2k_headers, _ = self.processing["regenerate_2k"]._runtime_target()
+            health_targets.append((f"{r2k_url}/health", r2k_headers))
         except ExecutionError:
             pass
         if (
@@ -1121,9 +1204,9 @@ class VideoExecutor:
             worker_settled = True
             cancel_delivered = True
         else:
-            runtime_url, runtime_headers, _, _ = self.runtime(self._record_route(record))
-            runtime_url = record.runtime_endpoint or runtime_url
             try:
+                runtime_url, runtime_headers, _, _ = self.runtime(self._record_route(record))
+                runtime_url = record.runtime_endpoint or runtime_url
                 resp = self.client.delete(
                     f"{runtime_url}/v1/videos/{record.runtime_task_id}",
                     headers=runtime_headers,
@@ -1155,6 +1238,12 @@ class VideoExecutor:
                         started_at = body.get("started_at", started_at)
                         finished_at = body.get("finished_at", finished_at)
                 elif resp.status_code == 404:
+                    worker_settled = True
+                    cancel_delivered = True
+                else:
+                    worker_settled = False
+            except ExecutionError as exc:
+                if str(exc) == "route_unavailable":
                     worker_settled = True
                     cancel_delivered = True
                 else:
@@ -1196,6 +1285,31 @@ class VideoExecutor:
         )
         if worker_settled:
             self.stage_slot.release(updated.video_task_id)
+        return updated
+
+    def _fail_route_unavailable(self, record: TaskRecord) -> TaskRecord:
+        err = {"code": "route_unavailable", "message": MESSAGES["route_unavailable"], "retryable": False}
+        cleaned_pstate = {
+            k: v
+            for k, v in (record.provider_state or {}).items()
+            if k not in {"waiting_reason", "gpu_dispatched", "_pending_timeout_error"}
+        }
+        cleaned_pstate["worker_settled"] = True
+        updates: dict[str, object] = {
+            "status": "failed",
+            "error": err,
+            "provider_state": cleaned_pstate,
+        }
+        if record.delivery is not None and record.delivery.get("status") not in {"succeeded", "failed"}:
+            updates["delivery"] = {
+                **record.delivery,
+                "status": "failed",
+                "stage": record.delivery.get("stage") or "generation",
+                "error": err,
+                "completed_at": datetime.now(UTC).isoformat(),
+            }
+        updated = self.tasks.update(record, **updates)
+        self.stage_slot.release(updated.video_task_id, force=True)
         return updated
 
     @task_serialized
@@ -1240,9 +1354,14 @@ class VideoExecutor:
             if (record.provider_state or {}).get("cancel_delivered") is not True:
                 return record
 
-        if (record.service == "h3-singularity" and not record.runtime_task_id
+        if (record.service in MODERN_H3_SERVICES and not record.runtime_task_id
             and (record.status in {"queued", "running"} or (record.error or {}).get("code") == "submission_unconfirmed")):
-            url, headers, _, _ = self.runtime(self._record_route(record))
+            try:
+                url, headers, _, _ = self.runtime(self._record_route(record))
+            except ExecutionError as exc:
+                if str(exc) == "route_unavailable":
+                    return self._fail_route_unavailable(record)
+                raise
             url = record.runtime_endpoint or url
             try:
                 response = self.client.get(f"{url}/v1/videos/by-idempotency/{record.video_task_id}", headers=headers, timeout=10)
@@ -1286,10 +1405,11 @@ class VideoExecutor:
                 response.raise_for_status()
                 recovered = response.json()
                 identity = recovered.get("id")
-                if not isinstance(identity, str) or not re.fullmatch(r"singularity_[0-9a-f]{32}", identity):
+                expected_prefix = "fasth3" if record.service == "h3-fasth3" else "singularity"
+                if not isinstance(identity, str) or not re.fullmatch(rf"{expected_prefix}_[0-9a-f]{{32}}", identity):
                     raise ValueError("invalid recovered identity")
             except (httpx.HTTPError, ValueError, AttributeError) as error:
-                raise ExecutionError("Singularity submission remains unconfirmed; retain the original task and key") from error
+                raise ExecutionError("H3 submission remains unconfirmed; retain the original task and key") from error
             record = self.tasks.update(
                 record,
                 runtime_task_id=identity,
@@ -1308,10 +1428,10 @@ class VideoExecutor:
         if record.service == "depth":
             return self.depth.status(video_task_id)
         if record.status in {"succeeded", "failed", "cancelled"}:
-            if record.service == "h3-singularity" and record.runtime_task_id and (record.provider_state or {}).get("worker_settled") is False:
-                runtime_url, runtime_headers, _, _ = self.runtime(self._record_route(record))
-                runtime_url = record.runtime_endpoint or runtime_url
+            if record.service in MODERN_H3_SERVICES and record.runtime_task_id and (record.provider_state or {}).get("worker_settled") is False:
                 try:
+                    runtime_url, runtime_headers, _, _ = self.runtime(self._record_route(record))
+                    runtime_url = record.runtime_endpoint or runtime_url
                     poll = self.client.get(f"{runtime_url}/v1/videos/{record.runtime_task_id}", timeout=10, headers=runtime_headers)
                     if poll.status_code == 200:
                         body = poll.json()
@@ -1329,10 +1449,20 @@ class VideoExecutor:
                         pstate = {**(record.provider_state or {}), "worker_settled": True}
                         record = self.tasks.update(record, provider_state=pstate)
                         self.stage_slot.release(record.video_task_id)
+                except ExecutionError as exc:
+                    if str(exc) == "route_unavailable":
+                        pstate = {**(record.provider_state or {}), "worker_settled": True}
+                        record = self.tasks.update(record, provider_state=pstate)
+                        self.stage_slot.release(record.video_task_id, force=True)
                 except (httpx.HTTPError, ValueError, TypeError):
                     pass
             return record
-        runtime_url, runtime_headers, _, _ = self.runtime(self._record_route(record))
+        try:
+            runtime_url, runtime_headers, _, _ = self.runtime(self._record_route(record))
+        except ExecutionError as exc:
+            if str(exc) == "route_unavailable":
+                return self._fail_route_unavailable(record)
+            raise
         runtime_url = record.runtime_endpoint or runtime_url
         try:
             response = self.client.get(f"{runtime_url}/v1/videos/{record.runtime_task_id}", timeout=10, headers=runtime_headers)
@@ -1372,7 +1502,7 @@ class VideoExecutor:
         if stage not in {"queued", "downloading", "warming", "generating", "saving", "completed", "interrupted", "download_failed", "engine_failed"}:
             stage = None
         metrics = runtime_data.get("runtime_metrics") or ({"runtime_total_seconds": runtime_data["result"]["generate_seconds"]} if isinstance(runtime_data.get("result"), dict) and isinstance(runtime_data["result"].get("generate_seconds"), (int, float)) else {})
-        if record.service == "h3-singularity" and isinstance(runtime_data.get("result"), dict):
+        if record.service in MODERN_H3_SERVICES and isinstance(runtime_data.get("result"), dict):
             metrics = {**metrics, "result_sha256": runtime_data["result"].get("content_sha256")}
         provider_state = dict(record.provider_state or {})
         for key in ("started_at", "finished_at", "worker_settled"):
@@ -1401,7 +1531,7 @@ class VideoExecutor:
         if self.stage_slot.is_task_settled(updated):
             self.stage_slot.release(updated.video_task_id)
         if (
-            updated.service == "h3-singularity"
+            updated.service in MODERN_H3_SERVICES
             and updated.status == "running"
             and not updated.request.get("postprocess")
             and (updated.provider_state or {}).get("_pending_timeout_error") is None
@@ -1455,7 +1585,7 @@ class VideoExecutor:
             payload = response.content
         except httpx.HTTPError as error:
             raise ExecutionError("H3 result download failed") from error
-        expected = record.request.get("resolved_output") if record.service == "h3-singularity" else None
+        expected = record.request.get("resolved_output") if record.service in MODERN_H3_SERVICES else None
         digest = hashlib.sha256(payload).hexdigest()
         if expected and digest != (record.runtime_metrics or {}).get("result_sha256"):
             raise ExecutionError("Singularity result SHA-256 mismatch or missing runtime digest")

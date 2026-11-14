@@ -17,9 +17,17 @@ class SingularityRouteTest(unittest.TestCase):
     def setUp(self):
         test_sol_route.SolRouteTest.setUp(self)
         self.singularity_env = patch.dict(os.environ, {
-            "H3_RUNTIME_URL": "http://singularity.example:8000",
-            "H3_RUNTIME_ROUTE": "h3-singularity",
+            "H3_RUNTIME_URL": "http://fasth3.example:8000",
+            "H3_RUNTIME_ROUTE": "h3-fasth3",
+            "H3_FASTH3_RUNTIME_TOKEN": "test-fasth3-token",
             "H3_SINGULARITY_RUNTIME_TOKEN": "test-singularity-token",
+            "H3_RUNTIME_ROUTES": json.dumps({
+                "h3-singularity": {
+                    "url": "http://singularity.example:8000",
+                    "version": "video-minimax-h3-singularity-v0.1.40",
+                    "requires_token": True,
+                }
+            }),
         })
         self.singularity_env.start()
         self.addCleanup(self.singularity_env.stop)
@@ -45,8 +53,8 @@ class SingularityRouteTest(unittest.TestCase):
         self.assertEqual(body["idempotency_key"], row.video_task_id)
 
     def test_deferred_quality_profiles_are_rejected_before_submission(self):
-        for profile in ("du-1", "du-2", "du-3", "hr-refine-tile-v1", "hr-refine-global-v2"):
-            with self.subTest(profile=profile), self.assertRaisesRegex(ValueError, "only du-0"):
+        for profile in ("fasth3-nvfp4", "du-1", "du-2", "du-3", "hr-refine-tile-v1", "hr-refine-global-v2"):
+            with self.subTest(profile=profile), self.assertRaisesRegex(ValueError, "quality_profile_not_available"):
                 self.executor.generate(**self.kw, route="h3-singularity", quality_profile=profile)
         self.assertFalse(self.calls)
 
@@ -74,7 +82,7 @@ class SingularityRouteTest(unittest.TestCase):
                     self.assertEqual(actual, expected)
 
     def test_dual_quality_profile_is_restricted_to_singularity(self):
-        with self.assertRaisesRegex(ValueError, "require h3-singularity"):
+        with self.assertRaisesRegex(ValueError, "quality_profile_not_available"):
             self.executor.generate(**self.kw, route="h3", quality_profile="du-1")
         self.assertFalse(self.calls)
 
@@ -130,7 +138,7 @@ class SingularityRouteTest(unittest.TestCase):
             args = {**self.kw, "aspect_ratio": "16:9", "duration_seconds": 15, "route": "h3-singularity",
                     "mode": "reference_to_video"}
             preflight = server.video_preflight(**{k: v for k, v in args.items() if k != "idempotency_key"}).structured_content
-            self.assertFalse(self.calls)
+            self.assertFalse([c for c in self.calls if c.method == "POST"])
             self.assertIsNone(self.tasks.find_idempotency(args["project_id"], args["idempotency_key"]))
             row = self.executor.generate(**args)
             self.assertEqual(preflight["resolved_output"], row.request["resolved_output"])

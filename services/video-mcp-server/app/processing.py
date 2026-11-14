@@ -74,8 +74,11 @@ class ProcessingExecutor:
             else 'rife'
         )
         if service == 'regenerate_2k':
-            self.url = os.environ.get('SINGULARITY_RUNTIME_URL', executor.runtime_url).rstrip('/')
-            self.runtime_version = os.environ.get('SINGULARITY_RUNTIME_VERSION', executor.runtime_version)
+            self.url = os.environ.get('VIDEO_REGENERATE_2K_RUNTIME_URL', '').strip().rstrip('/')
+            self.runtime_version = (
+                os.environ.get('VIDEO_REGENERATE_2K_RUNTIME_VERSION', 'video-minimax-h3-regenerate-2k-v0.1.0').strip()
+                or 'video-minimax-h3-regenerate-2k-v0.1.0'
+            )
         else:
             name = 'video-super-resolution-api' if service == 'sr' else 'video-frame-interpolation-api'
             prefix = 'VIDEO_SR' if service == 'sr' else 'VIDEO_INTERPOLATION'
@@ -95,28 +98,20 @@ class ProcessingExecutor:
             endpoint = (record.runtime_endpoint if record and record.runtime_endpoint else self.url).rstrip('/')
             version = (record.runtime_version if record and record.runtime_version else self.runtime_version)
             return endpoint, {}, version
-        try:
-            url, headers, version, _ = self.executor.runtime('h3-singularity')
-        except ExecutionError:
-            token = (
-                os.environ.get('H3_SINGULARITY_RUNTIME_TOKEN', '').strip()
-                or os.environ.get('SINGULARITY_RUNTIME_TOKEN', '').strip()
-                or self.executor.singularity_token
-            )
-            url = (
-                os.environ.get('SINGULARITY_RUNTIME_URL', '').strip()
-                or os.environ.get('H3_RUNTIME_URL', '').strip()
-                or self.url
-            ).rstrip('/')
-            version = os.environ.get('SINGULARITY_RUNTIME_VERSION', '').strip() or self.executor.runtime_version
-            if not url or not token:
-                raise ExecutionError('runtime_not_ready')
-            headers = {'Authorization': f'Bearer {token}'}
-        if record and record.runtime_endpoint:
-            url = record.runtime_endpoint.rstrip('/')
-        if record and record.runtime_version:
-            version = record.runtime_version
-        return url, headers, version
+        token = os.environ.get('VIDEO_REGENERATE_2K_RUNTIME_TOKEN', '').strip()
+        url = (
+            record.runtime_endpoint
+            if record and record.runtime_endpoint
+            else os.environ.get('VIDEO_REGENERATE_2K_RUNTIME_URL', '').strip() or self.url
+        ).rstrip('/')
+        version = (
+            record.runtime_version
+            if record and record.runtime_version
+            else os.environ.get('VIDEO_REGENERATE_2K_RUNTIME_VERSION', '').strip() or self.runtime_version
+        )
+        if not url or not token:
+            raise ExecutionError('runtime_not_ready')
+        return url, {'Authorization': f'Bearer {token}'}, version
 
     def _resolve_regenerate_prompt(
         self,
@@ -485,7 +480,7 @@ class ProcessingExecutor:
                         authority=authority,
                         runtime_endpoint=runtime_url,
                         runtime_version=runtime_version,
-                        runtime_route='h3-singularity' if self.service == 'regenerate_2k' else None,
+                        runtime_route='h3-regenerate-2k' if self.service == 'regenerate_2k' else None,
                     )
                     initial_pstate = {'source_frames': int(inspected['frames'])} if isinstance(inspected, dict) and type(inspected.get('frames')) is int else None
                     if initial_pstate is not None:
@@ -497,7 +492,7 @@ class ProcessingExecutor:
                         runtime_version=runtime_version,
                         runtime_task_id=record.video_task_id,
                         runtime_endpoint=runtime_url,
-                        runtime_route='h3-singularity' if self.service == 'regenerate_2k' else None,
+                        runtime_route='h3-regenerate-2k' if self.service == 'regenerate_2k' else None,
                         authority=authority,
                         delivery=initial_delivery,
                         error={'code': 'submission_unconfirmed', 'message': 'Submission is pending confirmation'},

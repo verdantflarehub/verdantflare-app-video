@@ -1,8 +1,7 @@
-"""Authenticated internal HTTP contract consumed by Video MCP (M-A Zero-CUDA Supervisor)."""
+"""Authenticated internal HTTP contract for Singularity Ref2VA (Zero-CUDA Supervisor)."""
 
 from __future__ import annotations
 
-import asyncio
 from contextlib import asynccontextmanager
 import hashlib
 import hmac
@@ -19,15 +18,9 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
-from .contract import (
-    check_weights_health,
-    validate_reference,
-    validate_regenerate_request,
-    validate_request,
-)
+from .contract import check_weights_health, validate_reference, validate_request
 from .errors import RuntimeErrorCode
 from .queue import Queue, QueueError
-from .regenerate import probe_and_validate_source_video, resolve_source_artifact_path
 
 
 MAX_REQUEST_BYTES = 128 * 1024
@@ -36,10 +29,16 @@ MAX_ARTIFACT_BYTES = 2 * 1024**3
 
 def _download_references(task_root: Path, conditions: list[dict]) -> dict[str, list[Path]]:
     result: dict[str, list[Path]] = {"images": [], "videos": [], "audios": []}
-    client = httpx.Client(timeout=httpx.Timeout(connect=10, read=600, write=30, pool=10), follow_redirects=False)
+    client = httpx.Client(
+        timeout=httpx.Timeout(connect=10, read=600, write=30, pool=10),
+        follow_redirects=False,
+    )
     try:
         for index, item in enumerate(conditions):
-            validate_reference(item, os.environ.get("SINGULARITY_REFERENCE_BASE_URL", "http://video-mcp-server:8000"))
+            validate_reference(
+                item,
+                os.environ.get("SINGULARITY_REFERENCE_BASE_URL", "http://video-mcp-server:8000"),
+            )
             if not isinstance(item, dict) or item.get("role") != "reference":
                 raise RuntimeErrorCode("invalid_reference")
             kind = {"image": "images", "video": "videos", "audio": "audios"}.get(item.get("type"))
@@ -106,7 +105,6 @@ def _terminate_and_reap_process_group(
     *,
     kill_wait_seconds: float = 2.0,
 ) -> bool:
-    """Send SIGTERM to worker process group, escalate to SIGKILL, and return True only when full pgid is gone."""
     if os.name == "nt":
         if proc.poll() is None:
             try:
@@ -118,7 +116,6 @@ def _terminate_and_reap_process_group(
                 return True
             except subprocess.TimeoutExpired:
                 pass
-            # Escalate with taskkill /T /F so any child processes in the tree are also killed on Windows
             subprocess.run(
                 ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
                 stdout=subprocess.DEVNULL,
@@ -368,8 +365,6 @@ def create_app(
                         )
 
                 if not group_reaped:
-                    # Process group survived SIGKILL across shutdown; keep active slot occupied
-                    # and NEVER report worker_settled=True or dispatch another task.
                     if was_cancelled:
                         queue.update(
                             task_id,
@@ -386,12 +381,11 @@ def create_app(
                     state["cancelling_task_id"] = None
                     state["reap_stalled_task_id"] = None
 
-                # Worker process group is now explicitly confirmed absent by the OS kernel.
                 if was_cancelled:
                     queue.mark_settled(task_id, status="cancelled", stage="cancelled")
                 elif stop.is_set():
-                    current = queue.get_any(task_id)
-                    if current["status"] in {"in_progress", "running"}:
+                    current = queue.get(task_id)
+                    if current["status"] == "in_progress":
                         queue.mark_settled(
                             task_id,
                             status="failed",
@@ -401,8 +395,8 @@ def create_app(
                     else:
                         queue.mark_settled(task_id)
                 else:
-                    current = queue.get_any(task_id)
-                    if current["status"] in {"in_progress", "running"}:
+                    current = queue.get(task_id)
+                    if current["status"] == "in_progress":
                         err_code = f"worker_exit_{rc}" if rc != 0 else "worker_incomplete"
                         queue.mark_settled(
                             task_id,
@@ -530,9 +524,10 @@ def create_app(
             raise HTTPException(404, "content_missing")
         return FileResponse(path, media_type="video/mp4", filename=f"{task_id}.mp4")
 
-    def _cancel_task_endpoint(task_id: str, kind: str) -> dict:
+    @app.delete("/v1/videos/{task_id}")
+    def cancel_video(task_id: str):
         try:
-            outcome, snapshot = queue.cancel_queued_or_check(task_id, kind)
+            outcome, snapshot = queue.cancel_queued_or_check(task_id)
         except QueueError as exc:
             code = str(exc)
             if code == "task_already_terminal":
@@ -546,7 +541,6 @@ def create_app(
         ):
             return snapshot
 
-        # Task is currently active (or still reaping) in Supervisor; signal cancel and wait for pgid exit.
         if not supervisor_mode:
             return queue.mark_settled(task_id, status="cancelled", stage="cancelled")
 
@@ -563,81 +557,12 @@ def create_app(
         )
         wait_deadline = time.monotonic() + max(0.05, endpoint_wait)
         while time.monotonic() < wait_deadline:
-            snap = queue.get_any(task_id)
+            snap = queue.get(task_id)
             if snap["worker_settled"]:
                 break
             cancel_completed.wait(timeout=0.05)
 
-        return queue.get(task_id) if kind == "video" else queue.get_regenerate(task_id)
-
-    @app.delete("/v1/videos/{task_id}")
-    def cancel_video(task_id: str):
-        return _cancel_task_endpoint(task_id, "video")
-
-    @app.post("/v1/regenerate-2k", status_code=202)
-    async def submit_regenerate_2k(request: Request):
-        try:
-            raw_payload = await _read_bounded_json(request)
-            normalized = validate_regenerate_request(raw_payload)
-            encoded = json.dumps(normalized, sort_keys=True, ensure_ascii=False, allow_nan=False)
-            digest = hashlib.sha256(encoded.encode()).hexdigest()
-            existing = queue.find_regenerate_idempotency(normalized["idempotency_key"], digest)
-            if existing is not None:
-                return existing
-            if not is_ready_for_new_submission():
-                raise HTTPException(503, {"code": "not_ready"})
-            artifact_root = Path(os.environ.get("SINGULARITY_ARTIFACT_ROOT", "/source/video"))
-            source_mp4 = resolve_source_artifact_path(normalized, artifact_root)
-            await asyncio.to_thread(probe_and_validate_source_video, source_mp4, normalized["grid_mode"])
-            return queue.submit_regenerate(normalized)
-        except HTTPException:
-            raise
-        except QueueError as exc:
-            code = str(exc)
-            status_code = 409 if "conflict" in code else 429 if code == "queue_full" else 422
-            raise HTTPException(status_code, {"code": code}) from None
-        except RuntimeErrorCode as exc:
-            status_code = 404 if exc.code == "source_not_found" else 422
-            raise HTTPException(status_code, {"code": exc.code}) from None
-        except (ValueError, TypeError, json.JSONDecodeError) as exc:
-            raise HTTPException(422, {"code": str(exc)}) from None
-
-    @app.get("/v1/regenerate-2k/{video_task_id}")
-    def regenerate_status(video_task_id: str):
-        try:
-            return queue.get_regenerate(video_task_id)
-        except (KeyError, QueueError):
-            raise HTTPException(404, {"code": "task_not_found"}) from None
-
-    @app.get("/v1/regenerate-2k/{video_task_id}/content")
-    def regenerate_content(video_task_id: str):
-        try:
-            record = queue.get_regenerate(video_task_id)
-        except (KeyError, QueueError):
-            raise HTTPException(404, {"code": "task_not_found"}) from None
-        if record["status"] != "succeeded":
-            raise HTTPException(409, {"code": "result_not_ready"})
-        path = queue.root / video_task_id / "output.mp4"
-        if not path.is_file():
-            raise HTTPException(404, {"code": "content_missing"})
-        return FileResponse(path, media_type="video/mp4", filename=f"{video_task_id}-content.mp4")
-
-    @app.get("/v1/regenerate-2k/{video_task_id}/preview")
-    def regenerate_preview(video_task_id: str):
-        try:
-            record = queue.get_regenerate(video_task_id)
-        except (KeyError, QueueError):
-            raise HTTPException(404, {"code": "task_not_found"}) from None
-        if record["status"] != "succeeded":
-            raise HTTPException(409, {"code": "result_not_ready"})
-        path = queue.root / video_task_id / "preview.mp4"
-        if not path.is_file():
-            raise HTTPException(404, {"code": "preview_missing"})
-        return FileResponse(path, media_type="video/mp4", filename=f"{video_task_id}-preview.mp4")
-
-    @app.delete("/v1/regenerate-2k/{video_task_id}")
-    def cancel_regenerate(video_task_id: str):
-        return _cancel_task_endpoint(video_task_id, "regenerate_2k")
+        return queue.get(task_id)
 
     return app
 

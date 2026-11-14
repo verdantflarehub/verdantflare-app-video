@@ -30,7 +30,7 @@ from .registry import EtcdRegistry
 from .collection import public_collection
 from .tasks import TaskConflict, TaskNotFound, TaskStore
 from .delivery import CALLER, normalize as normalize_postprocess, normalize_regenerate_postprocess, authorize
-from .regenerate import default_singularity_quality_profile, is_valid_h3_frame_bucket, resolve_2k_target_geometry
+from .regenerate import ROUTE_QUALITY_PROFILE, is_valid_h3_frame_bucket, resolve_2k_target_geometry, route_quality_profile
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
@@ -703,30 +703,33 @@ def video_preflight(project_id: str, prompt: str = "",
             model=model, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio, references=references,
             mode=mode, resolution=resolution, quality_profile=quality_profile,
             channel_account_id=channel_account_id, budget_limit=budget_limit))
-    if selected != "h3-singularity":
-        raise ValueError("video.preflight currently supports h3-singularity")
+    if selected not in {"h3-fasth3", "h3-singularity"}:
+        raise ValueError("video.preflight currently supports h3-fasth3 and h3-singularity")
     if mode not in {None, "reference_to_video"} or resolution is not None:
         raise ValueError("unsupported_parameter")
-    executor.runtime(selected)
-    effective_profile = quality_profile if quality_profile is not None else default_singularity_quality_profile()
+    url, headers, _, _ = executor.runtime(selected)
+    expected_profile = route_quality_profile(selected)
+    effective_profile = quality_profile if quality_profile is not None else expected_profile
     request, digest = executor._normalize(require_project_id(project_id), model or "minimax-h3-ref2va", prompt,
         duration_seconds, aspect_ratio or "16:9", references, selected, effective_profile, audio_guidance, image_guidance)
-    check_default_profile = "H3_SINGULARITY_DEFAULT_QUALITY_PROFILE" in os.environ
-    if check_default_profile or audio_guidance == "timeline" or image_guidance == "first_frame":
-        url, headers, _, _ = executor.runtime(selected)
+    try:
         response = executor.client.get(f"{url}/health", headers=headers, timeout=10)
-        response.raise_for_status()
+        if response.status_code != 200:
+            raise ValueError("runtime_not_ready")
         health = response.json()
-        if check_default_profile:
-            if health.get("ready") is not True or health.get("default_quality_profile") != default_singularity_quality_profile():
-                raise ValueError("runtime_not_ready")
-            caps = health.get("capabilities") or {}
-            if isinstance(caps.get("quality_profiles"), list) and effective_profile not in caps["quality_profiles"]:
-                raise ValueError("quality_profile_not_available")
-        if audio_guidance == "timeline" and (not runtime_supports_timeline(health) or health.get("ready") is not True):
-            raise ValueError("timeline_audio_not_supported_or_not_ready")
-        if image_guidance == "first_frame" and (not runtime_supports_first_frame(health) or health.get("ready") is not True):
-            raise ValueError("first_frame_not_supported_or_not_ready")
+    except (httpx.HTTPError, json.JSONDecodeError) as exc:
+        raise ValueError("runtime_not_ready") from exc
+    if not isinstance(health, dict) or health.get("ready") is not True:
+        raise ValueError("runtime_not_ready")
+    if "default_quality_profile" in health and health.get("default_quality_profile") != expected_profile:
+        raise ValueError("runtime_not_ready")
+    caps = health.get("capabilities") or {}
+    if isinstance(caps.get("quality_profiles"), list) and effective_profile not in caps["quality_profiles"]:
+        raise ValueError("quality_profile_not_available")
+    if audio_guidance == "timeline" and not runtime_supports_timeline(health):
+        raise ValueError("timeline_audio_not_supported_or_not_ready")
+    if image_guidance == "first_frame" and not runtime_supports_first_frame(health):
+        raise ValueError("first_frame_not_supported_or_not_ready")
     if norm_post is not None:
         authorize(executor.client, project_id)
     request, digest = executor.delivery.prepare(request, digest, postprocess)

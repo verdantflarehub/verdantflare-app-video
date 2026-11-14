@@ -140,7 +140,7 @@ class GenerationOptionTest(unittest.TestCase):
         self.assertIn('postprocess', schemas['video.create']['properties'])
         self.assertIn('postprocess', schemas['video.preflight']['properties'])
         self.assertIn('idempotency_key', schemas['video.interpolate']['required'])
-        self.assertFalse(self.f.calls)
+        self.assertFalse([c for c in self.f.calls if c.method == 'POST'])
 
     def test_interrupted_generation_submission_reuses_runtime_key(self):
         row = self.e.generate(**self.f.kw, route='h3-singularity', postprocess=OPTION)

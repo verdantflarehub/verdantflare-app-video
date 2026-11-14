@@ -504,7 +504,10 @@ def run_regenerate_2k(
     from .latent_resizer_3d import load_resizer_3d
     from .lowvram import make_h3_lowvram_attention
 
-    models_root = Path(os.environ.get("H3_BASE_MODEL_ROOT", "/models/MiniMax-H3"))
+    models_root = Path(
+        os.environ.get("REGENERATE_2K_MODEL_ROOT")
+        or os.environ.get("H3_BASE_MODEL_ROOT", "/models/MiniMax-H3")
+    )
     folder_paths.add_model_folder_path(
         "diffusion_models",
         str(models_root / "candidates" / "a2_vsa_turbo_v4" / "diffusion_models"),

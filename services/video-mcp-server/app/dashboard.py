@@ -87,7 +87,7 @@ class ContentRatingUpdate(BaseModel):
 
 def task_channel(record):
     route = record.request.get("route") or record.runtime_route or record.service
-    local = {"h3", "h3-sol", "h3-vdn", "h3-singularity", "minimax-h3-sol-ref2va",
+    local = {"h3", "h3-sol", "h3-vdn", "h3-fasth3", "h3-singularity", "minimax-h3-sol-ref2va",
              "h3-latent-upscale", "sr", "interpolate", "regenerate_2k", "depth"}
     return "local" if route in local else route or "unknown"
 
@@ -117,7 +117,7 @@ def task_presentation(record, catalog=None):
             "generation_code": "VSR2VA",
             "generation_label": "超分音视频：潜空间超分与音视频同步重生成（Video Super-Resolution to Video-Audio）",
         }
-    local = {"h3", "h3-sol", "h3-vdn", "h3-singularity"}
+    local = {"h3", "h3-sol", "h3-vdn", "h3-fasth3", "h3-singularity"}
     generating = record.service in local | {"fal", "grok", "google", "higgsfield"}
     route = record.request.get("route") or record.runtime_route or record.service
     channel = task_channel(record)
@@ -316,7 +316,7 @@ class Dashboard:
         errors = 0
         for record in self.records():
             channel_pending = record.service == 'fal' and self.executor.fal._channel_record(record)
-            if record.status in {"queued", "running"} and (record.runtime_task_id or channel_pending or record.service in {"depth", "sr", "interpolate", "regenerate_2k", "h3-singularity", "grok", "google", "higgsfield"}):
+            if record.status in {"queued", "running"} and (record.runtime_task_id or channel_pending or record.service in {"depth", "sr", "interpolate", "regenerate_2k", "h3-fasth3", "h3-singularity", "grok", "google", "higgsfield"}):
                 try:
                     self.executor.status(record.video_task_id)
                 except (ExecutionError, OSError, ValueError):
@@ -329,7 +329,7 @@ class Dashboard:
             if record.service == 'fal' and self.executor.fal._channel_record(record):
                 continue  # The channel ledger resolves unknown acceptance by the original operation key.
             if record.status == "queued" and not record.runtime_task_id and record.service not in {"depth", "sr", "interpolate", "regenerate_2k", "grok", "google", "higgsfield"}:
-                self.executor.tasks.update(record, status="queued" if record.service == "h3-singularity" else "failed", error={
+                self.executor.tasks.update(record, status="queued" if record.service in {"h3-fasth3", "h3-singularity"} else "failed", error={
                     "code": "submission_unconfirmed",
                     "message": "Submission interrupted; do not resubmit automatically"})
 
@@ -697,8 +697,9 @@ class Dashboard:
                     inputs = Submission.model_validate_json(body)
                     service = ("higgsfield" if inputs.route == "higgsfield" else "google" if inputs.route == "google" else "grok" if inputs.route == "grok" else "fal" if inputs.route == "fal" else
                                "h3-sol" if inputs.route.startswith("h3-sol") else
+                               "h3-fasth3" if inputs.route == "h3-fasth3" else
                                "h3-singularity" if inputs.route == "h3-singularity" else "h3")
-                    if service not in {"h3", "h3-sol", "h3-singularity", "fal", "grok", "google", "higgsfield"}:
+                    if service not in {"h3", "h3-sol", "h3-fasth3", "h3-singularity", "fal", "grok", "google", "higgsfield"}:
                         return JSONResponse({"error": "service_not_connected"}, status_code=409)
                     if service == "fal" and not self.executor.fal.connected():
                         return JSONResponse({"error": "service_not_connected"}, status_code=409)
@@ -708,8 +709,12 @@ class Dashboard:
                         route_requires_token = route_config is not None and route_config["requires_token"]
                         if (route_config is None and not (self.executor.sol_url and self.executor.sol_token)) or (route_requires_token and not self.executor.sol_token):
                             return JSONResponse({"error": "service_not_connected"}, status_code=409)
-                    if service == "h3-singularity" and not self.executor.singularity_token:
-                        return JSONResponse({"error": "service_not_connected"}, status_code=409)
+                    if service == "h3-fasth3":
+                        if (inputs.route not in self.executor.runtime_routes and inputs.route != self.executor.runtime_route) or not self.executor.fasth3_token:
+                            return JSONResponse({"error": "service_not_connected"}, status_code=409)
+                    if service == "h3-singularity":
+                        if inputs.route not in self.executor.runtime_routes or not self.executor.singularity_token:
+                            return JSONResponse({"error": "service_not_connected"}, status_code=409)
                     kwargs = inputs.model_dump(exclude={"model"})
                     record, naming = await run_in_threadpool(titles.create, self.executor, model=inputs.model, **kwargs)
                     value = {**self._public_task(record, self.executor.tasks), **naming}

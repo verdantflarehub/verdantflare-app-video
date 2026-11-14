@@ -66,6 +66,7 @@ MESSAGES = {
 RETRYABLE = {"provider_timeout", "account_unavailable", "limits_unavailable", "channel_unavailable", "proxy_unavailable", "rate_limited", "result_not_ready", "gpu_busy", "runtime_not_ready"}
 MESSAGES.update({
     "gpu_busy": "Local GPU slot or role lease is busy beyond the queue window; retry later.",
+    "route_unavailable": "The requested execution route is not registered or unavailable.",
     "runtime_not_ready": "The selected video runtime is not ready or its default profile does not match configuration.",
     "stage_timeout_generation": "Native H3 generation exceeded its active execution timeout and was terminated.",
     "stage_timeout_regenerate_2k": "2K IC regeneration exceeded its active execution timeout and was terminated.",

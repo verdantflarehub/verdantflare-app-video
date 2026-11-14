@@ -51,8 +51,8 @@ const thumbInFlight = new Set<string>()
 let scrollObserver: IntersectionObserver | null = null
 
 const labels: Record<string, string> = { queued: '排队中', running: '渲染中', succeeded: '已完成', failed: '失败', cancelled: '已取消' }
-const generation = new Set(['h3', 'h3-sol', 'h3-vdn', 'h3-singularity', 'regenerate_2k', 'fal', 'grok', 'google', 'higgsfield'])
-const operations: Record<string, string> = { h3: '视频生成', 'h3-sol': '视频生成', 'h3-vdn': '视频生成', 'h3-singularity': '视频生成', regenerate_2k: '2K 潜空间重生成', fal: '视频生成', 'h3-latent-upscale': 'H3 潜空间处理', sr: '视频超分', interpolate: '视频补帧', depth: '深度视频' }
+const generation = new Set(['h3', 'h3-sol', 'h3-vdn', 'h3-fasth3', 'h3-singularity', 'regenerate_2k', 'fal', 'grok', 'google', 'higgsfield'])
+const operations: Record<string, string> = { h3: '视频生成', 'h3-sol': '视频生成', 'h3-vdn': '视频生成', 'h3-fasth3': '视频生成', 'h3-singularity': '视频生成', regenerate_2k: '2K 潜空间重生成', fal: '视频生成', 'h3-latent-upscale': 'H3 潜空间处理', sr: '视频超分', interpolate: '视频补帧', depth: '深度视频' }
 const services: Record<string, string> = { 'h3-latent-upscale': 'H3 Latent Upscaler', regenerate_2k: 'H3 Regenerate 2K', sr: 'Video Super Resolution', interpolate: 'Frame Interpolation', depth: 'Depth Anything' }
 const filtered = computed(() => tasks.value)
 const hasMore = computed(() => total.value > 0 && tasks.value.length < total.value && page.value * 24 < total.value)
@@ -83,7 +83,7 @@ const taskResolution = (task: Task) => {
   if (shortSide >= 480) return '480p'
   const route = task.route || task.service
   if (task.service === 'regenerate_2k') return '2K'
-  if (['h3', 'h3-sol', 'h3-vdn', 'h3-singularity'].includes(route) || ['h3', 'h3-sol', 'h3-vdn', 'h3-singularity'].includes(task.service)) return '768p'
+  if (['h3', 'h3-sol', 'h3-vdn', 'h3-fasth3', 'h3-singularity'].includes(route) || ['h3', 'h3-sol', 'h3-vdn', 'h3-fasth3', 'h3-singularity'].includes(task.service)) return '768p'
   if (route === 'fal' || task.service === 'fal') return '480p'
   if (task.service === 'higgsfield' || task.service === 'grok') return '720p'
   return ''

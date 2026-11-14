@@ -54,8 +54,8 @@ def _normalize_regenerate_block(block) -> dict[str, str]:
 def normalize(value, route: str):
     if value is None:
         return None
-    if route != 'h3-singularity' or not isinstance(value, dict) or not value:
-        raise ValueError('postprocess requires h3-singularity and regenerate_2k/interpolate options')
+    if route not in {'h3-fasth3', 'h3-singularity'} or not isinstance(value, dict) or not value:
+        raise ValueError('postprocess requires h3-fasth3 or h3-singularity and regenerate_2k/interpolate options')
     if set(value) - {'regenerate_2k', 'interpolate'}:
         raise ValueError('postprocess contains unsupported stage keys')
     normalized: dict[str, dict[str, str]] = {}
@@ -63,7 +63,7 @@ def normalize(value, route: str):
         normalized['regenerate_2k'] = _normalize_regenerate_block(value['regenerate_2k'])
     if 'interpolate' in value:
         if value['interpolate'] != {'profile': 'rife_2x'}:
-            raise ValueError('postprocess requires h3-singularity and interpolate.profile=rife_2x')
+            raise ValueError('postprocess requires h3-fasth3 or h3-singularity and interpolate.profile=rife_2x')
         normalized['interpolate'] = {'profile': 'rife_2x'}
     return normalized
 
@@ -191,7 +191,7 @@ class Delivery:
             'profile': 'rife_2x',
             'backend': 'rife',
             'factor': 2,
-            'generation_routes': ['h3-singularity'],
+            'generation_routes': ['h3-fasth3', 'h3-singularity'],
             'default_enabled': False,
             'configured': bool(
                 os.environ.get('VIDEO_PROJECT_SERVICE_URL')
@@ -220,12 +220,13 @@ class Delivery:
             os.environ.get('VIDEO_PROJECT_SERVICE_URL')
             and os.environ.get('VIDEO_PROJECT_SERVICE_TOKEN')
         )
+        adapter = self.executor.processing['regenerate_2k']
         runtime_url = ''
         runtime_headers: dict[str, str] = {}
-        runtime_version = self.executor.processing['regenerate_2k'].runtime_version
+        runtime_version = adapter.runtime_version
         runtime_connected = False
         try:
-            runtime_url, runtime_headers, runtime_version, _ = self.executor.runtime('h3-singularity')
+            runtime_url, runtime_headers, runtime_version = adapter._runtime_target()
             runtime_connected = True
         except ExecutionError:
             runtime_connected = False
@@ -236,7 +237,7 @@ class Delivery:
             'backend': 'open_h3_2k_ic',
             'grid_modes': list(REGENERATE_2K_GRID_MODES),
             'default_grid_mode': 'budget_1440p',
-            'generation_routes': ['h3-singularity'],
+            'generation_routes': ['h3-fasth3', 'h3-singularity'],
             'default_enabled': False,
             'configured': configured,
             'readiness': 'not_configured' if not configured else 'unreachable',
@@ -245,7 +246,7 @@ class Delivery:
         if not configured:
             return result
         try:
-            response = self.executor.client.get(f'{runtime_url}/health', headers=runtime_headers, timeout=5)
+            response = adapter.client.get(f'{runtime_url}/health', headers=runtime_headers, timeout=5)
             data = response.json()
             if response.status_code == 200 and isinstance(data, dict) and data.get('ready') is True:
                 caps = data.get('capabilities')

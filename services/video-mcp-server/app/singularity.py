@@ -46,7 +46,7 @@ def validate_timeline_wav(path, frames):
 def check_audio_guidance(audio_guidance, service):
     if audio_guidance is None:
         return
-    if service != 'h3-singularity':
+    if service not in {'h3-fasth3', 'h3-singularity'}:
         raise ValueError('audio_guidance_requires_h3_singularity')
     if not isinstance(audio_guidance, str) or audio_guidance not in {'reference', 'timeline'}:
         raise ValueError('unsupported_audio_guidance')
@@ -61,7 +61,7 @@ def runtime_supports_timeline(health):
 def check_image_guidance(mode, service):
     if mode is None:
         return
-    if service != 'h3-singularity':
+    if service not in {'h3-fasth3', 'h3-singularity'}:
         raise ValueError('image_guidance_requires_h3_singularity')
     if not isinstance(mode, str) or mode not in {'reference', 'first_frame'}:
         raise ValueError('unsupported_image_guidance')

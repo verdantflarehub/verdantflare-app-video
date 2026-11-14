@@ -24,7 +24,7 @@ const labels = {
 const taskStatusLabel = (task) => task.service === "higgsfield" && task.status === "running" && (task.runtime_stage === "collecting" || task.timing?.generation_completed_at) ? "视频已生成" : labels[task.status] || task.status;
 const generationTimeHint = "按服务端确认 Higgsfield 完成的时间计算；官方 CLI 未提供精确完成时间。";
 // Display metadata is shared by the list and detail API; raw IDs stay in task records.
-const generationServices = new Set(["h3", "h3-sol", "h3-vdn", "h3-singularity", "regenerate_2k", "fal", "grok", "google", "higgsfield"]);
+const generationServices = new Set(["h3", "h3-sol", "h3-vdn", "h3-fasth3", "h3-singularity", "regenerate_2k", "fal", "grok", "google", "higgsfield"]);
 const serviceDisplayNames = {
   "h3-latent-upscale": "H3 Latent Upscaler", sr: "Video Super Resolution",
   interpolate: "Frame Interpolation", regenerate_2k: "H3 Regenerate 2K", depth: "Depth Anything",
@@ -51,6 +51,7 @@ const taskOperation = (task) =>
     h3: "视频生成",
     higgsfield: "视频生成",
     grok: "视频生成",
+    "h3-fasth3": "视频生成",
     "h3-singularity": "视频生成",
     "h3-sol": "视频生成",
     "h3-vdn": "视频生成",
@@ -85,7 +86,7 @@ const taskResolution = (task) => {
   if (shortSide >= 480) return "480p";
   const route = task.route || task.service;
   if (task.service === "regenerate_2k") return "2K";
-  if (["h3", "h3-sol", "h3-vdn", "h3-singularity"].includes(route) || ["h3", "h3-sol", "h3-vdn", "h3-singularity"].includes(task.service)) return "768p";
+  if (["h3", "h3-sol", "h3-vdn", "h3-fasth3", "h3-singularity"].includes(route) || ["h3", "h3-sol", "h3-vdn", "h3-fasth3", "h3-singularity"].includes(task.service)) return "768p";
   if (route === "fal" || task.service === "fal") return "480p";
   if (task.service === "higgsfield" || task.service === "grok") return "720p";
   return "";
@@ -1186,7 +1187,7 @@ if (window.studioEmbedded) {
       if (typeof state.q === "string")
         $("searchInput").value = state.q.slice(0, 512);
       const savedChannel = state.channel ?? state.engine;
-      const channel = ["h3", "h3-sol", "h3-vdn", "h3-singularity"].includes(savedChannel) ? "local" : savedChannel;
+      const channel = ["h3", "h3-sol", "h3-vdn", "h3-fasth3", "h3-singularity"].includes(savedChannel) ? "local" : savedChannel;
       if (typeof channel === "string" && channel.length <= 128) {
         if (![...$("filterChannel").options].some((option) => option.value === channel))
           $("filterChannel").add(new Option(channel, channel));

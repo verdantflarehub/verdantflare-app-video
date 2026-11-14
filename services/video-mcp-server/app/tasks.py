@@ -166,6 +166,7 @@ class TaskStore:
         else:
             route = str(request.get("route", "h3"))
             service = ("h3-sol" if route.startswith("h3-sol") else
+                       "h3-fasth3" if route == "h3-fasth3" else
                        "h3-singularity" if route == "h3-singularity" else "h3")
         task_id = f"video_task_{uuid.uuid4().hex}"
         record = TaskRecord(video_task_id=task_id, service=service, project_id=project_id,

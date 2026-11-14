@@ -16,7 +16,7 @@ def proof(record, artifacts):
         if a.project_id != record.project_id:
             raise ValueError('execution_proof_project_mismatch')
         return {'sha256': a.sha256, 'size': a.size, 'mime': a.media_type}
-    if route == 'h3-singularity' and record.service == 'h3-singularity' and model == 'minimax-h3-ref2va':
+    if (route, record.service) in {('h3-fasth3', 'h3-fasth3'), ('h3-singularity', 'h3-singularity')} and model == 'minimax-h3-ref2va':
         if not record.artifact_id or not p.get('resolved_output'):
             raise ValueError('execution_proof_not_ready')
         inputs = [media(r['artifact_id']) for group in ('images', 'videos', 'audios')

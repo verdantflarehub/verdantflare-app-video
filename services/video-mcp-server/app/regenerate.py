@@ -1,6 +1,8 @@
 """Pure 2K IC geometry, windowing, preview bounds, and locked digest contracts.
 
 Keep pure functions byte-identical in behavior with:
+- services/video-minimax-h3-fasth3/src/h3_fasth3/contract.py
+- services/video-minimax-h3-regenerate-2k/src/h3_regenerate_2k/contract.py
 - services/video-minimax-h3-singularity/src/h3_singularity/contract.py
 - services/video-frame-interpolation-api/src/video_interpolation/media.py
 """
@@ -9,11 +11,16 @@ from __future__ import annotations
 
 import fractions
 import math
-import os
 
 
-SINGULARITY_QUALITY_PROFILES = ("fasth3-nvfp4", "du-0")
-SINGULARITY_PROFILE_NFE = {"fasth3-nvfp4": 8, "du-0": 4}
+ROUTE_QUALITY_PROFILE = {
+    "h3-fasth3": "fasth3-nvfp4",
+    "h3-singularity": "du-0",
+}
+H3_PROFILE_NFE = {
+    "fasth3-nvfp4": 8,
+    "du-0": 4,
+}
 REGENERATE_2K_PROFILES = ("open_h3_2k_ic",)
 REGENERATE_2K_GRID_MODES = ("budget_1440p", "exact_2x")
 REGENERATE_2K_MODEL_ID = "open-h3-regenerate-2k-ic"
@@ -53,9 +60,9 @@ LOCKED_P2_WEIGHTS_SHA256 = {
 }
 
 
-def default_singularity_quality_profile() -> str:
-    profile = os.environ.get("H3_SINGULARITY_DEFAULT_QUALITY_PROFILE", "du-0").strip() or "du-0"
-    if profile not in SINGULARITY_QUALITY_PROFILES:
+def route_quality_profile(route: str) -> str:
+    profile = ROUTE_QUALITY_PROFILE.get(route)
+    if profile is None:
         raise ValueError("quality_profile_not_available")
     return profile
 
