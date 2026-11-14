@@ -16,21 +16,21 @@ The MCP never returns Runtime task IDs, internal service URLs, node names, GPU d
 
 ## Configuration
 
-| Variable | Default |
-| --- | --- |
-| `VIDEO_ARTIFACT_ROOT` | `/data/video-mcp` |
-| `VIDEO_ASSET_IMPORT_ORIGINS` | disabled |
-| `VIDEO_MCP_PUBLIC_BASE_URL` | unset |
-| `VIDEO_MCP_BEARER_TOKEN` | unset |
-| `VIDEO_MCP_ALLOWED_HOSTS` | loopback only |
-| `VIDEO_MCP_ALLOWED_ORIGINS` | loopback only |
-| `VIDEO_MCP_URL` | client-facing unified Video MCP endpoint |
-| `VIDEO_MCP_RUNTIME_BASE_URL` | `http://video-mcp-server:8000` |
-| `H3_RUNTIME_URL` | `http://video-minimax-h3-api:8000` |
-| `VIDEO_DEPTH_RUNTIME_URL` | `http://video-depth-anything-api:8000` |
-| `H3_RUNTIME_VERSION` | `video-minimax-h3-api-v0.3.0` |
-| `FAL_KEY` | unset; enables the server-side `fal` route |
-| `FAL_QUEUE_BASE_URL` | `https://queue.fal.run` |
+| Variable                     | Default                                    |
+| ---------------------------- | ------------------------------------------ |
+| `VIDEO_ARTIFACT_ROOT`        | `/data/video-mcp`                          |
+| `VIDEO_ASSET_IMPORT_ORIGINS` | disabled                                   |
+| `VIDEO_MCP_PUBLIC_BASE_URL`  | unset                                      |
+| `VIDEO_MCP_BEARER_TOKEN`     | unset                                      |
+| `VIDEO_MCP_ALLOWED_HOSTS`    | loopback only                              |
+| `VIDEO_MCP_ALLOWED_ORIGINS`  | loopback only                              |
+| `VIDEO_MCP_URL`              | client-facing unified Video MCP endpoint   |
+| `VIDEO_MCP_RUNTIME_BASE_URL` | `http://video-mcp-server:8000`             |
+| `H3_RUNTIME_URL`             | `http://video-minimax-h3:8000`             |
+| `VIDEO_DEPTH_RUNTIME_URL`    | `http://video-depth-anything:8000`         |
+| `H3_RUNTIME_VERSION`         | `video-minimax-h3-v0.3.4`                  |
+| `FAL_KEY`                    | unset; enables the server-side `fal` route |
+| `FAL_QUEUE_BASE_URL`         | `https://queue.fal.run`                    |
 
 Use `model=minimax-h3-ref2va` together with `route=fal`. The adapter maps up to
 9 image, 3 video, and 3 audio Artifacts (12 total) to fal's reference lists,

@@ -1,13 +1,20 @@
 # VerdantFlare App Video
 
-视频应用的代码与镜像构建仓库。统一分开使用 **H3**、**H3-Sol**、**MCP** 三个名称。
+视频应用的代码与镜像构建仓库。各子服务统一采用无冗余 `-api` 后缀的工程命名：
 
-| 名称 | 工程 | 当前交付 |
-| --- | --- | --- |
-| H3 | `services/video-minimax-h3-api` | 原版推理服务，已部署 `video-minimax-h3-api-v0.3.0` |
-| H3-Sol | `services/video-minimax-h3-sol` | Sol 常驻双 rank 推理服务，版本 `video-minimax-h3-sol-v0.2.0`；上线结果见中央验收记录 |
-| MCP | `services/video-mcp-server` | 统一调用入口及 Dashboard，版本 `video-mcp-server-v0.4.0`（上线证据以中央发布记录为准） |
-| Depth | `services/video-depth-anything-api` | Video MCP 内部深度转换推理服务，版本 `video-depth-anything-api-v0.1.0` |
+| 服务目录                                  | 职责说明                                               |
+| ----------------------------------------- | ------------------------------------------------------ |
+| `services/video-mcp-server`               | 统一视频 MCP 调用入口、2K 串联编排与 Dashboard         |
+| `services/video-minimax-h3`               | 原版 MiniMax-H3 SGLang Full-INT8 `/v1/videos` 推理服务 |
+| `services/video-minimax-h3-fasth3`        | 5090 FastH3 NVFP4 在线基础生成服务                     |
+| `services/video-minimax-h3-regenerate-2k` | 5090 Open-H3 2K IC 重生成服务                          |
+| `services/video-minimax-h3-singularity`   | H3 Singularity 推理服务                                |
+| `services/video-minimax-h3-sol`           | H3-Sol 双 rank 推理服务                                |
+| `services/video-minimax-h3-vdn`           | H3-VDN 推理服务                                        |
+| `services/video-frame-interpolation`      | RIFE 视频补帧推理子服务                                |
+| `services/video-super-resolution`         | SeedVR2 视频超分辨率推理子服务                         |
+| `services/video-h3-latent-upscaler`       | H3 潜空间放大后处理子服务                              |
+| `services/video-depth-anything`           | Video Depth Anything 深度提取子服务                    |
 
 H3-Sol 的既有双卡实验出片与人工质量限制，以中央设计记录为准。实验镜像可追溯发布不等于热启动服务、生产接入或质量验收完成。H3、H3-Sol 的后续模型服务不使用 Kubernetes Job，分别复用各自模型进程；MCP 不加载模型。
 
@@ -16,10 +23,17 @@ H3-Sol 的既有双卡实验出片与人工质量限制，以中央设计记录�
 ```text
 .github/workflows/
 services/
-  video-minimax-h3-api/
-  video-minimax-h3-sol/
+  video-depth-anything/
+  video-frame-interpolation/
+  video-h3-latent-upscaler/
   video-mcp-server/
-  video-depth-anything-api/
+  video-minimax-h3/
+  video-minimax-h3-fasth3/
+  video-minimax-h3-regenerate-2k/
+  video-minimax-h3-singularity/
+  video-minimax-h3-sol/
+  video-minimax-h3-vdn/
+  video-super-resolution/
 ```
 
 设计、接口与部署清单统一维护在 [verdantflare-design](https://github.com/verdantflarehub/verdantflare-design/tree/dev)：
@@ -65,7 +79,7 @@ GPU 索引、预装运行时与需要关闭构建隔离的编译步骤仍由 Doc
 
 H3-Sol 的直接依赖源为 `pyproject.toml`；`requirements.lock` 与 `requirements.build.lock` 保留已验证的完整运行时和构建锁定结果，构建继续分阶段安装并执行 `pip check`。更新直接依赖时须同步重新解析锁文件。H3 API 的空依赖清单表示运行时完全继承已锁定基础镜像；Depth Anything 也继续继承固定镜像中的依赖。
 
-Depth Anything 的测试扩展使用 `python -m pip install "./services/video-depth-anything-api[test]"`；Video MCP 的浏览器扩展使用 `python -m pip install "./services/video-mcp-server[browser]"`。超分引擎测试的 `cpu-torch` 组使用 PyTorch CPU 索引安装，再安装 `engine-test` 组。
+Depth Anything 的测试扩展使用 `python -m pip install "./services/video-depth-anything[test]"`；Video MCP 的浏览器扩展使用 `python -m pip install "./services/video-mcp-server[browser]"`。超分引擎测试的 `cpu-torch` 组使用 PyTorch CPU 索引安装，再安装 `engine-test` 组。
 
 H3-Sol 的清单版本对应现行 resident 服务；`Dockerfile.resident` 复制并安装该清单的元数据，运行依赖仍继承固定基础镜像。
 

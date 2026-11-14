@@ -114,7 +114,7 @@ class VideoExecutor:
         self._submitting_tasks: set[str] = set()
         self.artifacts = artifacts
         self.tasks = tasks
-        self.runtime_url = os.environ.get("H3_RUNTIME_URL", "http://video-minimax-h3-api:8000").rstrip("/")
+        self.runtime_url = os.environ.get("H3_RUNTIME_URL", "http://video-minimax-h3:8000").rstrip("/")
         self.runtime_route = os.environ.get("H3_RUNTIME_ROUTE", "h3")
         self.runtime_routes = self._load_routes()
         self.runtime_artifact_url = os.environ.get("VIDEO_MCP_RUNTIME_BASE_URL", "http://video-mcp-server:8000").rstrip("/")
@@ -125,7 +125,7 @@ class VideoExecutor:
         self.vdn_token = os.environ.get("H3_VDN_RUNTIME_TOKEN", "")
         self.fasth3_token = os.environ.get("H3_FASTH3_RUNTIME_TOKEN", "")
         self.singularity_token = os.environ.get("H3_SINGULARITY_RUNTIME_TOKEN", "")
-        self.runtime_version = os.environ.get("H3_RUNTIME_VERSION", "video-minimax-h3-api-v0.3.0")
+        self.runtime_version = os.environ.get("H3_RUNTIME_VERSION", "video-minimax-h3-v0.3.4")
         self.allowed_origins = frozenset(x.strip() for x in os.environ.get("VIDEO_ASSET_IMPORT_ORIGINS", "").split(",") if x.strip())
         self.import_rewrites = json.loads(os.environ.get("VIDEO_ASSET_IMPORT_REWRITES", "{}"))
         if not isinstance(self.import_rewrites, dict):

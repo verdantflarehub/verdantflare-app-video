@@ -13,7 +13,8 @@ class DepthExecutor:
         self.executor = executor
         self.artifacts, self.tasks, self.client = executor.artifacts, executor.tasks, executor.client
         self._lock = executor._lock
-        self.url = os.environ.get('VIDEO_DEPTH_RUNTIME_URL', 'http://video-depth-anything-api:8000').rstrip('/')
+        self.url = os.environ.get('VIDEO_DEPTH_RUNTIME_URL', 'http://video-depth-anything:8000').rstrip('/')
+        self.runtime_version = os.environ.get('VIDEO_DEPTH_RUNTIME_VERSION', 'video-depth-anything-v0.2.4')
 
     @serialized
     def generate(self, *, project_id, idempotency_key, source_artifact_id,
@@ -36,7 +37,7 @@ class DepthExecutor:
             return existing
         record = self.tasks.create(project_id=project_id, idempotency_key=idempotency_key, input_digest=digest,
                                    request=request, runtime_task_id='', status='queued')
-        record = self.tasks.update(record, service='depth', runtime_version='video-depth-anything-api-v0.2.1', runtime_task_id=record.video_task_id,
+        record = self.tasks.update(record, service='depth', runtime_version=self.runtime_version, runtime_task_id=record.video_task_id,
             error={'code': 'submission_unconfirmed', 'message': 'Submission is pending confirmation'})
         return self._submit(record)
 

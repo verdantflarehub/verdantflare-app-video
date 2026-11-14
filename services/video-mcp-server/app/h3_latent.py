@@ -19,7 +19,7 @@ class H3LatentExecutor:
         self.executor = executor
         self.tasks, self.artifacts, self.client = executor.tasks, executor.artifacts, executor.client
         self._lock = executor._lock
-        self.url = os.environ.get('H3_LATENT_RUNTIME_URL', 'http://video-h3-latent-upscaler-api:8000').rstrip('/')
+        self.url = os.environ.get('H3_LATENT_RUNTIME_URL', 'http://video-h3-latent-upscaler:8000').rstrip('/')
         self.token = os.environ.get('H3_LATENT_RUNTIME_TOKEN', '')
         self.index = Path(os.environ.get('H3_LATENT_SOURCE_INDEX', '/data/h3-latent/source-index.sqlite'))
         self.node = os.environ.get('H3_LATENT_NODE_NAME', '')

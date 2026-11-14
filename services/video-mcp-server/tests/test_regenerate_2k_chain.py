@@ -39,7 +39,7 @@ APP_VIDEO_ROOT = Path(__file__).resolve().parents[3]
 FASTH3_SRC = APP_VIDEO_ROOT / "services" / "video-minimax-h3-fasth3" / "src"
 REGEN2K_SRC = APP_VIDEO_ROOT / "services" / "video-minimax-h3-regenerate-2k" / "src"
 SINGULARITY_SRC = APP_VIDEO_ROOT / "services" / "video-minimax-h3-singularity" / "src"
-RIFE_SRC = APP_VIDEO_ROOT / "services" / "video-frame-interpolation-api"
+RIFE_SRC = APP_VIDEO_ROOT / "services" / "video-frame-interpolation"
 
 
 def _png_bytes(width: int, height: int) -> bytes:

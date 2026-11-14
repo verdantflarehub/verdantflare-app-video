@@ -4,7 +4,7 @@ Keep pure functions byte-identical in behavior with:
 - services/video-minimax-h3-fasth3/src/h3_fasth3/contract.py
 - services/video-minimax-h3-regenerate-2k/src/h3_regenerate_2k/contract.py
 - services/video-minimax-h3-singularity/src/h3_singularity/contract.py
-- services/video-frame-interpolation-api/src/video_interpolation/media.py
+- services/video-frame-interpolation/video_interpolation/media.py
 """
 
 from __future__ import annotations

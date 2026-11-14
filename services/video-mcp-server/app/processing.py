@@ -80,10 +80,11 @@ class ProcessingExecutor:
                 or 'video-minimax-h3-regenerate-2k-v0.1.0'
             )
         else:
-            name = 'video-super-resolution-api' if service == 'sr' else 'video-frame-interpolation-api'
+            name = 'video-super-resolution' if service == 'sr' else 'video-frame-interpolation'
             prefix = 'VIDEO_SR' if service == 'sr' else 'VIDEO_INTERPOLATION'
+            default_version = f'{name}-v0.1.4' if service == 'sr' else f'{name}-v0.2.6'
             self.url = os.environ.get(f'{prefix}_RUNTIME_URL', f'http://{name}:8000').rstrip('/')
-            self.runtime_version = os.environ.get(f'{prefix}_RUNTIME_VERSION', f'{name}-v0.1.0')
+            self.runtime_version = os.environ.get(f'{prefix}_RUNTIME_VERSION', default_version)
 
     @property
     def client(self):
