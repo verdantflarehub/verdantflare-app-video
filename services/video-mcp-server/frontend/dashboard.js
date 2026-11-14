@@ -24,10 +24,10 @@ const labels = {
 const taskStatusLabel = (task) => task.service === "higgsfield" && task.status === "running" && (task.runtime_stage === "collecting" || task.timing?.generation_completed_at) ? "视频已生成" : labels[task.status] || task.status;
 const generationTimeHint = "按服务端确认 Higgsfield 完成的时间计算；官方 CLI 未提供精确完成时间。";
 // Display metadata is shared by the list and detail API; raw IDs stay in task records.
-const generationServices = new Set(["h3", "h3-sol", "h3-vdn", "h3-singularity", "fal", "grok", "google", "higgsfield"]);
+const generationServices = new Set(["h3", "h3-sol", "h3-vdn", "h3-singularity", "regenerate_2k", "fal", "grok", "google", "higgsfield"]);
 const serviceDisplayNames = {
   "h3-latent-upscale": "H3 Latent Upscaler", sr: "Video Super Resolution",
-  interpolate: "Frame Interpolation", depth: "Depth Anything",
+  interpolate: "Frame Interpolation", regenerate_2k: "H3 Regenerate 2K", depth: "Depth Anything",
 };
 const taskModel = (task) => generationServices.has(task.service) ? task.presentation?.model_label || "未记录模型" : "";
 const taskRoute = (task) => generationServices.has(task.service) ? task.presentation?.channel_label || "未记录渠道" : "";
@@ -56,6 +56,7 @@ const taskOperation = (task) =>
     "h3-vdn": "视频生成",
     fal: "视频生成",
     "h3-latent-upscale": "H3 潜空间超分",
+    regenerate_2k: "2K 潜空间重生成",
     sr: "视频超分",
     interpolate: "视频补帧",
     depth: "深度视频",
@@ -75,13 +76,15 @@ const taskResolution = (task) => {
   if (task.resolution) return task.resolution;
   const h = Number(task.media?.height || 0), w = Number(task.media?.width || 0);
   const shortSide = h && w ? Math.min(h, w) : 0;
+  const longSide = h && w ? Math.max(h, w) : 0;
   if (shortSide >= 2160) return "4K";
-  if (shortSide >= 1440) return "2K";
+  if (shortSide >= 1408 || longSide >= 2464) return "2K";
   if (shortSide >= 1080) return "1080p";
   if (shortSide >= 760) return "768p";
   if (shortSide >= 720) return "720p";
   if (shortSide >= 480) return "480p";
   const route = task.route || task.service;
+  if (task.service === "regenerate_2k") return "2K";
   if (["h3", "h3-sol", "h3-vdn", "h3-singularity"].includes(route) || ["h3", "h3-sol", "h3-vdn", "h3-singularity"].includes(task.service)) return "768p";
   if (route === "fal" || task.service === "fal") return "480p";
   if (task.service === "higgsfield" || task.service === "grok") return "720p";

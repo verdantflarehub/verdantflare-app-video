@@ -11,6 +11,7 @@ import re
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 import ssl
 from datetime import UTC, datetime
@@ -21,7 +22,13 @@ from urllib.parse import unquote, urlsplit
 import httpx
 
 from .artifacts import MAX_ARTIFACT_BYTES, ArtifactRecord, ArtifactStore, require_filename, require_project_id
-from .gpu_lease import GpuCoordinator, LeaseBusy
+from .channel_errors import MESSAGES
+from .gpu_lease import GpuCoordinator, LeaseBusy, LocalGpuStageSlot
+from .regenerate import (
+    SINGULARITY_PROFILE_NFE,
+    SINGULARITY_QUALITY_PROFILES,
+    default_singularity_quality_profile,
+)
 from .tasks import TaskConflict, TaskRecord, TaskStore
 
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -33,7 +40,24 @@ MEDIA_TYPES = {
 H3_DURATION_TOLERANCE_MS = 1000
 MAX_INLINE_IMAGE_BYTES = 3 * 1024 * 1024
 LOCAL_H3_SERVICES = {"h3", "h3-vdn", "h3-sol", "h3-singularity"}
+LOCAL_GPU_SERVICES = LOCAL_H3_SERVICES | {"regenerate_2k", "interpolate"}
 TERMINAL_TASK_STATUS = {"succeeded", "failed", "cancelled", "canceled"}
+
+
+def _cancel_backoff_ready(provider_state: dict | None, now_epoch: float) -> bool:
+    if not provider_state:
+        return True
+    next_at = provider_state.get("_next_cancel_retry_at")
+    if not isinstance(next_at, (int, float)):
+        return True
+    return now_epoch >= float(next_at)
+
+
+def _next_cancel_backoff_epoch(attempts: int, now_epoch: float) -> float:
+    if attempts <= 1:
+        return 0.0
+    delay = min(10.0, 0.5 * (2 ** min(attempts - 2, 5)))
+    return now_epoch + delay
 
 
 class ExecutionError(RuntimeError):
@@ -59,11 +83,18 @@ def task_serialized(method):
     @wraps(method)
     def invoke(self, video_task_id, *args, **kwargs):
         # Submission still owns the global identity lock. A newly written task
-        # must not be polled before its dispatch receipt has been persisted.
+        # must not be polled before its dispatch receipt has been persisted,
+        # while already-running peers remain pollable so stage slots can settle.
         if method.__name__ == "status":
-            if not self._lock.acquire(blocking=False):
-                return self.tasks.get(video_task_id)
-            self._lock.release()
+            root_executor = getattr(self, "executor", self)
+            defer_fn = getattr(root_executor, "_should_defer_status", None)
+            if defer_fn is not None:
+                if defer_fn(video_task_id):
+                    return self.tasks.get(video_task_id)
+            else:
+                if not self._lock.acquire(blocking=False):
+                    return self.tasks.get(video_task_id)
+                self._lock.release()
         # Status reads remain responsive while this task's result is downloading.
         with self.tasks.task_lock(video_task_id, blocking=method.__name__ != "status") as acquired:
             if not acquired:
@@ -77,6 +108,9 @@ class VideoExecutor:
         from .catalog import ModelCatalog
         self.catalog = ModelCatalog()
         self._lock = threading.RLock()
+        self._state_guard = threading.Lock()
+        self._reserving_count = 0
+        self._submitting_tasks: set[str] = set()
         self.artifacts = artifacts
         self.tasks = tasks
         self.runtime_url = os.environ.get("H3_RUNTIME_URL", "http://video-minimax-h3-api:8000").rstrip("/")
@@ -106,10 +140,11 @@ class VideoExecutor:
             trust.load_verify_locations(os.environ['VIDEO_PROJECT_CA_FILE'])
         self.client = client or httpx.Client(timeout=httpx.Timeout(connect=10, read=3600, write=600, pool=10), follow_redirects=False, verify=trust)
         self.gpu = GpuCoordinator.from_environment()
+        self.stage_slot = LocalGpuStageSlot.from_environment(self.tasks)
         from .depth import DepthExecutor
         self.depth = DepthExecutor(self)
         from .processing import ProcessingExecutor
-        self.processing = {name: ProcessingExecutor(self, name) for name in ("sr", "interpolate")}
+        self.processing = {name: ProcessingExecutor(self, name) for name in ("sr", "interpolate", "regenerate_2k")}
         from .h3_latent import H3LatentExecutor
         self.processing["h3-latent-upscale"] = H3LatentExecutor(self)
         from .providers.fal import FalAdapter
@@ -124,6 +159,138 @@ class VideoExecutor:
         self.delivery = Delivery(self)
         from .collection import ResultCollector
         self.collector = ResultCollector(self)
+
+    def _begin_reservation(self) -> None:
+        with self._state_guard:
+            self._reserving_count += 1
+
+    def _end_reservation(self) -> None:
+        with self._state_guard:
+            self._reserving_count = max(0, self._reserving_count - 1)
+
+    def _should_defer_status(self, video_task_id: str) -> bool:
+        with self._state_guard:
+            if self._reserving_count > 0 or video_task_id in self._submitting_tasks:
+                return True
+        if self._lock.acquire(blocking=False):
+            self._lock.release()
+            return False
+        with self._state_guard:
+            if self._submitting_tasks and self._reserving_count == 0:
+                return False
+        return True
+
+    def _reconcile_slot_holder(self, holder_task_id: str, holder_service: str) -> None:
+        try:
+            if holder_service in self.processing:
+                self.processing[holder_service].status(holder_task_id)
+            else:
+                self.status(holder_task_id)
+        except Exception:
+            pass
+
+    def acquire_local_gpu(self, task_id: str, service: str, *, record: TaskRecord | None = None) -> bool:
+        """Non-blocking local GPU slot + K8s lease admission.
+
+        Returns True when immediately admitted (or when local GPU gating is disabled),
+        False when busy and still within GPU_QUEUE_SECONDS (caller keeps task queued asynchronously),
+        or raises LeaseBusy once the task's durable queue_started_at exceeds GPU_QUEUE_SECONDS.
+        """
+        if service not in LOCAL_GPU_SERVICES:
+            return True
+        if not self.gpu.enabled and not self.stage_slot.enabled:
+            return True
+        from .delivery import _to_epoch
+
+        rec = record or self.tasks.get(task_id)
+        pstate = dict(rec.provider_state or {})
+        monotonic_fn = self.gpu._monotonic if self.gpu.enabled else self.stage_slot._monotonic
+        queue_seconds = self.gpu.queue_seconds if self.gpu.enabled else self.stage_slot.queue_seconds
+        now_mono = monotonic_fn()
+        now_wall = time.time()
+        q_started_iso = pstate.get("queue_started_at") or rec.created_at
+        q_wall = _to_epoch(q_started_iso)
+        elapsed = max(0.0, now_wall - q_wall) if q_wall is not None else 0.0
+        q_mono = pstate.get("_queue_started_mono")
+        if isinstance(q_mono, (int, float)):
+            elapsed = max(elapsed, max(0.0, now_mono - float(q_mono)))
+
+        if self.stage_slot.enabled:
+            if not self.stage_slot.try_acquire(task_id, service):
+                current = self.stage_slot.current_holder()
+                if current and current[0] != task_id:
+                    self._reconcile_slot_holder(current[0], current[1])
+                if not self.stage_slot.try_acquire(task_id, service):
+                    if queue_seconds <= 0 or elapsed >= queue_seconds:
+                        holder_name = current[0] if current else "local_gpu_stage_slot"
+                        raise LeaseBusy(holder_name)
+                    return False
+
+        if self.gpu.enabled:
+            if not self.gpu.try_acquire():
+                if self.stage_slot.enabled:
+                    self.stage_slot.release(task_id, force=True)
+                if queue_seconds <= 0 or elapsed >= queue_seconds:
+                    raise LeaseBusy(self.gpu.lease_name)
+                return False
+        return True
+
+    def defer_local_gpu_queue(self, record: TaskRecord, *, waiting_reason: str | None = None) -> TaskRecord:
+        pstate = dict(record.provider_state or {})
+        now_iso = datetime.now(UTC).isoformat()
+        monotonic_fn = self.gpu._monotonic if self.gpu.enabled else self.stage_slot._monotonic
+        if waiting_reason is None:
+            if self.stage_slot.enabled and self.stage_slot.current_holder() is not None:
+                waiting_reason = "gpu_stage_slot"
+            else:
+                waiting_reason = "gpu_lease"
+        pstate.setdefault("queue_started_at", record.created_at or now_iso)
+        pstate.setdefault("_queue_started_mono", monotonic_fn())
+        pstate["waiting_reason"] = waiting_reason
+        pstate["gpu_dispatched"] = False
+        return self.tasks.update(record, status="queued", error=None, provider_state=pstate)
+
+    def dispatch_queued_local_tasks(self) -> None:
+        root = getattr(self.tasks, "root", None)
+        if root is None or not root.is_dir():
+            return
+        queued_candidates: list[tuple[str, str]] = []
+        try:
+            with os.scandir(root) as entries:
+                for entry in entries:
+                    if not entry.name.startswith("video_task_") or not entry.name.endswith(".json"):
+                        continue
+                    try:
+                        rec = TaskRecord.model_validate_json(Path(entry.path).read_text(encoding="utf-8"))
+                    except Exception:
+                        continue
+                    if (
+                        rec.service in LOCAL_GPU_SERVICES
+                        and rec.status == "queued"
+                        and (rec.provider_state or {}).get("gpu_dispatched") is False
+                    ):
+                        queued_candidates.append((rec.created_at or "", rec.video_task_id))
+        except OSError:
+            return
+        queued_candidates.sort()
+        for _, tid in queued_candidates:
+            try:
+                self.status(tid)
+            except Exception:
+                continue
+
+    def release_or_reconcile_local_gpu(self, task_id: str) -> None:
+        try:
+            record = self.tasks.get(task_id)
+            if self.stage_slot.is_task_settled(record):
+                self.stage_slot.release(task_id)
+        except Exception:
+            pass
+        if self.gpu.enabled:
+            try:
+                self.reconcile_gpu()
+            except Exception:
+                logging.getLogger(__name__).warning("GPU lease reconciliation deferred after dispatch")
 
     def _load_routes(self) -> dict[str, dict[str, object]]:
         raw = os.environ.get("H3_RUNTIME_ROUTES", "")
@@ -226,7 +393,8 @@ class VideoExecutor:
             if route == "fal":
                 routes[-1]["modes"] = ["reference_to_video"]
             if service == "h3-singularity":
-                routes[-1].update(quality_profiles=["du-0"], gpu_verified_combinations=[],
+                default_qp = default_singularity_quality_profile()
+                routes[-1].update(quality_profiles=list(SINGULARITY_QUALITY_PROFILES), gpu_verified_combinations=[],
                                   verification_status="not_recorded", frame_grid="17k+5", fps=24,
                                   modes=["reference_to_video"],
                                   image_guidance={"modes": ["reference"], "default": "reference",
@@ -236,7 +404,7 @@ class VideoExecutor:
                                       "timeline_audio_format": "pcm_wav", "timeline_maximum_requested_seconds": 14,
                                       "exact_audio_preservation": False, "lip_sync_verified": False},
                                   defaults={"mode": "reference_to_video", "duration_seconds": 5,
-                                            "aspect_ratio": "16:9", "quality_profile": "du-0"},
+                                            "aspect_ratio": "16:9", "quality_profile": default_qp},
                                   reference_limits={"images": 9, "videos": 3, "audios": 3,
                                       "minimum_total": 1, "total": 12, "max_file_bytes": MAX_ARTIFACT_BYTES,
                                       "total_duration_seconds": {"videos": 15, "audios": 15}})
@@ -290,7 +458,10 @@ class VideoExecutor:
                 "models": [{"model": "minimax-h3-ref2va"}, *dynamic_models],
                 "model_specification": {"aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
                                         "omni_adaptive": True},
-                "postprocess": {"interpolate": self.delivery.capability()},
+                "postprocess": {
+                    "interpolate": self.delivery.capability(),
+                    "regenerate_2k": self.delivery.regenerate_capability(),
+                },
                 "routes": routes, "inline_image_max_bytes": MAX_INLINE_IMAGE_BYTES,
                 "chunk_import": {"max_chunk_bytes": 512 * 1024, "max_file_bytes": MAX_ARTIFACT_BYTES,
                                  "formats": ["PNG", "JPEG", "WebP", "MP4/H.264", "MP4/H.265", "WAV/PCM", "MP3"],
@@ -391,10 +562,10 @@ class VideoExecutor:
         from .singularity import check_audio_guidance, check_image_guidance
         check_audio_guidance(audio_guidance, service)
         check_image_guidance(image_guidance, service)
-        if quality_profile not in {"du-0", "du-1", "du-2", "du-3", "hr-refine-tile-v1", "hr-refine-global-v2"}:
-            raise ValueError("quality_profile must be du-0, du-1, du-2, du-3, hr-refine-tile-v1, or hr-refine-global-v2")
+        if quality_profile not in {"fasth3-nvfp4", "du-0", "du-1", "du-2", "du-3", "hr-refine-tile-v1", "hr-refine-global-v2"}:
+            raise ValueError("quality_profile_not_available")
         if service != "h3-singularity" and quality_profile != "du-0":
-            raise ValueError("quality_profile du-1, du-2, du-3, hr-refine-tile-v1, and hr-refine-global-v2 require h3-singularity")
+            raise ValueError("quality_profile fasth3-nvfp4, du-1, du-2, du-3, hr-refine-tile-v1, and hr-refine-global-v2 require h3-singularity")
         if service in {"h3-sol", "h3-vdn"} and not 5 <= duration_seconds <= 15:
             raise ValueError("Selected channel duration must be an integer from 5 to 15 seconds")
         if model != "minimax-h3-ref2va":
@@ -402,8 +573,8 @@ class VideoExecutor:
         if type(duration_seconds) is not int or not 4 <= duration_seconds <= 15 or not prompt.strip():
             raise ValueError("duration_seconds must be an integer from 4 to 15 and prompt must not be empty")
         from .singularity import ASPECT_RATIOS, output_spec
-        if service == "h3-singularity" and quality_profile != "du-0":
-            raise ValueError("Selected Singularity production route supports only du-0")
+        if service == "h3-singularity" and quality_profile not in SINGULARITY_QUALITY_PROFILES:
+            raise ValueError("Selected Singularity production route supports only du-0 or fasth3-nvfp4")
         if service == "h3-singularity" and aspect_ratio not in ASPECT_RATIOS:
             raise ValueError("Unsupported Singularity aspect_ratio")
         if service != "h3-singularity" and aspect_ratio != "9:16":
@@ -490,7 +661,6 @@ class VideoExecutor:
         canonical = json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return request, "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
 
-    @serialized
     def generate(self, *, project_id: str, idempotency_key: str, model: str, prompt: str,
                  duration_seconds: int, aspect_ratio: str,
                  references: dict[str, list[dict[str, str]]], route: str | None = None,
@@ -498,174 +668,360 @@ class VideoExecutor:
                  resolution: str | None = None, postprocess: dict | None = None,
                  channel_account_id: str | None = None, budget_limit: str | None = None,
                  price_ceiling: float | None = None, audio_guidance: str | None = None, image_guidance: str | None = None) -> TaskRecord:
-        project_id = require_project_id(project_id)
-        if not idempotency_key.strip() or len(idempotency_key) > 128:
-            raise ValueError("idempotency_key is invalid")
-        route = route or self.runtime_route
-        from .singularity import check_audio_guidance, check_image_guidance
-        check_audio_guidance(audio_guidance, self._service_for_route(route))
-        check_image_guidance(image_guidance, self._service_for_route(route))
-        if route != "higgsfield" and price_ceiling is not None:
-            raise ValueError("price_ceiling_not_supported")
-        if route not in {'fal', 'grok', 'google'} and (channel_account_id is not None or budget_limit is not None):
-            raise ValueError('channel_budget_not_supported')
-        from .delivery import normalize, authorize
-        normalize(postprocess, route)
-        if route == "higgsfield":
-            return self.higgsfield.generate(project_id=project_id, idempotency_key=idempotency_key,
-                model=model, prompt=prompt, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
-                references=references, quality_profile=quality_profile, mode=mode, resolution=resolution,
-                price_ceiling=price_ceiling)
-        if route == "grok":
-            return self.grok.generate(project_id=project_id, idempotency_key=idempotency_key,
-                model=model, prompt=prompt, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
-                references=references, quality_profile=quality_profile, mode=mode, resolution=resolution,
-                channel_account_id=channel_account_id, budget_limit=budget_limit)
-        if route == "google":
-            return self.google.generate(project_id=project_id, idempotency_key=idempotency_key,
-                model=model, prompt=prompt, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
-                references=references, quality_profile=quality_profile, mode=mode, resolution=resolution,
-                channel_account_id=channel_account_id, budget_limit=budget_limit)
-        model = model or "minimax-h3-ref2va"
-        aspect_ratio = aspect_ratio or "16:9"
-        quality_profile = quality_profile or "du-0"
-        if route == "fal":
-            from .providers.fal import FAL_LIP_PUBLIC_MODEL
-            allowed_modes = {None, "lip_sync"} if model == FAL_LIP_PUBLIC_MODEL else {None, "reference_to_video"}
-            if mode not in allowed_modes or quality_profile != "du-0":
+        with self._lock:
+            project_id = require_project_id(project_id)
+            if not idempotency_key.strip() or len(idempotency_key) > 128:
+                raise ValueError("idempotency_key is invalid")
+            route = route or self.runtime_route
+            service = self._service_for_route(route)
+            from .singularity import check_audio_guidance, check_image_guidance
+            check_audio_guidance(audio_guidance, service)
+            check_image_guidance(image_guidance, service)
+            if route != "higgsfield" and price_ceiling is not None:
+                raise ValueError("price_ceiling_not_supported")
+            if route not in {'fal', 'grok', 'google'} and (channel_account_id is not None or budget_limit is not None):
+                raise ValueError('channel_budget_not_supported')
+            from .delivery import normalize, authorize
+            normalize(postprocess, route)
+            if route == "higgsfield":
+                with self.tasks.exclusive():
+                    return self.higgsfield.generate(project_id=project_id, idempotency_key=idempotency_key,
+                        model=model, prompt=prompt, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
+                        references=references, quality_profile=quality_profile, mode=mode, resolution=resolution,
+                        price_ceiling=price_ceiling)
+            if route == "grok":
+                with self.tasks.exclusive():
+                    return self.grok.generate(project_id=project_id, idempotency_key=idempotency_key,
+                        model=model, prompt=prompt, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
+                        references=references, quality_profile=quality_profile, mode=mode, resolution=resolution,
+                        channel_account_id=channel_account_id, budget_limit=budget_limit)
+            if route == "google":
+                with self.tasks.exclusive():
+                    return self.google.generate(project_id=project_id, idempotency_key=idempotency_key,
+                        model=model, prompt=prompt, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
+                        references=references, quality_profile=quality_profile, mode=mode, resolution=resolution,
+                        channel_account_id=channel_account_id, budget_limit=budget_limit)
+            model = model or "minimax-h3-ref2va"
+            aspect_ratio = aspect_ratio or "16:9"
+            if route == "fal":
+                resolved_qp = quality_profile or "du-0"
+                from .providers.fal import FAL_LIP_PUBLIC_MODEL
+                allowed_modes = {None, "lip_sync"} if model == FAL_LIP_PUBLIC_MODEL else {None, "reference_to_video"}
+                if mode not in allowed_modes or resolved_qp != "du-0":
+                    raise ValueError("unsupported_parameter")
+                with self.tasks.exclusive():
+                    return self.fal.generate(project_id=project_id, idempotency_key=idempotency_key,
+                                             model=model, prompt=prompt, duration_seconds=duration_seconds,
+                                             aspect_ratio=aspect_ratio, references=references,
+                                             channel_account_id=channel_account_id, budget_limit=budget_limit,
+                                             resolution=resolution)
+            allowed_modes = {None, "reference_to_video"} if service == "h3-singularity" else {None}
+            if mode not in allowed_modes or resolution is not None:
                 raise ValueError("unsupported_parameter")
-            return self.fal.generate(project_id=project_id, idempotency_key=idempotency_key,
-                                     model=model, prompt=prompt, duration_seconds=duration_seconds,
-                                     aspect_ratio=aspect_ratio, references=references,
-                                     channel_account_id=channel_account_id, budget_limit=budget_limit,
-                                     resolution=resolution)
-        allowed_modes = {None, "reference_to_video"} if self._service_for_route(route) == "h3-singularity" else {None}
-        if mode not in allowed_modes or resolution is not None:
-            raise ValueError("unsupported_parameter")
-        request, digest = self._normalize(project_id, model, prompt, duration_seconds, aspect_ratio,
-                                          references, route, quality_profile, audio_guidance, image_guidance)
-        request, digest = self.delivery.prepare(request, digest, postprocess, check=False)
-        service = self._service_for_route(route)
-        authority = authorize(self.client, project_id) if postprocess is not None else None
-        existing = self.tasks.find_idempotency(project_id, idempotency_key)
-        if existing:
-            if existing.input_digest != digest:
-                raise TaskConflict("idempotency key already exists with different input")
-            return existing
-        if postprocess is not None:
-            self.delivery.prepare(request, digest, postprocess)
-        runtime_url, runtime_headers, runtime_version, runtime_route = self.runtime(route)
-        conditions = []
-        material_tags = []
-        singular = {"images": "image", "videos": "video", "audios": "audio"}
-        tag_name = {"images": "Picture", "videos": "Video", "audios": "Audio"}
-        # Diffusers numbers video soundtracks as audio references too. Put explicit
-        # audio first so <Audio 1> continues to name the first audio Artifact.
-        kinds = ("images", "audios", "videos") if service == "h3-vdn" else ("images", "videos", "audios")
-        for kind in kinds:
-            for index, item in enumerate(request["references"][kind], start=1):
-                conditions.append({"type": singular[kind],
-                                   "uri": f"{self.runtime_artifact_url}/runtime-artifacts/{item['artifact_id']}/content",
-                                   "role": "reference"})
-                if service in {"h3-sol", "h3-vdn", "h3-singularity"}:
-                    asset = self.artifacts.get(item["artifact_id"], project_id)
-                    conditions[-1].update(sha256=asset.sha256, size=asset.size)
-                material_tags.append(f"<{tag_name[kind]} {index}> is the approved {item['purpose']} reference")
-        compiled_prompt = request["prompt"] if service == "h3-singularity" else "; ".join(material_tags) + ". " + request["prompt"]
-        payload = {"model": "MiniMaxAI/MiniMax-H3", "task": "ref2va", "prompt": compiled_prompt,
-                   "seconds": duration_seconds, "conditions": conditions,
-                   "target": {"short_edge": 768, "aspect_ratio": aspect_ratio, "duration_seconds": float(duration_seconds)},
-                   "num_outputs_per_prompt": 1, "num_inference_steps": 4 if service in {"h3-vdn", "h3-sol", "h3-singularity"} else 21, "flow_shift": 12.0,
-                   "audio_flow_shift": 3.0, "seed": 7,
-                   "quality_profile": quality_profile}
-        if "image_guidance" in request:
-            payload["image_guidance"] = request["image_guidance"]
-        if "audio_guidance" in request:
-            payload["audio_guidance"] = request["audio_guidance"]
-        # Persist the attempt before calling the runtime. An ambiguous network
-        # failure must not permit a duplicate GPU request under the same key.
-        reserved = self.tasks.create(project_id=project_id, idempotency_key=idempotency_key,
-                                     input_digest=digest, request=request, runtime_task_id="", status="queued",
-                                     authority=authority, runtime_endpoint=runtime_url,
-                                     runtime_version=runtime_version, runtime_route=runtime_route)
-        reserved = self.tasks.update(reserved, service=service, runtime_version=runtime_version, runtime_route=runtime_route,
-                                     runtime_endpoint=runtime_url, authority=authority,
-                                     delivery=self.delivery.initial(reserved) if postprocess is not None else None)
-        if service in {"h3-vdn", "h3-singularity"}:
+
+            self._begin_reservation()
             try:
-                health = self.client.get(f"{runtime_url}/health", headers=runtime_headers, timeout=10)
-                if health.status_code == 503:
-                    return self.tasks.update(reserved, status="failed", error={
-                        "code": "runtime_not_ready", "message": "H3 runtime is not ready; generation was not submitted"})
-                health.raise_for_status()
-                health_data = health.json()
-                if not isinstance(health_data, dict) or not isinstance(health_data.get("ready"), bool):
-                    raise ValueError("Invalid readiness response")
-                if image_guidance == "first_frame":
-                    from .singularity import runtime_supports_first_frame
-                    if not runtime_supports_first_frame(health_data):
-                        return self.tasks.update(reserved, status="failed", error={"code": "first_frame_not_supported",
-                            "message": "Selected runtime does not support first-frame guidance; generation was not submitted"})
-                if audio_guidance == "timeline":
-                    from .singularity import runtime_supports_timeline
-                    if not runtime_supports_timeline(health_data):
-                        return self.tasks.update(reserved, status="failed", error={"code": "timeline_audio_not_supported",
-                            "message": "Selected runtime does not support timeline audio; generation was not submitted"})
-                if not health_data["ready"]:
-                    return self.tasks.update(reserved, status="failed", error={
-                        "code": "runtime_not_ready", "message": "H3 runtime is not ready; generation was not submitted"})
-            except (httpx.ConnectError, httpx.ConnectTimeout):
-                return self.tasks.update(reserved, status="failed", error={
-                    "code": "runtime_unavailable", "message": "H3 runtime is unreachable; generation was not submitted"})
-            except (httpx.HTTPError, ValueError):
-                return self.tasks.update(reserved, status="failed", error={
-                    "code": "runtime_health_check_failed", "message": "H3 readiness check failed; generation was not submitted"})
+                with self.tasks.exclusive():
+                    existing = self.tasks.find_idempotency(project_id, idempotency_key)
+                    if quality_profile is None:
+                        if existing is not None and isinstance(existing.request.get("quality_profile"), str):
+                            resolved_qp = existing.request["quality_profile"]
+                        elif service == "h3-singularity":
+                            resolved_qp = default_singularity_quality_profile()
+                        else:
+                            resolved_qp = "du-0"
+                    else:
+                        resolved_qp = quality_profile
+
+                    request, digest = self._normalize(
+                        project_id, model, prompt, duration_seconds, aspect_ratio,
+                        references, route, resolved_qp, audio_guidance, image_guidance,
+                    )
+                    request, digest = self.delivery.prepare(request, digest, postprocess, check=False)
+                    authority = authorize(self.client, project_id) if postprocess is not None else None
+                    if existing:
+                        if existing.input_digest != digest:
+                            raise TaskConflict("idempotency key already exists with different input")
+                        return existing
+                    if postprocess is not None:
+                        self.delivery.prepare(request, digest, postprocess)
+                    runtime_url, runtime_headers, runtime_version, runtime_route = self.runtime(route)
+                    conditions = []
+                    material_tags = []
+                    singular = {"images": "image", "videos": "video", "audios": "audio"}
+                    tag_name = {"images": "Picture", "videos": "Video", "audios": "Audio"}
+                    # Diffusers numbers video soundtracks as audio references too. Put explicit
+                    # audio first so <Audio 1> continues to name the first audio Artifact.
+                    kinds = ("images", "audios", "videos") if service == "h3-vdn" else ("images", "videos", "audios")
+                    for kind in kinds:
+                        for index, item in enumerate(request["references"][kind], start=1):
+                            conditions.append({"type": singular[kind],
+                                               "uri": f"{self.runtime_artifact_url}/runtime-artifacts/{item['artifact_id']}/content",
+                                               "role": "reference"})
+                            if service in {"h3-sol", "h3-vdn", "h3-singularity"}:
+                                asset = self.artifacts.get(item["artifact_id"], project_id)
+                                conditions[-1].update(sha256=asset.sha256, size=asset.size)
+                            material_tags.append(f"<{tag_name[kind]} {index}> is the approved {item['purpose']} reference")
+                    compiled_prompt = request["prompt"] if service == "h3-singularity" else "; ".join(material_tags) + ". " + request["prompt"]
+                    steps = (
+                        SINGULARITY_PROFILE_NFE[resolved_qp]
+                        if service == "h3-singularity"
+                        else (4 if service in {"h3-vdn", "h3-sol"} else 21)
+                    )
+                    payload = {"model": "MiniMaxAI/MiniMax-H3", "task": "ref2va", "prompt": compiled_prompt,
+                               "seconds": duration_seconds, "conditions": conditions,
+                               "target": {"short_edge": 768, "aspect_ratio": aspect_ratio, "duration_seconds": float(duration_seconds)},
+                               "num_outputs_per_prompt": 1, "num_inference_steps": steps, "flow_shift": 12.0,
+                               "audio_flow_shift": 3.0, "seed": 7,
+                               "quality_profile": resolved_qp}
+                    if "image_guidance" in request:
+                        payload["image_guidance"] = request["image_guidance"]
+                    if "audio_guidance" in request:
+                        payload["audio_guidance"] = request["audio_guidance"]
+                    # Persist the attempt before calling the runtime. An ambiguous network
+                    # failure must not permit a duplicate GPU request under the same key.
+                    reserved = self.tasks.create(project_id=project_id, idempotency_key=idempotency_key,
+                                                 input_digest=digest, request=request, runtime_task_id="", status="queued",
+                                                 authority=authority, runtime_endpoint=runtime_url,
+                                                 runtime_version=runtime_version, runtime_route=runtime_route)
+                    reserved = self.tasks.update(reserved, service=service, runtime_version=runtime_version, runtime_route=runtime_route,
+                                                 runtime_endpoint=runtime_url, authority=authority,
+                                                 delivery=self.delivery.initial(reserved) if postprocess is not None else None)
+                    with self._state_guard:
+                        self._submitting_tasks.add(reserved.video_task_id)
+            finally:
+                self._end_reservation()
+
         if service == "h3-vdn":
             payload["project_id"] = project_id
         if service in {"h3-sol", "h3-vdn", "h3-singularity"}:
             payload["idempotency_key"] = reserved.video_task_id
+        return self._dispatch_local_generation(reserved, payload=payload, already_marked_submitting=True)
+
+    def _build_local_generation_payload(self, record: TaskRecord) -> dict[str, object]:
+        service = record.service
+        project_id = record.project_id
+        request = record.request
+        resolved_qp = request["quality_profile"]
+        duration_seconds = request["duration_seconds"]
+        aspect_ratio = request["aspect_ratio"]
+        conditions = []
+        material_tags = []
+        singular = {"images": "image", "videos": "video", "audios": "audio"}
+        tag_name = {"images": "Picture", "videos": "Video", "audios": "Audio"}
+        kinds = ("images", "audios", "videos") if service == "h3-vdn" else ("images", "videos", "audios")
+        for kind in kinds:
+            for index, item in enumerate(request["references"][kind], start=1):
+                conditions.append({
+                    "type": singular[kind],
+                    "uri": f"{self.runtime_artifact_url}/runtime-artifacts/{item['artifact_id']}/content",
+                    "role": "reference",
+                })
+                if service in {"h3-sol", "h3-vdn", "h3-singularity"}:
+                    asset = self.artifacts.get(item["artifact_id"], project_id)
+                    conditions[-1].update(sha256=asset.sha256, size=asset.size)
+                material_tags.append(f"<{tag_name[kind]} {index}> is the approved {item['purpose']} reference")
+        compiled_prompt = (
+            request["prompt"]
+            if service == "h3-singularity"
+            else "; ".join(material_tags) + ". " + request["prompt"]
+        )
+        steps = (
+            SINGULARITY_PROFILE_NFE[resolved_qp]
+            if service == "h3-singularity"
+            else (4 if service in {"h3-vdn", "h3-sol"} else 21)
+        )
+        payload: dict[str, object] = {
+            "model": "MiniMaxAI/MiniMax-H3",
+            "task": "ref2va",
+            "prompt": compiled_prompt,
+            "seconds": duration_seconds,
+            "conditions": conditions,
+            "target": {
+                "short_edge": 768,
+                "aspect_ratio": aspect_ratio,
+                "duration_seconds": float(duration_seconds),
+            },
+            "num_outputs_per_prompt": 1,
+            "num_inference_steps": steps,
+            "flow_shift": 12.0,
+            "audio_flow_shift": 3.0,
+            "seed": 7,
+            "quality_profile": resolved_qp,
+        }
+        if "image_guidance" in request:
+            payload["image_guidance"] = request["image_guidance"]
+        if "audio_guidance" in request:
+            payload["audio_guidance"] = request["audio_guidance"]
+        if service == "h3-vdn":
+            payload["project_id"] = project_id
+        if service in {"h3-sol", "h3-vdn", "h3-singularity"}:
+            payload["idempotency_key"] = record.video_task_id
+        return payload
+
+    def _dispatch_local_generation(
+        self,
+        record: TaskRecord,
+        *,
+        payload: dict[str, object] | None = None,
+        already_marked_submitting: bool = False,
+    ) -> TaskRecord:
+        if not already_marked_submitting:
+            with self._state_guard:
+                self._submitting_tasks.add(record.video_task_id)
+
+        service = record.service
+        route = self._record_route(record)
+        runtime_url, runtime_headers, _, _ = self.runtime(route)
+        runtime_url = record.runtime_endpoint or runtime_url
+        image_guidance = record.request.get("image_guidance")
+        audio_guidance = record.request.get("audio_guidance")
+
+        def _fail_pre_submit(code: str, message: str, *, retryable: bool = False) -> TaskRecord:
+            err: dict[str, object] = {"code": code, "message": message}
+            if retryable:
+                err["retryable"] = True
+            cleaned_pstate = {
+                k: v
+                for k, v in (record.provider_state or {}).items()
+                if k not in {"waiting_reason", "gpu_dispatched"}
+            }
+            cleaned_pstate["worker_settled"] = True
+            updates: dict[str, object] = {
+                "status": "failed",
+                "error": err,
+                "provider_state": cleaned_pstate,
+            }
+            if record.delivery is not None:
+                updates["delivery"] = {
+                    **record.delivery,
+                    "status": "failed",
+                    "stage": "generation",
+                    "error": err,
+                    "completed_at": datetime.now(UTC).isoformat(),
+                }
+            return self.tasks.update(record, **updates)
+
         acquired = False
-        if self.gpu.enabled and service in LOCAL_H3_SERVICES:
-            try:
-                self.gpu.acquire_for_queue()
-            except LeaseBusy as error:
-                raise ExecutionError("waiting_gpu_lease") from error
-            acquired = True
         try:
-            response = self.client.post(f"{runtime_url}/v1/videos", json=payload, headers=runtime_headers)
-            response.raise_for_status()
-            runtime_task_id = response.json()["id"]
-            if not isinstance(runtime_task_id, str) or not runtime_task_id.strip():
-                raise ValueError("Invalid runtime task id")
-            return self.tasks.update(reserved, runtime_task_id=runtime_task_id,
-                                     dispatched_at=datetime.now(UTC).isoformat())
-        except (httpx.ConnectError, httpx.ConnectTimeout):
-            return self.tasks.update(reserved, status="failed", error={
-                "code": "runtime_unavailable", "message": "H3 runtime is unreachable; generation was not submitted"})
-        except httpx.HTTPStatusError as error:
-            if 400 <= error.response.status_code < 500:
-                return self.tasks.update(reserved, status="failed", error={"code": "runtime_rejected",
-                    "message": f"Runtime rejected submission (HTTP {error.response.status_code})"})
-            return self.tasks.update(reserved, status="queued" if service == "h3-singularity" else "failed",
-                error={"code": "submission_unconfirmed", "message": "Runtime submission could not be confirmed; do not resubmit automatically"})
-        except (httpx.HTTPError, KeyError, ValueError, TypeError):
-            return self.tasks.update(reserved, status="queued" if service == "h3-singularity" else "failed", error={"code": "submission_unconfirmed",
-                              "message": "Runtime submission could not be confirmed; do not resubmit automatically"})
+            if service in LOCAL_H3_SERVICES and (self.gpu.enabled or self.stage_slot.enabled):
+                try:
+                    acquired = self.acquire_local_gpu(record.video_task_id, service, record=record)
+                except LeaseBusy:
+                    return _fail_pre_submit("gpu_busy", MESSAGES["gpu_busy"], retryable=True)
+                if not acquired:
+                    return self.defer_local_gpu_queue(record)
+
+            if service in {"h3-vdn", "h3-singularity"}:
+                try:
+                    health = self.client.get(f"{runtime_url}/health", headers=runtime_headers, timeout=10)
+                    if health.status_code == 503:
+                        return _fail_pre_submit(
+                            "runtime_not_ready",
+                            "H3 runtime is not ready; generation was not submitted",
+                            retryable=True,
+                        )
+                    health.raise_for_status()
+                    health_data = health.json()
+                    if not isinstance(health_data, dict) or not isinstance(health_data.get("ready"), bool):
+                        raise ValueError("Invalid readiness response")
+                    if image_guidance == "first_frame":
+                        from .singularity import runtime_supports_first_frame
+                        if not runtime_supports_first_frame(health_data):
+                            return _fail_pre_submit(
+                                "first_frame_not_supported",
+                                "Selected runtime does not support first-frame guidance; generation was not submitted",
+                            )
+                    if audio_guidance == "timeline":
+                        from .singularity import runtime_supports_timeline
+                        if not runtime_supports_timeline(health_data):
+                            return _fail_pre_submit(
+                                "timeline_audio_not_supported",
+                                "Selected runtime does not support timeline audio; generation was not submitted",
+                            )
+                    if not health_data["ready"]:
+                        return _fail_pre_submit(
+                            "runtime_not_ready",
+                            "H3 runtime is not ready; generation was not submitted",
+                            retryable=True,
+                        )
+                except (httpx.ConnectError, httpx.ConnectTimeout):
+                    return _fail_pre_submit(
+                        "runtime_unavailable",
+                        "H3 runtime is unreachable; generation was not submitted",
+                    )
+                except (httpx.HTTPError, ValueError):
+                    return _fail_pre_submit(
+                        "runtime_health_check_failed",
+                        "H3 readiness check failed; generation was not submitted",
+                    )
+
+            if payload is None:
+                payload = self._build_local_generation_payload(record)
+
+            dispatched_pstate = {
+                k: v for k, v in (record.provider_state or {}).items() if k != "waiting_reason"
+            }
+            dispatched_pstate["gpu_dispatched"] = True
+            record = self.tasks.update(record, provider_state=dispatched_pstate)
+
+            try:
+                response = self.client.post(f"{runtime_url}/v1/videos", json=payload, headers=runtime_headers)
+                response.raise_for_status()
+                runtime_task_id = response.json()["id"]
+                if not isinstance(runtime_task_id, str) or not runtime_task_id.strip():
+                    raise ValueError("Invalid runtime task id")
+                return self.tasks.update(
+                    record,
+                    runtime_task_id=runtime_task_id,
+                    status="queued",
+                    error=None,
+                    dispatched_at=datetime.now(UTC).isoformat(),
+                )
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                return _fail_pre_submit(
+                    "runtime_unavailable",
+                    "H3 runtime is unreachable; generation was not submitted",
+                )
+            except httpx.HTTPStatusError as error:
+                if 400 <= error.response.status_code < 500:
+                    return _fail_pre_submit(
+                        "runtime_rejected",
+                        f"Runtime rejected submission (HTTP {error.response.status_code})",
+                    )
+                return self.tasks.update(
+                    record,
+                    status="queued" if service == "h3-singularity" else "failed",
+                    error={
+                        "code": "submission_unconfirmed",
+                        "message": "Runtime submission could not be confirmed; do not resubmit automatically",
+                    },
+                )
+            except (httpx.HTTPError, KeyError, ValueError, TypeError):
+                return self.tasks.update(
+                    record,
+                    status="queued" if service == "h3-singularity" else "failed",
+                    error={
+                        "code": "submission_unconfirmed",
+                        "message": "Runtime submission could not be confirmed; do not resubmit automatically",
+                    },
+                )
         finally:
+            with self._state_guard:
+                self._submitting_tasks.discard(record.video_task_id)
             if acquired:
                 # A failed HTTP observation is not evidence of stopped GPU
                 # work. Reconcile the durable task set, including unknowns.
-                try:
-                    self.reconcile_gpu()
-                except Exception:
-                    # Keep the persisted receipt and original result/error.
-                    logging.getLogger(__name__).warning("GPU lease reconciliation deferred after dispatch")
+                self.release_or_reconcile_local_gpu(record.video_task_id)
 
     def reconcile_gpu(self) -> None:
         if not self.gpu.enabled:
             return
-        # generate() owns this lock through reservation, admission, dispatch
-        # and receipt persistence. A background scan must not release midway.
+        with self._state_guard:
+            in_flight = self._reserving_count > 0 or bool(self._submitting_tasks)
+        if in_flight:
+            self.gpu.renew_existing()
+            return
         if not self._lock.acquire(blocking=False):
             self.gpu.renew_existing()
             return
@@ -682,11 +1038,14 @@ class VideoExecutor:
                 self.gpu.release()
         finally:
             self._lock.release()
+        self.dispatch_queued_local_tasks()
 
     def _local_h3_active(self) -> bool:
         root = getattr(self.tasks, "root", None)
         if root is None or not root.is_dir():
             raise ExecutionError("GPU task reconciliation storage is unavailable")
+        saw_interpolate = False
+        unsettled_records: list[TaskRecord] = []
         # scandir propagates unreadable-directory errors; glob can silently
         # produce an empty collection and incorrectly imply an idle backend.
         with os.scandir(root) as entries:
@@ -694,13 +1053,150 @@ class VideoExecutor:
                 if not entry.name.startswith("video_task_") or not entry.name.endswith(".json"):
                     continue
                 record = TaskRecord.model_validate_json(Path(entry.path).read_text(encoding="utf-8"))
-                if record.service in LOCAL_H3_SERVICES and (
+                if (record.provider_state or {}).get("gpu_dispatched") is False and not record.runtime_task_id:
+                    continue
+                if record.service == "interpolate":
+                    saw_interpolate = True
+                if record.service in LOCAL_GPU_SERVICES and (
                     record.status not in TERMINAL_TASK_STATUS or
                     (record.status == "failed" and (record.error or {}).get("code") in
                      {"submission_unconfirmed", "runtime_task_lost"})
                 ):
                     return True
+                if (record.delivery or {}).get("status") in {"queued", "running"} and (
+                    record.service in LOCAL_GPU_SERVICES or record.request.get("route") == "h3-singularity"
+                ):
+                    return True
+                if record.service in LOCAL_GPU_SERVICES and (record.provider_state or {}).get("worker_settled") is False:
+                    unsettled_records.append(record)
+
+        for record in unsettled_records:
+            try:
+                if record.service in self.processing:
+                    self.processing[record.service].status(record.video_task_id)
+                else:
+                    self.status(record.video_task_id)
+            except Exception:
+                return True
+            refreshed = self.tasks.get(record.video_task_id)
+            if (refreshed.provider_state or {}).get("worker_settled") is False:
+                return True
+
+        health_targets: list[tuple[str, dict[str, str]]] = []
+        try:
+            s_url, s_headers, _, _ = self.runtime("h3-singularity")
+            health_targets.append((f"{s_url}/health", s_headers))
+        except ExecutionError:
+            pass
+        if (
+            saw_interpolate
+            or "VIDEO_INTERPOLATION_RUNTIME_URL" in os.environ
+            or "VIDEO_PROJECT_SERVICE_URL" in os.environ
+        ):
+            health_targets.append((f"{self.processing['interpolate'].url}/health", {}))
+
+        for h_url, h_headers in health_targets:
+            try:
+                resp = self.client.get(h_url, headers=h_headers, timeout=5)
+                if resp.status_code == 200:
+                    body = resp.json()
+                    if isinstance(body, dict) and body.get("gpu_worker_active") is True:
+                        return True
+            except Exception:
+                continue
         return False
+
+    def cancel_generation(self, record: TaskRecord, *, timeout_error: dict[str, object] | None = None) -> TaskRecord:
+        record = self.tasks.get(record.video_task_id)
+        prev_state = dict(record.provider_state or {})
+        now_epoch = time.time()
+        attempts = int(prev_state.get("_cancel_attempts", 0)) + 1
+        worker_settled = bool(prev_state.get("worker_settled", False))
+        cancel_delivered = bool(prev_state.get("cancel_delivered", False))
+        started_at = prev_state.get("started_at")
+        finished_at = prev_state.get("finished_at")
+        force_backoff = False
+
+        if prev_state.get("gpu_dispatched") is False or not record.runtime_task_id:
+            worker_settled = True
+            cancel_delivered = True
+        else:
+            runtime_url, runtime_headers, _, _ = self.runtime(self._record_route(record))
+            runtime_url = record.runtime_endpoint or runtime_url
+            try:
+                resp = self.client.delete(
+                    f"{runtime_url}/v1/videos/{record.runtime_task_id}",
+                    headers=runtime_headers,
+                    timeout=15,
+                )
+                if resp.status_code == 200:
+                    body = resp.json()
+                    worker_settled = bool(body.get("worker_settled", False))
+                    started_at = body.get("started_at", started_at)
+                    finished_at = body.get("finished_at", finished_at)
+                    if (
+                        worker_settled
+                        or body.get("cancel_requested") is True
+                        or body.get("status") in {"cancelled", "canceled", "failed", "succeeded", "completed"}
+                    ):
+                        cancel_delivered = True
+                    else:
+                        force_backoff = True
+                elif resp.status_code == 409:
+                    cancel_delivered = True
+                    poll = self.client.get(
+                        f"{runtime_url}/v1/videos/{record.runtime_task_id}",
+                        headers=runtime_headers,
+                        timeout=10,
+                    )
+                    if poll.status_code == 200:
+                        body = poll.json()
+                        worker_settled = bool(body.get("worker_settled", True))
+                        started_at = body.get("started_at", started_at)
+                        finished_at = body.get("finished_at", finished_at)
+                elif resp.status_code == 404:
+                    worker_settled = True
+                    cancel_delivered = True
+                else:
+                    worker_settled = False
+            except (httpx.HTTPError, ValueError, TypeError):
+                worker_settled = False
+
+        next_retry_at = (
+            0.0
+            if cancel_delivered
+            else _next_cancel_backoff_epoch(max(attempts, 2) if force_backoff else attempts, now_epoch)
+        )
+        provider_state = {
+            **prev_state,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "worker_settled": worker_settled,
+            "cancel_delivered": cancel_delivered,
+            "_cancel_requested": True,
+            "_cancel_attempts": attempts,
+            "_next_cancel_retry_at": next_retry_at,
+        }
+        provider_state.pop("waiting_reason", None)
+        if prev_state.get("gpu_dispatched") is False:
+            provider_state.pop("gpu_dispatched", None)
+        if timeout_error is not None and not worker_settled:
+            provider_state["_pending_timeout_error"] = timeout_error
+            target_status = "running"
+            target_error = None
+        else:
+            provider_state.pop("_pending_timeout_error", None)
+            target_status = "failed" if timeout_error is not None else "cancelled"
+            target_error = timeout_error or {"code": "cancelled", "message": "Video generation was cancelled"}
+        updated = self.tasks.update(
+            record,
+            status=target_status,
+            error=target_error,
+            provider_state=provider_state,
+        )
+        if worker_settled:
+            self.stage_slot.release(updated.video_task_id)
+        return updated
 
     @task_serialized
     def status(self, video_task_id: str) -> TaskRecord:
@@ -711,6 +1207,39 @@ class VideoExecutor:
             return self.grok.status(record)
         if record.service == "google":
             return self.google.status(record)
+        if record.service == "fal":
+            from .providers.fal import FalError
+            try:
+                return self.fal.status(record)
+            except FalError as error:
+                raise ExecutionError(str(error)) from error
+        if record.service in self.processing:
+            return self.processing[record.service].status(video_task_id)
+        if record.service == "depth":
+            return self.depth.status(video_task_id)
+
+        if (
+            record.service in LOCAL_H3_SERVICES
+            and record.status == "queued"
+            and (record.provider_state or {}).get("gpu_dispatched") is False
+        ):
+            return self._dispatch_local_generation(record)
+
+        pstate_init = record.provider_state or {}
+        if (
+            record.service in LOCAL_H3_SERVICES
+            and record.runtime_task_id
+            and pstate_init.get("worker_settled") is False
+            and (pstate_init.get("_pending_timeout_error") is not None or pstate_init.get("_cancel_requested") is True)
+            and pstate_init.get("cancel_delivered") is not True
+            and _cancel_backoff_ready(pstate_init, time.time())
+        ):
+            record = self.cancel_generation(record, timeout_error=pstate_init.get("_pending_timeout_error"))
+            if record.status in {"succeeded", "failed", "cancelled"} and (record.provider_state or {}).get("worker_settled") is not False:
+                return record
+            if (record.provider_state or {}).get("cancel_delivered") is not True:
+                return record
+
         if (record.service == "h3-singularity" and not record.runtime_task_id
             and (record.status in {"queued", "running"} or (record.error or {}).get("code") == "submission_unconfirmed")):
             url, headers, _, _ = self.runtime(self._record_route(record))
@@ -725,23 +1254,7 @@ class VideoExecutor:
                         from .delivery import authorize
                         authorize(self.client, record.project_id, record.authority)
                         req = record.request
-                        conditions = []
-                        for kind, singular in (('images', 'image'), ('videos', 'video'), ('audios', 'audio')):
-                            for ref in req['references'][kind]:
-                                asset = self.artifacts.get(ref['artifact_id'], record.project_id)
-                                conditions.append({'type': singular, 'role': 'reference', 'size': asset.size,
-                                    'sha256': asset.sha256,
-                                    'uri': f'{self.runtime_artifact_url}/runtime-artifacts/{asset.artifact_id}/content'})
-                        payload = {'idempotency_key': record.video_task_id, 'model': 'MiniMaxAI/MiniMax-H3',
-                            'task': 'ref2va', 'prompt': req['prompt'], 'seconds': req['duration_seconds'],
-                            'conditions': conditions, 'target': {'short_edge': 768, 'aspect_ratio': req['aspect_ratio'],
-                                'duration_seconds': float(req['duration_seconds'])},
-                            'num_outputs_per_prompt': 1, 'num_inference_steps': 4, 'flow_shift': 12.0,
-                            'audio_flow_shift': 3.0, 'seed': 7, 'quality_profile': req['quality_profile']}
-                        if 'image_guidance' in req:
-                            payload['image_guidance'] = req['image_guidance']
-                        if 'audio_guidance' in req:
-                            payload['audio_guidance'] = req['audio_guidance']
+                        payload = self._build_local_generation_payload(record)
                         if req.get('image_guidance') == 'first_frame':
                             from .singularity import runtime_supports_first_frame
                             health = self.client.get(f'{url}/health', headers=headers, timeout=10)
@@ -749,7 +1262,23 @@ class VideoExecutor:
                             data = health.json()
                             if not runtime_supports_first_frame(data) or data.get('ready') is not True:
                                 raise ValueError('first_frame_not_supported_or_not_ready')
-                        response = self.client.post(f'{url}/v1/videos', headers=headers, json=payload, timeout=30)
+                        acquired = False
+                        try:
+                            acquired = self.acquire_local_gpu(record.video_task_id, record.service, record=record)
+                        except LeaseBusy:
+                            return self.tasks.update(
+                                record,
+                                status="failed",
+                                provider_state={**(record.provider_state or {}), "worker_settled": True},
+                                error={"code": "gpu_busy", "message": MESSAGES["gpu_busy"], "retryable": True},
+                            )
+                        if not acquired:
+                            return self.defer_local_gpu_queue(record)
+                        try:
+                            response = self.client.post(f'{url}/v1/videos', headers=headers, json=payload, timeout=30)
+                        finally:
+                            if acquired:
+                                self.release_or_reconcile_local_gpu(record.video_task_id)
                     else:
                     # A delayed submission can still arrive; absence is not
                     # permission to change keys or dispatch another GPU job.
@@ -761,7 +1290,13 @@ class VideoExecutor:
                     raise ValueError("invalid recovered identity")
             except (httpx.HTTPError, ValueError, AttributeError) as error:
                 raise ExecutionError("Singularity submission remains unconfirmed; retain the original task and key") from error
-            record = self.tasks.update(record, runtime_task_id=identity, status="queued", error=None)
+            record = self.tasks.update(
+                record,
+                runtime_task_id=identity,
+                status="queued",
+                error=None,
+                dispatched_at=record.dispatched_at or datetime.now(UTC).isoformat(),
+            )
         if record.service == "fal":
             from .providers.fal import FalError
             try:
@@ -773,6 +1308,29 @@ class VideoExecutor:
         if record.service == "depth":
             return self.depth.status(video_task_id)
         if record.status in {"succeeded", "failed", "cancelled"}:
+            if record.service == "h3-singularity" and record.runtime_task_id and (record.provider_state or {}).get("worker_settled") is False:
+                runtime_url, runtime_headers, _, _ = self.runtime(self._record_route(record))
+                runtime_url = record.runtime_endpoint or runtime_url
+                try:
+                    poll = self.client.get(f"{runtime_url}/v1/videos/{record.runtime_task_id}", timeout=10, headers=runtime_headers)
+                    if poll.status_code == 200:
+                        body = poll.json()
+                        pstate = {
+                            **(record.provider_state or {}),
+                            "worker_settled": bool(body.get("worker_settled", False)),
+                        }
+                        for key in ("started_at", "finished_at"):
+                            if key in body:
+                                pstate[key] = body[key]
+                        record = self.tasks.update(record, provider_state=pstate)
+                        if pstate.get("worker_settled") is True:
+                            self.stage_slot.release(record.video_task_id)
+                    elif poll.status_code == 404:
+                        pstate = {**(record.provider_state or {}), "worker_settled": True}
+                        record = self.tasks.update(record, provider_state=pstate)
+                        self.stage_slot.release(record.video_task_id)
+                except (httpx.HTTPError, ValueError, TypeError):
+                    pass
             return record
         runtime_url, runtime_headers, _, _ = self.runtime(self._record_route(record))
         runtime_url = record.runtime_endpoint or runtime_url
@@ -792,7 +1350,18 @@ class VideoExecutor:
                   "failed": "failed", "failure": "failed", "cancelled": "cancelled"}.get(runtime_status)
         if mapped is None:
             raise ExecutionError("H3 runtime returned an unknown status")
-        error = {"code": "runtime_failed", "message": "H3 generation failed"} if mapped == "failed" else None
+        error = None
+        if mapped == "failed":
+            rt_code = (runtime_data.get("error") or {}).get("code") if isinstance(runtime_data.get("error"), dict) else None
+            if rt_code in {"gpu_memory_occupancy_changed", "interrupted", "runtime_not_ready"}:
+                error = {"code": rt_code, "message": MESSAGES.get(rt_code, "H3 generation failed")}
+            else:
+                error = {"code": "runtime_failed", "message": "H3 generation failed"}
+        elif mapped == "cancelled":
+            if record.error and str(record.error.get("code", "")).startswith(("stage_timeout_", "chain_active_timeout")):
+                error = record.error
+            else:
+                error = {"code": "cancelled", "message": "H3 generation was cancelled"}
         identity = runtime_data.get("execution_instance_id")
         if identity is not None:
             try:
@@ -805,8 +1374,51 @@ class VideoExecutor:
         metrics = runtime_data.get("runtime_metrics") or ({"runtime_total_seconds": runtime_data["result"]["generate_seconds"]} if isinstance(runtime_data.get("result"), dict) and isinstance(runtime_data["result"].get("generate_seconds"), (int, float)) else {})
         if record.service == "h3-singularity" and isinstance(runtime_data.get("result"), dict):
             metrics = {**metrics, "result_sha256": runtime_data["result"].get("content_sha256")}
-        return self.tasks.update(record, status=mapped, error=error, execution_instance_id=identity,
-                                 runtime_stage=stage, runtime_metrics=metrics or None)
+        provider_state = dict(record.provider_state or {})
+        for key in ("started_at", "finished_at", "worker_settled"):
+            if key in runtime_data:
+                provider_state[key] = runtime_data[key]
+        if mapped in {"succeeded", "failed", "cancelled"} and "worker_settled" not in runtime_data:
+            provider_state.setdefault("worker_settled", True)
+        pending_timeout = provider_state.get("_pending_timeout_error")
+        if pending_timeout is not None:
+            if provider_state.get("worker_settled") is True:
+                provider_state.pop("_pending_timeout_error", None)
+                mapped = "failed"
+                error = pending_timeout
+            else:
+                mapped = "running"
+                error = None
+        updated = self.tasks.update(
+            record,
+            status=mapped,
+            error=error,
+            execution_instance_id=identity,
+            runtime_stage=stage,
+            runtime_metrics=metrics or None,
+            provider_state=provider_state or None,
+        )
+        if self.stage_slot.is_task_settled(updated):
+            self.stage_slot.release(updated.video_task_id)
+        if (
+            updated.service == "h3-singularity"
+            and updated.status == "running"
+            and not updated.request.get("postprocess")
+            and (updated.provider_state or {}).get("_pending_timeout_error") is None
+        ):
+            from .delivery import P1_STAGE_TIMEOUT_SECONDS, _to_epoch
+            import time as _time
+            started_epoch = _to_epoch((updated.provider_state or {}).get("started_at"))
+            if started_epoch is not None and (_time.time() - started_epoch) > P1_STAGE_TIMEOUT_SECONDS:
+                return self.cancel_generation(
+                    updated,
+                    timeout_error={
+                        "code": "stage_timeout_generation",
+                        "message": MESSAGES["stage_timeout_generation"],
+                        "retryable": False,
+                    },
+                )
+        return updated
 
     @task_serialized
     def result(self, video_task_id: str) -> TaskRecord:

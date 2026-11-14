@@ -278,6 +278,16 @@ async function refreshTaskDetail(id, version) {
     runtime[1] = elapsed(task);
     rows.push(["渠道确认完成", date(task.timing?.generation_completed_at)], ["计时说明", generationTimeHint]);
   }
+  if (task.quality_profile) rows.push(["质量档位", task.quality_profile]);
+  const gridMode = task.grid_mode || task.delivery?.grid_mode;
+  if (gridMode) rows.push(["2K 网格档位", gridMode]);
+  if (task.delivery) {
+    rows.push(["交付阶段", `${task.delivery.stage || "—"} / ${task.delivery.status || "—"}`]);
+    if (task.delivery.source_artifact_id) rows.push(["M1 原片产物 ID", task.delivery.source_artifact_id]);
+    if (task.delivery.regenerate_2k_artifact_id) rows.push(["M2 2K 24FPS 产物 ID", task.delivery.regenerate_2k_artifact_id]);
+    const hasInterpolate = Array.isArray(task.delivery.profiles) ? task.delivery.profiles.includes("rife_2x") : task.delivery.profile === "rife_2x";
+    if (hasInterpolate && task.delivery.final_artifact_id) rows.push([task.delivery.regenerate_2k_artifact_id ? "M3 2K 48FPS 产物 ID" : "48FPS 插帧产物 ID", task.delivery.final_artifact_id]);
+  }
   if (task.runtime_stage) rows.push(["任务阶段", task.runtime_stage === "submission_unknown" ? "提交待确认，请勿重复生成" : task.service === "higgsfield" && task.runtime_stage === "collecting" ? "视频已生成" : task.runtime_stage]);
   if (task.error) rows.push(["异常信息", typeof task.error === "string" ? task.error : JSON.stringify(task.error)]);
   $("taskParameters").innerHTML = rows.map(([label,value]) => `<dt>${escapeHTML(label)}</dt><dd>${escapeHTML(value ?? "—")}</dd>`).join("");

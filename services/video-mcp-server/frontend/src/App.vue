@@ -51,9 +51,9 @@ const thumbInFlight = new Set<string>()
 let scrollObserver: IntersectionObserver | null = null
 
 const labels: Record<string, string> = { queued: '排队中', running: '渲染中', succeeded: '已完成', failed: '失败', cancelled: '已取消' }
-const generation = new Set(['h3', 'h3-sol', 'h3-vdn', 'h3-singularity', 'fal', 'grok', 'google', 'higgsfield'])
-const operations: Record<string, string> = { h3: '视频生成', 'h3-sol': '视频生成', 'h3-vdn': '视频生成', fal: '视频生成', 'h3-latent-upscale': 'H3 潜空间处理', sr: '视频超分', interpolate: '视频补帧', depth: '深度视频' }
-const services: Record<string, string> = { 'h3-latent-upscale': 'H3 Latent Upscaler', sr: 'Video Super Resolution', interpolate: 'Frame Interpolation', depth: 'Depth Anything' }
+const generation = new Set(['h3', 'h3-sol', 'h3-vdn', 'h3-singularity', 'regenerate_2k', 'fal', 'grok', 'google', 'higgsfield'])
+const operations: Record<string, string> = { h3: '视频生成', 'h3-sol': '视频生成', 'h3-vdn': '视频生成', 'h3-singularity': '视频生成', regenerate_2k: '2K 潜空间重生成', fal: '视频生成', 'h3-latent-upscale': 'H3 潜空间处理', sr: '视频超分', interpolate: '视频补帧', depth: '深度视频' }
+const services: Record<string, string> = { 'h3-latent-upscale': 'H3 Latent Upscaler', regenerate_2k: 'H3 Regenerate 2K', sr: 'Video Super Resolution', interpolate: 'Frame Interpolation', depth: 'Depth Anything' }
 const filtered = computed(() => tasks.value)
 const hasMore = computed(() => total.value > 0 && tasks.value.length < total.value && page.value * 24 < total.value)
 const modelName = (task: Task) => task.presentation?.model_label || '未记录模型'
@@ -74,13 +74,15 @@ const taskResolution = (task: Task) => {
   if (anyTask.resolution) return anyTask.resolution
   const h = Number(task.media?.height || 0), w = Number(task.media?.width || 0)
   const shortSide = h && w ? Math.min(h, w) : 0
+  const longSide = h && w ? Math.max(h, w) : 0
   if (shortSide >= 2160) return '4K'
-  if (shortSide >= 1440) return '2K'
+  if (shortSide >= 1408 || longSide >= 2464) return '2K'
   if (shortSide >= 1080) return '1080p'
   if (shortSide >= 760) return '768p'
   if (shortSide >= 720) return '720p'
   if (shortSide >= 480) return '480p'
   const route = task.route || task.service
+  if (task.service === 'regenerate_2k') return '2K'
   if (['h3', 'h3-sol', 'h3-vdn', 'h3-singularity'].includes(route) || ['h3', 'h3-sol', 'h3-vdn', 'h3-singularity'].includes(task.service)) return '768p'
   if (route === 'fal' || task.service === 'fal') return '480p'
   if (task.service === 'higgsfield' || task.service === 'grok') return '720p'

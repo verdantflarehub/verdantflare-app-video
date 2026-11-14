@@ -321,3 +321,33 @@ test('continuous scroll loadMore appends without duplicates, preserves items on 
   assert.ok(app.revoked.includes('blob:test-1'));
 });
 
+test('regenerate_2k and 2K proportional grid dimensions render VSR2VA badge and 2K resolution label', () => {
+  const app = setup();
+  for (const [width, height] of [[2464, 1408], [1408, 2464], [2560, 1120], [3072, 1344], [1920, 1440], [1440, 1440]]) {
+    assert.equal(app.run(`taskResolution({ service: 'regenerate_2k', media: { width: ${width}, height: ${height} } })`), '2K');
+    assert.equal(app.run(`taskResolution({ service: 'h3-singularity', media: { width: ${width}, height: ${height} } })`), '2K');
+  }
+  assert.equal(app.run(`taskResolution({ service: 'regenerate_2k' })`), '2K');
+  assert.equal(app.run(`taskResolution({ service: 'h3-singularity', media: { width: 1344, height: 768 } })`), '768p');
+
+  const identityHtml = app.run(`taskIdentity({
+    service: 'regenerate_2k',
+    route: 'h3-singularity',
+    model: 'open-h3-regenerate-2k-ic',
+    presentation: { is_generation: true, model_label: 'H3-Regenerate-2K', channel_label: '本地', channel_icon: 'local', generation_code: 'VSR2VA', generation_label: '超分音视频' }
+  })`);
+  assert.match(identityHtml, /H3-Regenerate-2K/);
+  assert.match(identityHtml, /本地/);
+
+  const tagsHtml = app.run(`taskTags({
+    service: 'regenerate_2k',
+    route: 'h3-singularity',
+    aspect_ratio: '16:9',
+    duration_seconds: 5,
+    media: { width: 2464, height: 1408, frame_rate: 24, frames: 121 },
+    presentation: { is_generation: true, generation_code: 'VSR2VA', generation_label: '超分音视频' }
+  })`);
+  assert.match(tagsHtml, />VSR2VA<\/span><span>2K<\/span><span>16:9<\/span><span>5S<\/span><span>24FPS<\/span>/);
+  assert.doesNotMatch(tagsHtml, /1080p|121/);
+});
+

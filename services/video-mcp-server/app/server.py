@@ -29,7 +29,8 @@ from .dashboard import Dashboard, _etag_matches, public_task
 from .registry import EtcdRegistry
 from .collection import public_collection
 from .tasks import TaskConflict, TaskNotFound, TaskStore
-from .delivery import CALLER, normalize as normalize_postprocess, authorize
+from .delivery import CALLER, normalize as normalize_postprocess, normalize_regenerate_postprocess, authorize
+from .regenerate import default_singularity_quality_profile, is_valid_h3_frame_bucket, resolve_2k_target_geometry
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
@@ -169,6 +170,26 @@ VIDEO_TOOLS_SCHEMA = [
                 "target_fps_num": {"type": "integer", "default": 48},
                 "target_fps_den": {"type": "integer", "default": 1},
                 "backend": {"type": "string", "default": "rife"},
+            },
+            "required": ["source_artifact_id", "project_id", "idempotency_key"],
+        },
+    },
+    {
+        "name": "video.regenerate_2k",
+        "description": "Regenerate a project 24 FPS H3 video into strict aspect-preserving 2K with Open-H3-Regenerate-2K-IC, preserving lossless AAC audio.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "source_artifact_id": {"type": "string", "description": "Source 24 FPS H3 video artifact ID"},
+                "project_id": {"type": "string", "description": "Owning Studio project ID"},
+                "idempotency_key": {"type": "string", "description": "Stable key for submission and recovery"},
+                "profile": {"type": "string", "enum": ["open_h3_2k_ic"], "default": "open_h3_2k_ic"},
+                "grid_mode": {"type": "string", "enum": ["budget_1440p", "exact_2x"], "default": "budget_1440p"},
+                "prompt": {"type": "string", "description": "Optional conditioning prompt; auto-resolved from same-project H3 parent task when omitted"},
+                "seed": {"type": "integer", "minimum": 0, "maximum": 4294967295, "default": 7},
+                "title": {"type": "string", "description": "Optional readable task title"},
+                "postprocess": {"type": "object", "description": "Optional postprocess, e.g. {'interpolate': {'profile': 'rife_2x'}}"},
             },
             "required": ["source_artifact_id", "project_id", "idempotency_key"],
         },
@@ -420,6 +441,120 @@ def video_interpolate_preview(video_task_id: str) -> types.CallToolResult:
     return _result({**adapter.public_result(record, preview=True), **titles.project(executor.tasks, record)})
 
 
+def _submit_regenerate_2k(
+    *,
+    source_artifact_id: str,
+    project_id: str,
+    idempotency_key: str,
+    profile: str = "open_h3_2k_ic",
+    grid_mode: str = "budget_1440p",
+    prompt: str | None = None,
+    seed: int = 7,
+    title: object = None,
+    postprocess: dict | None = None,
+) -> dict[str, object]:
+    authorize(executor.client, project_id)
+    adapter = executor.processing["regenerate_2k"]
+    warning = None
+    cleaned_title = None
+    if title is not None:
+        try:
+            cleaned_title = titles.validate_title(title)
+        except ValueError:
+            cleaned_title, warning = None, "invalid_optional_title; readable fallback used"
+    token = titles.PROVIDED_TITLE.set(cleaned_title)
+    try:
+        record = adapter.generate(
+            project_id=project_id,
+            idempotency_key=idempotency_key,
+            source_artifact_id=source_artifact_id,
+            profile=profile,
+            grid_mode=grid_mode,
+            prompt=prompt,
+            seed=seed,
+            postprocess=postprocess,
+        )
+    finally:
+        titles.PROVIDED_TITLE.reset(token)
+    naming = titles.project(executor.tasks, record)
+    if warning:
+        naming["title_warning"] = warning
+    res = adapter.public_status(record)
+    res["task_id"] = record.video_task_id
+    return {**res, **naming}
+
+
+@mcp.tool(name="video.regenerate_2k.generate")
+@tool_errors
+def video_regenerate_2k_generate(
+    project_id: str,
+    idempotency_key: str,
+    source_artifact_id: str,
+    profile: str = "open_h3_2k_ic",
+    grid_mode: str = "budget_1440p",
+    prompt: str | None = None,
+    seed: int = 7,
+    title: str | None = None,
+    postprocess: dict | None = None,
+) -> types.CallToolResult:
+    """Regenerate an existing 24 FPS H3 video into strict aspect-preserving 2K."""
+    return _result(
+        _submit_regenerate_2k(
+            source_artifact_id=source_artifact_id,
+            project_id=project_id,
+            idempotency_key=idempotency_key,
+            profile=profile,
+            grid_mode=grid_mode,
+            prompt=prompt,
+            seed=seed,
+            title=title,
+            postprocess=postprocess,
+        )
+    )
+
+
+@mcp.tool(name="video.regenerate_2k.status")
+@tool_errors
+def video_regenerate_2k_status(video_task_id: str) -> types.CallToolResult:
+    existing = _active_tasks().get(video_task_id)
+    if _is_task_nsfw(existing):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
+    authorize(executor.client, existing.project_id)
+    adapter = executor.processing["regenerate_2k"]
+    record = adapter.status(video_task_id)
+    if _is_task_nsfw(record):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
+    return _result({**adapter.public_status(record), **titles.project(executor.tasks, record)})
+
+
+@mcp.tool(name="video.regenerate_2k.result")
+@tool_errors
+def video_regenerate_2k_result(video_task_id: str) -> types.CallToolResult:
+    existing = _active_tasks().get(video_task_id)
+    if _is_task_nsfw(existing):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
+    authorize(executor.client, existing.project_id)
+    adapter = executor.processing["regenerate_2k"]
+    record = adapter.result(video_task_id)
+    if _is_task_nsfw(record):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
+    return _result({**adapter.public_result(record), **titles.project(executor.tasks, record)})
+
+
+@mcp.tool(name="video.regenerate_2k.preview")
+@tool_errors
+def video_regenerate_2k_preview(video_task_id: str) -> types.CallToolResult:
+    existing = _active_tasks().get(video_task_id)
+    if _is_task_nsfw(existing):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
+    authorize(executor.client, existing.project_id)
+    adapter = executor.processing["regenerate_2k"]
+    record = adapter.result(video_task_id)
+    if _is_task_nsfw(record):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
+    return _result({**adapter.public_result(record, preview=True), **titles.project(executor.tasks, record)})
+
+
 def _result(value: dict[str, object]) -> types.CallToolResult:
     return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(value, ensure_ascii=False))], structuredContent=value)
 
@@ -494,19 +629,38 @@ def video_import_commit(project_id: str, import_id: str) -> types.CallToolResult
 
 @mcp.tool(name="video.preflight")
 @tool_errors
-def video_preflight(project_id: str, prompt: str, references: dict[str, list[dict[str, str]]],
+def video_preflight(project_id: str, prompt: str = "",
+                    references: dict[str, list[dict[str, str]]] | None = None,
                     duration_seconds: int = 5, aspect_ratio: str | None = None,
                     model: str | None = None, route: str | None = None,
                     quality_profile: str | None = None, mode: str | None = None,
-                  resolution: str | None = None, postprocess: dict | None = None,
-                  channel_account_id: str | None = None, budget_limit: str | None = None,
-                  price_ceiling: float | None = None, audio_guidance: str | None = None, image_guidance: str | None = None) -> types.CallToolResult:
+                    resolution: str | None = None, postprocess: dict | None = None,
+                    channel_account_id: str | None = None, budget_limit: str | None = None,
+                    price_ceiling: float | None = None, audio_guidance: str | None = None,
+                    image_guidance: str | None = None,
+                    source_artifact_id: str | None = None,
+                    profile: str | None = None,
+                    grid_mode: str | None = None,
+                    seed: int | None = None) -> types.CallToolResult:
     """Validate exact media and parameters and read the selected channel's real pricing and admission."""
+    if source_artifact_id is not None or route == "regenerate_2k":
+        if source_artifact_id is None:
+            raise ValueError("source_artifact_id is required")
+        return _result(executor.processing["regenerate_2k"].preflight(
+            project_id=project_id,
+            source_artifact_id=source_artifact_id,
+            profile=profile,
+            grid_mode=grid_mode,
+            prompt=prompt if prompt != "" else None,
+            seed=seed,
+            postprocess=postprocess,
+        ))
+    references = {} if references is None else references
     selected = route or executor.runtime_route
     from .singularity import check_audio_guidance, runtime_supports_timeline, check_image_guidance, runtime_supports_first_frame
     check_audio_guidance(audio_guidance, executor._service_for_route(selected))
     check_image_guidance(image_guidance, executor._service_for_route(selected))
-    normalize_postprocess(postprocess, selected)
+    norm_post = normalize_postprocess(postprocess, selected)
     if selected not in {'fal', 'grok', 'google'} and (channel_account_id is not None or budget_limit is not None):
         raise ValueError('channel_budget_not_supported')
     if selected != 'higgsfield' and price_ceiling is not None:
@@ -554,23 +708,50 @@ def video_preflight(project_id: str, prompt: str, references: dict[str, list[dic
     if mode not in {None, "reference_to_video"} or resolution is not None:
         raise ValueError("unsupported_parameter")
     executor.runtime(selected)
+    effective_profile = quality_profile if quality_profile is not None else default_singularity_quality_profile()
     request, digest = executor._normalize(require_project_id(project_id), model or "minimax-h3-ref2va", prompt,
-        duration_seconds, aspect_ratio or "16:9", references, selected, quality_profile or "du-0", audio_guidance, image_guidance)
-    if audio_guidance == "timeline" or image_guidance == "first_frame":
+        duration_seconds, aspect_ratio or "16:9", references, selected, effective_profile, audio_guidance, image_guidance)
+    check_default_profile = "H3_SINGULARITY_DEFAULT_QUALITY_PROFILE" in os.environ
+    if check_default_profile or audio_guidance == "timeline" or image_guidance == "first_frame":
         url, headers, _, _ = executor.runtime(selected)
         response = executor.client.get(f"{url}/health", headers=headers, timeout=10)
         response.raise_for_status()
         health = response.json()
+        if check_default_profile:
+            if health.get("ready") is not True or health.get("default_quality_profile") != default_singularity_quality_profile():
+                raise ValueError("runtime_not_ready")
+            caps = health.get("capabilities") or {}
+            if isinstance(caps.get("quality_profiles"), list) and effective_profile not in caps["quality_profiles"]:
+                raise ValueError("quality_profile_not_available")
         if audio_guidance == "timeline" and (not runtime_supports_timeline(health) or health.get("ready") is not True):
             raise ValueError("timeline_audio_not_supported_or_not_ready")
         if image_guidance == "first_frame" and (not runtime_supports_first_frame(health) or health.get("ready") is not True):
             raise ValueError("first_frame_not_supported_or_not_ready")
-    if postprocess is not None:
+    if norm_post is not None:
         authorize(executor.client, project_id)
     request, digest = executor.delivery.prepare(request, digest, postprocess)
-    delivery_output = {**request["resolved_output"], "fps": 48, "frames": request["resolved_output"]["frames"] * 2} if postprocess else None
+    delivery_output = None
+    if norm_post is not None:
+        delivery_output = dict(request["resolved_output"])
+        if "regenerate_2k" in norm_post:
+            g_mode = norm_post["regenerate_2k"]["grid_mode"]
+            geo = resolve_2k_target_geometry(
+                int(delivery_output["width"]),
+                int(delivery_output["height"]),
+                g_mode,
+            )
+            delivery_output.update(
+                {
+                    "width": geo["target_w"],
+                    "height": geo["target_h"],
+                    "grid_mode": g_mode,
+                    "levels": geo["levels"],
+                }
+            )
+        if "interpolate" in norm_post:
+            delivery_output.update({"fps": 48, "frames": int(delivery_output["frames"]) * 2})
     return _result({"status": "validated", "gpu_verified": False, "input_digest": digest,
-                    "delivery_output": delivery_output, "postprocess": postprocess,
+                    "delivery_output": delivery_output, "postprocess": norm_post,
                     "resolved_output": request["resolved_output"], "reference_mapping": request["reference_mapping"],
                     "reference_media": request["reference_media"], "prompt": request["prompt"],
                     **({"image_guidance": request["image_guidance"]} if "image_guidance" in request else {}),
@@ -659,7 +840,7 @@ def video_status(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
         executor.higgsfield.authorize_record(existing)
     if existing.service == 'fal':
         executor.fal.authorize_record(existing)
-    if existing.service == 'interpolate' or existing.request.get('postprocess'):
+    if existing.service in {'interpolate', 'regenerate_2k'} or existing.request.get('postprocess'):
         authorize(executor.client, existing.project_id)
     record = executor.status(tid) if t_store is executor.tasks else existing
     if _is_task_nsfw(record):
@@ -695,7 +876,7 @@ def video_result(video_task_id: str = "", task_id: str = "", execution_proof_onl
         executor.higgsfield.authorize_record(existing)
     if existing.service == 'fal':
         executor.fal.authorize_record(existing)
-    if existing.service == 'interpolate' or existing.request.get('postprocess'):
+    if existing.service in {'interpolate', 'regenerate_2k'} or existing.request.get('postprocess'):
         authorize(executor.client, existing.project_id)
     if t_store is executor.tasks:
         record = executor.result(tid)
@@ -829,6 +1010,35 @@ def video_interpolate(source_artifact_id: str, project_id: str, idempotency_key:
     res = adapter.public_status(record)
     res["task_id"] = record.video_task_id
     return _result({**res, **titles.project(executor.tasks, record)})
+
+
+@mcp.tool(name="video.regenerate_2k")
+@tool_errors
+def video_regenerate_2k(
+    project_id: str,
+    idempotency_key: str,
+    source_artifact_id: str,
+    profile: str = "open_h3_2k_ic",
+    grid_mode: str = "budget_1440p",
+    prompt: str | None = None,
+    seed: int = 7,
+    title: str | None = None,
+    postprocess: dict | None = None,
+) -> types.CallToolResult:
+    """Regenerate a 24 FPS H3 video into strict aspect-preserving 2K via Open-H3-Regenerate-2K-IC."""
+    return _result(
+        _submit_regenerate_2k(
+            source_artifact_id=source_artifact_id,
+            project_id=project_id,
+            idempotency_key=idempotency_key,
+            profile=profile,
+            grid_mode=grid_mode,
+            prompt=prompt,
+            seed=seed,
+            title=title,
+            postprocess=postprocess,
+        )
+    )
 
 
 @mcp.tool(name="video.title_update")

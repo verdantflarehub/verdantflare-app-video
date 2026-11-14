@@ -64,10 +64,12 @@ class MemberDashboard:
         inputs = Submission.model_validate(body)
         if inputs.route != 'higgsfield' or not inputs.model:
             raise ValueError('higgsfield_model_required')
+        if inputs.quality_profile is not None or inputs.postprocess is not None:
+            raise ValueError('unsupported_higgsfield_parameter')
         # This rejected supplier combination remains unavailable in the webpage.
         if inputs.model == 'grok_video_v15_lite' and inputs.references.images:
             raise MemberError('image_to_video_not_verified')
-        values = inputs.model_dump(exclude={'title', 'idempotency_key', 'route', 'channel_account_id', 'budget_limit'})
+        values = inputs.model_dump(exclude={'title', 'idempotency_key', 'route', 'quality_profile', 'postprocess', 'channel_account_id', 'budget_limit'})
         request, digest = self.adapter.normalize(**values)
         return inputs, request, digest
 
@@ -120,7 +122,7 @@ class MemberDashboard:
                 marker = titles.PROVIDED_TITLE.set(title)
                 try:
                     record = self.adapter.generate(idempotency_key=inputs.idempotency_key,
-                        price_ceiling=current['credits'], **inputs.model_dump(exclude={'title','idempotency_key','route','channel_account_id','budget_limit'}))
+                        price_ceiling=current['credits'], **inputs.model_dump(exclude={'title','idempotency_key','route','quality_profile','postprocess','channel_account_id','budget_limit'}))
                 finally:
                     titles.PROVIDED_TITLE.reset(marker)
         # Rating projection may initialize WAL on a second connection. Commit

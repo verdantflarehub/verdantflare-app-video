@@ -55,8 +55,10 @@ class Submission(BaseModel):
     prompt: str = Field(min_length=1, max_length=16000)
     duration_seconds: int = Field(ge=1, le=15)
     aspect_ratio: str | None = None
+    quality_profile: str | None = None
     mode: str | None = None
     resolution: str | None = None
+    postprocess: dict[str, object] | None = None
     channel_account_id: str | None = Field(default=None, max_length=36)
     budget_limit: str | None = Field(default=None, max_length=32)
     references: References
@@ -86,7 +88,7 @@ class ContentRatingUpdate(BaseModel):
 def task_channel(record):
     route = record.request.get("route") or record.runtime_route or record.service
     local = {"h3", "h3-sol", "h3-vdn", "h3-singularity", "minimax-h3-sol-ref2va",
-             "h3-latent-upscale", "sr", "interpolate", "depth"}
+             "h3-latent-upscale", "sr", "interpolate", "regenerate_2k", "depth"}
     return "local" if route in local else route or "unknown"
 
 
@@ -97,6 +99,24 @@ def channel_label(channel):
 
 def task_presentation(record, catalog=None):
     """UI labels only: keep provider identifiers and stored requests unchanged."""
+    if record.service == "regenerate_2k":
+        label = None
+        for entry_channel in (catalog or {}).get("channels", []):
+            if entry_channel.get("id") != "local":
+                continue
+            for entry in entry_channel.get("models", []):
+                if entry.get("model_id") == "open-h3-regenerate-2k-ic" or entry.get("id") == "local-h3-regenerate-2k-ic":
+                    label = entry.get("display_name")
+                    break
+        return {
+            "is_generation": True,
+            "channel_id": "local",
+            "model_label": label or "H3-Regenerate-2K",
+            "channel_label": "本地",
+            "channel_icon": "local",
+            "generation_code": "VSR2VA",
+            "generation_label": "超分音视频：潜空间超分与音视频同步重生成（Video Super-Resolution to Video-Audio）",
+        }
     local = {"h3", "h3-sol", "h3-vdn", "h3-singularity"}
     generating = record.service in local | {"fal", "grok", "google", "higgsfield"}
     route = record.request.get("route") or record.runtime_route or record.service
@@ -137,15 +157,32 @@ def public_task(record, store=None, ratings_store=None, catalog=None):
         model = {
             "sr": "seedvr2",
             "interpolate": "rife",
+            "regenerate_2k": "open-h3-regenerate-2k-ic",
             "depth": "video-depth-anything",
             "h3-latent-upscale": "h3-latent-upscaler",
         }.get(record.service)
     naming = titles.project(store, record) if store is not None else {'title': titles.fallback(record), 'title_source': 'fallback', 'title_revision': 0, 'title_updated_at': None}
     ui_fields = store.record_ui_fields(record, ratings_store, can_write=True) if store is not None else {"content_rating": "unrated", "can_clear_rating": False, "can_mark_rating": True}
+    sanitized_delivery = (
+        {k: v for k, v in record.delivery.items() if not str(k).startswith("_")}
+        if isinstance(record.delivery, dict)
+        else None
+    )
+    media = record.media
+    if isinstance(sanitized_delivery, dict) and sanitized_delivery.get("status") == "succeeded":
+        delivery_media = (sanitized_delivery.get("result") or {}).get("media")
+        if isinstance(delivery_media, dict):
+            media = {**(record.media or {}), **delivery_media}
+            if "fps" not in media and isinstance(delivery_media.get("frame_rate"), str) and delivery_media["frame_rate"].isdigit():
+                media["fps"] = int(delivery_media["frame_rate"])
+    grid_mode = record.request.get("grid_mode") or (
+        ((record.request.get("postprocess") or {}).get("regenerate_2k") or {}).get("grid_mode")
+    )
     return {**naming, "video_task_id": record.video_task_id, "project_id": record.project_id,
             "idempotency_key": record.idempotency_key, "service": record.service, "route": record.runtime_route or record.request.get("route"),
             "model": model, "presentation": task_presentation(record, catalog),
             "mode": record.request.get("mode"), "resolution": record.request.get("resolution"),
+            "quality_profile": record.request.get("quality_profile"), "grid_mode": grid_mode,
             "needs_attention": record.runtime_stage == "submission_unknown" or bool(record.error),
             "progress": (record.provider_state or {}).get("progress"),
             "prompt": record.request.get("prompt", ""),
@@ -154,7 +191,8 @@ def public_task(record, store=None, ratings_store=None, catalog=None):
             "seed": record.request.get("seed", None if record.service in {"fal", "grok", "google"} else 7),
             "status": record.status, "created_at": record.created_at, "updated_at": record.updated_at,
             "completed_at": record.completed_at or (record.updated_at if record.status in {"succeeded", "failed", "cancelled"} else None),
-            "artifact_id": (record.delivery or {}).get("final_artifact_id") or record.artifact_id, "media": record.media, "error": record.error, "collection": public_collection(record),
+            "artifact_id": (record.delivery or {}).get("final_artifact_id") or record.artifact_id,
+            "media": media, "delivery": sanitized_delivery, "error": record.error, "collection": public_collection(record),
             "input_digest": record.input_digest, "execution_instance_id": record.execution_instance_id, "association_source": "runtime" if record.execution_instance_id else None, "runtime_stage": record.runtime_stage,
             "dispatched_at": record.dispatched_at, "timing": record.timing, "runtime_metrics": record.runtime_metrics,
             **ui_fields}
@@ -278,7 +316,7 @@ class Dashboard:
         errors = 0
         for record in self.records():
             channel_pending = record.service == 'fal' and self.executor.fal._channel_record(record)
-            if record.status in {"queued", "running"} and (record.runtime_task_id or channel_pending or record.service in {"depth", "sr", "interpolate", "h3-singularity", "grok", "google", "higgsfield"}):
+            if record.status in {"queued", "running"} and (record.runtime_task_id or channel_pending or record.service in {"depth", "sr", "interpolate", "regenerate_2k", "h3-singularity", "grok", "google", "higgsfield"}):
                 try:
                     self.executor.status(record.video_task_id)
                 except (ExecutionError, OSError, ValueError):
@@ -290,7 +328,7 @@ class Dashboard:
         for record in self.records():
             if record.service == 'fal' and self.executor.fal._channel_record(record):
                 continue  # The channel ledger resolves unknown acceptance by the original operation key.
-            if record.status == "queued" and not record.runtime_task_id and record.service not in {"depth", "sr", "interpolate", "grok", "google", "higgsfield"}:
+            if record.status == "queued" and not record.runtime_task_id and record.service not in {"depth", "sr", "interpolate", "regenerate_2k", "grok", "google", "higgsfield"}:
                 self.executor.tasks.update(record, status="queued" if record.service == "h3-singularity" else "failed", error={
                     "code": "submission_unconfirmed",
                     "message": "Submission interrupted; do not resubmit automatically"})

@@ -238,3 +238,50 @@ test('a disabled Draft capability shows its safe reason while other Higgsfield m
   assert.match(nodes['[data-catalog-results]'].innerHTML, /渠道能力已停用 · 暂不可提交/);
   assert.doesNotMatch(nodes['[data-catalog-results]'].innerHTML, /private-upstream-body/);
 });
+
+test('local H3-Regenerate-2K card renders VSR2VA capability badge, 2K output pill, and ready execution status', () => {
+  const context = vm.createContext({ URL });
+  vm.runInContext(readFileSync(new URL('../frontend/model-catalog.js', import.meta.url), 'utf8'), context);
+  const nodes = {};
+  const root = { innerHTML: '', addEventListener() {}, removeEventListener() {},
+    querySelectorAll: () => [], querySelector: selector => nodes[selector] ??= {} };
+  const view = new context.VideoCatalogView(root, async () => ({}));
+  const regen = {
+    id: 'local-h3-regenerate-2k-ic',
+    model_id: 'open-h3-regenerate-2k-ic',
+    display_name: 'H3-Regenerate-2K',
+    business_type: 'video_upscale',
+    description: '基于 H3 Singularity DiT 与 3D Latent Upscaling 的 2K 音视频同步重生成',
+    identity_review: 'pending',
+    billing_modes: ['local_resources'],
+    upstream_model_id: 'open-h3-regenerate-2k-ic',
+    execution_status: 'ready',
+    supplier_profiles: [],
+    team_profiles: [{
+      mode: 'video_upscale',
+      resolutions: ['2K'],
+      max_resolution: '2K',
+      duration_seconds: { minimum: 4, maximum: 15 },
+      duration_choices_seconds: [],
+      aspect_ratios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive'],
+      input_limits: { images: 0, videos: 1, audio_files: 0 },
+      audio_input: 'supported',
+      audio_output: 'supported',
+      review_status: 'pending',
+      verification_status: 'unverified',
+    }],
+  };
+  view.set({
+    state: 'ready',
+    snapshot_id: 'local-v0-1-2',
+    channels: [{ id: 'local', display_name: '本地', models: [regen] }],
+    conflicts: [],
+    groups: [{ id: 'entry:local:local-h3-regenerate-2k-ic', entries: [{ channel_id: 'local', entry_id: regen.id }] }],
+  });
+  const html = nodes['[data-catalog-results]'].innerHTML;
+  assert.match(html, /<h3>H3-Regenerate-2K<\/h3>/);
+  assert.match(html, /<strong>VSR2VA<\/strong> 超分音视频/);
+  assert.doesNotMatch(html, /<strong>V2V<\/strong>/);
+  assert.match(html, /aria-label="输出规格胶囊"><span>2K<\/span><span>4S-15S<\/span>/);
+  assert.match(html, /执行适配已就绪/);
+});

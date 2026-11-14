@@ -63,8 +63,19 @@ MESSAGES = {
     "submission_unknown": "The provider may have accepted this request; query the original task without resubmitting.",
     "acceptance_unknown": "The provider may have accepted this request; query the original task without resubmitting.",
 }
-RETRYABLE = {"provider_timeout", "account_unavailable", "limits_unavailable", "channel_unavailable", "proxy_unavailable", "rate_limited", "result_not_ready"}
+RETRYABLE = {"provider_timeout", "account_unavailable", "limits_unavailable", "channel_unavailable", "proxy_unavailable", "rate_limited", "result_not_ready", "gpu_busy", "runtime_not_ready"}
 MESSAGES.update({
+    "gpu_busy": "Local GPU slot or role lease is busy beyond the queue window; retry later.",
+    "runtime_not_ready": "The selected video runtime is not ready or its default profile does not match configuration.",
+    "stage_timeout_generation": "Native H3 generation exceeded its active execution timeout and was terminated.",
+    "stage_timeout_regenerate_2k": "2K IC regeneration exceeded its active execution timeout and was terminated.",
+    "stage_timeout_interpolation": "Frame interpolation exceeded its active execution timeout and was terminated.",
+    "chain_active_timeout": "Cumulative active GPU execution across the delivery chain exceeded its timeout and was terminated.",
+    "source_already_2k": "The source video canvas has already reached or exceeded the 2K target grid.",
+    "unsupported_grid_mode": "The requested 2K grid_mode is not supported; use budget_1440p or exact_2x.",
+    "unsupported_regenerate_profile": "The requested 2K regeneration profile is not supported; use open_h3_2k_ic.",
+    "invalid_source_media": "The source video does not satisfy 2K IC geometry, 24 FPS, 17k+5 frame bucket, or AAC audio rules.",
+    "quality_profile_not_available": "The requested quality_profile is not supported on this route.",
     "provider_not_found": "The provider returned not found for this operation.",
     "budget_exceeded": "The channel account budget is insufficient.",
     "daily_limit_reached": "The channel daily task limit has been reached.",

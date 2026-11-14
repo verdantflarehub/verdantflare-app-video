@@ -157,7 +157,7 @@ class TaskStore:
                 raise TaskConflict("idempotency key already exists with different input")
             return existing
         now = datetime.now(UTC).isoformat()
-        if request.get("service") in {"depth", "sr", "interpolate", "h3-latent-upscale"}:
+        if request.get("service") in {"depth", "sr", "interpolate", "regenerate_2k", "h3-latent-upscale"}:
             service = str(request["service"])
         elif request.get("route") in {"fal", "grok", "higgsfield"}:
             service = str(request["route"])
@@ -262,6 +262,7 @@ class TaskStore:
 
         for raw in (
             delivery.get("final_artifact_id"),
+            delivery.get("regenerate_2k_artifact_id"),
             record.artifact_id,
             content_ref.get("version_id") if isinstance(content_ref, dict) else None,
             content_ref.get("artifact_id") if isinstance(content_ref, dict) else None,
@@ -330,6 +331,7 @@ class TaskStore:
                     "DELETE FROM identities WHERE task = ?",
                     "DELETE FROM idempotency_keys WHERE video_task_id = ?",
                     "DELETE FROM gpu_leases WHERE video_task_id = ?",
+                    "DELETE FROM local_gpu_stage_slot WHERE holder_task_id = ?",
                     "DELETE FROM task_titles WHERE task = ?",
                 ):
                     try:

@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import os
 import random
+import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -294,10 +296,10 @@ class GpuCoordinator:
                 return False
             return True
 
-    def acquire_for_queue(self) -> None:
+    def acquire_for_queue(self, *, deadline: float | None = None) -> None:
         if not self.enabled:
             return
-        deadline = self._monotonic() + self.queue_seconds
+        deadline = (self._monotonic() + self.queue_seconds) if deadline is None else deadline
         delay = 0.2
         while True:
             if self.try_acquire():
@@ -377,3 +379,187 @@ class _Hold:
         self._stop.set()
         self.coord.release()
         return False
+
+
+class LocalGpuStageSlot:
+    """Single-slot local GPU stage gate in coordination.sqlite3 across P1, P2, and P3."""
+
+    SLOT_ID = "local_gpu_5090"
+
+    def __init__(
+        self,
+        tasks,
+        *,
+        enabled: bool = False,
+        queue_seconds: int = 1200,
+        sleep=None,
+        monotonic=None,
+    ) -> None:
+        self.tasks = tasks
+        self.enabled = enabled
+        self.queue_seconds = queue_seconds
+        self._sleep = sleep or time.sleep
+        self._monotonic = monotonic or time.monotonic
+
+    @classmethod
+    def from_environment(cls, tasks) -> "LocalGpuStageSlot":
+        role = os.environ.get("GPU_TASK_ROLE", "").strip()
+        return cls(
+            tasks,
+            enabled=role in CONFLICTS,
+            queue_seconds=int(os.environ.get("GPU_QUEUE_SECONDS", "1200")),
+        )
+
+    @contextmanager
+    def _connection(self):
+        self.tasks.ensure_ready()
+        existing = getattr(self.tasks._local, "connection", None)
+        db = existing or sqlite3.connect(self.tasks.db_path, timeout=30)
+        try:
+            db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS local_gpu_stage_slot (
+                    slot_id TEXT PRIMARY KEY,
+                    holder_task_id TEXT NOT NULL,
+                    service TEXT NOT NULL,
+                    acquired_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                )
+                """
+            )
+            if existing is None:
+                db.execute("BEGIN IMMEDIATE")
+            yield db
+            if existing is None:
+                db.commit()
+        except Exception:
+            if existing is None:
+                try:
+                    db.rollback()
+                except sqlite3.Error:
+                    pass
+            raise
+        finally:
+            if existing is None:
+                db.close()
+
+    @staticmethod
+    def is_task_settled(record) -> bool:
+        if record is None:
+            return True
+        if record.status not in {"succeeded", "failed", "cancelled", "canceled"}:
+            return False
+        if record.status == "failed" and (record.error or {}).get("code") in {
+            "submission_unconfirmed",
+            "runtime_task_lost",
+        }:
+            return False
+        if (record.provider_state or {}).get("worker_settled") is False:
+            return False
+        return True
+
+    def _holder_record(self, holder_task_id: str):
+        if not holder_task_id:
+            return None
+        from .tasks import TaskNotFound
+        try:
+            return self.tasks.get(holder_task_id)
+        except (TaskNotFound, ValueError):
+            return None
+
+    def current_holder(self) -> tuple[str, str] | None:
+        if not self.enabled:
+            return None
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT holder_task_id, service FROM local_gpu_stage_slot WHERE slot_id = ?",
+                (self.SLOT_ID,),
+            ).fetchone()
+            if not row or not row[0]:
+                return None
+            record = self._holder_record(row[0])
+            if self.is_task_settled(record):
+                db.execute(
+                    "UPDATE local_gpu_stage_slot SET holder_task_id = '', service = '', updated_at = ? WHERE slot_id = ?",
+                    (time.time(), self.SLOT_ID),
+                )
+                return None
+            return str(row[0]), str(row[1])
+
+    def try_acquire(self, task_id: str, service: str) -> bool:
+        if not self.enabled:
+            return True
+        now = time.time()
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT holder_task_id, service, acquired_at FROM local_gpu_stage_slot WHERE slot_id = ?",
+                (self.SLOT_ID,),
+            ).fetchone()
+            if row and row[0] and row[0] != task_id:
+                holder = self._holder_record(row[0])
+                if not self.is_task_settled(holder):
+                    return False
+            acquired_at = float(row[2]) if row and row[0] == task_id else now
+            db.execute(
+                """
+                INSERT INTO local_gpu_stage_slot (slot_id, holder_task_id, service, acquired_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(slot_id) DO UPDATE SET
+                    holder_task_id = excluded.holder_task_id,
+                    service = excluded.service,
+                    acquired_at = excluded.acquired_at,
+                    updated_at = excluded.updated_at
+                """,
+                (self.SLOT_ID, task_id, service, acquired_at, now),
+            )
+            return True
+
+    def acquire_for_queue(
+        self,
+        task_id: str,
+        service: str,
+        *,
+        deadline: float | None = None,
+        reconcile_holder=None,
+    ) -> None:
+        if not self.enabled:
+            return
+        deadline = (self._monotonic() + self.queue_seconds) if deadline is None else deadline
+        delay = 0.2
+        while True:
+            if self.try_acquire(task_id, service):
+                return
+            current = self.current_holder()
+            if current and reconcile_holder is not None and current[0] != task_id:
+                try:
+                    reconcile_holder(current[0], current[1])
+                except Exception:
+                    pass
+                if self.try_acquire(task_id, service):
+                    return
+            if self._monotonic() >= deadline:
+                holder_name = current[0] if current else "local_gpu_stage_slot"
+                raise LeaseBusy(holder_name)
+            delay = min(2.0, delay * 1.5)
+            self._sleep(delay * (0.5 + 0.5 * random.random()))
+
+    def release(self, task_id: str | None = None, *, force: bool = False) -> None:
+        if not self.enabled:
+            return
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT holder_task_id FROM local_gpu_stage_slot WHERE slot_id = ?",
+                (self.SLOT_ID,),
+            ).fetchone()
+            if not row or not row[0]:
+                return
+            if task_id is not None and row[0] != task_id:
+                return
+            if not force:
+                holder = self._holder_record(row[0])
+                if not self.is_task_settled(holder):
+                    return
+            db.execute(
+                "UPDATE local_gpu_stage_slot SET holder_task_id = '', service = '', updated_at = ? WHERE slot_id = ?",
+                (time.time(), self.SLOT_ID),
+            )

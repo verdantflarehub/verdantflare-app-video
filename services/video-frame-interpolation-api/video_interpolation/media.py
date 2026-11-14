@@ -2,17 +2,68 @@
 from fractions import Fraction
 import json
 import math
+import os
 from pathlib import Path
 import subprocess
 import tempfile
 import cv2
 import numpy as np
 
+
 class MediaError(ValueError):
     pass
 
-def command(args, timeout=300):
-    return subprocess.run(args, check=True, capture_output=True, timeout=timeout)
+
+class TaskCancelledError(RuntimeError):
+    pass
+
+
+def _check_cancel(cancel_event):
+    if cancel_event is not None and cancel_event.is_set():
+        raise TaskCancelledError('cancelled')
+
+
+def preview_geometry(w: int, h: int) -> tuple[int, int]:
+    """Byte-identical rational integer side-by-side preview geometry bounded to <= 3840x2160."""
+    if type(w) is not int or type(h) is not int or w <= 0 or h <= 0:
+        raise ValueError("invalid_preview_dimensions")
+    if w <= 1920 and h <= 2160:
+        panel_w = max(2, (w // 2) * 2)
+        panel_h = max(2, (h // 2) * 2)
+    elif 1920 * h <= 2160 * w:
+        panel_w = 1920
+        panel_h = max(2, ((h * 1920) // (w * 2)) * 2)
+    else:
+        panel_w = max(2, ((w * 2160) // (h * 2)) * 2)
+        panel_h = 2160
+    return (panel_w * 2, panel_h)
+
+
+def command(args, timeout=300, *, cancel_event=None, register_proc=None):
+    _check_cancel(cancel_event)
+    if cancel_event is None and register_proc is None:
+        return subprocess.run(args, check=True, capture_output=True, timeout=timeout)
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if register_proc is not None:
+        register_proc(proc)
+    try:
+        _check_cancel(cancel_event)
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        if register_proc is not None:
+            register_proc(None)
+    _check_cancel(cancel_event)
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, args, output=stdout, stderr=stderr)
+    return subprocess.CompletedProcess(args, proc.returncode, stdout, stderr)
+
 
 def probe(path):
     try:
@@ -20,8 +71,60 @@ def probe(path):
     except (subprocess.CalledProcessError, KeyError, ValueError, ZeroDivisionError) as exc:
         raise MediaError('invalid_or_unsupported_media') from exc
 
+
+def _probe_audio_stream_info(path):
+    data = json.loads(
+        command(
+            [
+                'ffprobe',
+                '-v',
+                'error',
+                '-protocol_whitelist',
+                'file,pipe',
+                '-f',
+                'mov',
+                '-select_streams',
+                'a:0',
+                '-show_streams',
+                '-of',
+                'json',
+                str(path),
+            ]
+        ).stdout
+    )
+    streams = data.get('streams') or []
+    if not streams:
+        return (None, None)
+    stream = streams[0]
+    codec = stream.get('codec_name')
+    raw_duration = stream.get('duration')
+    try:
+        duration = float(raw_duration) if raw_duration is not None else None
+    except (TypeError, ValueError):
+        duration = None
+    if duration is not None and not math.isfinite(duration):
+        duration = None
+    return (codec, duration)
+
+
 def _probe(path):
-    data = json.loads(command(['ffprobe', '-v', 'error', '-protocol_whitelist', 'file,pipe', '-f', 'mov', '-show_streams', '-of', 'json', str(path)]).stdout)
+    data = json.loads(
+        command(
+            [
+                'ffprobe',
+                '-v',
+                'error',
+                '-protocol_whitelist',
+                'file,pipe',
+                '-f',
+                'mov',
+                '-show_streams',
+                '-of',
+                'json',
+                str(path),
+            ]
+        ).stdout
+    )
     videos = [s for s in data['streams'] if s['codec_type'] == 'video']
     audio = [s for s in data['streams'] if s['codec_type'] == 'audio']
     if len(videos) != 1 or len(audio) > 1:
@@ -29,7 +132,7 @@ def _probe(path):
     stream = videos[0]
     fps = Fraction(stream['avg_frame_rate'])
     (w, h) = (stream['width'], stream['height'])
-    if not 0 < fps <= 120 or not 0 < w <= 4096 or (not 0 < h <= 2048) or w % 2 or h % 2:
+    if not 0 < fps <= 120 or not 0 < w <= 4096 or (not 0 < h <= 4096) or w % 2 or h % 2:
         raise MediaError('unsupported_video_geometry_or_rate')
     duration = float(stream.get('duration', 'inf'))
     if not math.isfinite(duration) or duration <= 0:
@@ -42,14 +145,39 @@ def _probe(path):
         raise MediaError('nonzero_stream_start_unsupported')
     (count, previous) = (0, None)
     with tempfile.TemporaryFile() as errors:
-        proc = subprocess.Popen(['ffprobe', '-v', 'error', '-protocol_whitelist', 'file,pipe', '-f', 'mov', '-select_streams', 'v:0', '-show_frames', '-show_entries', 'frame=best_effort_timestamp_time:side_data=', '-of', 'compact=p=0:nk=0', str(path)], stdout=subprocess.PIPE, stderr=errors, text=True)
+        proc = subprocess.Popen(
+            [
+                'ffprobe',
+                '-v',
+                'error',
+                '-protocol_whitelist',
+                'file,pipe',
+                '-f',
+                'mov',
+                '-select_streams',
+                'v:0',
+                '-show_frames',
+                '-show_entries',
+                'frame=best_effort_timestamp_time:side_data=',
+                '-of',
+                'compact=p=0:nk=0',
+                str(path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=errors,
+            text=True,
+        )
         try:
             for line in proc.stdout:
                 fields = dict((part.split('=', 1) for part in line.strip().split('|') if '=' in part))
                 if 'best_effort_timestamp_time' not in fields:
                     continue
                 timestamp = float(fields['best_effort_timestamp_time'])
-                if not math.isfinite(timestamp) or (previous is None and abs(timestamp) > 0.001) or (previous is not None and abs(timestamp - previous - float(1 / fps)) > 0.0001):
+                if (
+                    not math.isfinite(timestamp)
+                    or (previous is None and abs(timestamp) > 0.001)
+                    or (previous is not None and abs(timestamp - previous - float(1 / fps)) > 0.0001)
+                ):
                     raise MediaError('variable_frame_rate_unsupported')
                 count += 1
                 previous = timestamp
@@ -60,13 +188,23 @@ def _probe(path):
                 proc.kill()
                 proc.wait()
             proc.stdout.close()
-    return dict(width=w, height=h, frames=count, frame_rate=str(fps), duration_seconds=float(count / fps), video_codec=stream['codec_name'], audio=bool(audio))
+    return dict(
+        width=w,
+        height=h,
+        frames=count,
+        frame_rate=str(fps),
+        duration_seconds=float(count / fps),
+        video_codec=stream['codec_name'],
+        audio=bool(audio),
+    )
 
-def read_frames(path, media):
+
+def read_frames(path, media, *, cancel_event=None):
     cap = cv2.VideoCapture(str(path))
     count = 0
     try:
         while True:
+            _check_cancel(cancel_event)
             (ok, frame) = cap.read()
             if not ok:
                 break
@@ -79,16 +217,65 @@ def read_frames(path, media):
     if count != media['frames']:
         raise MediaError('decoded_frame_count_mismatch')
 
-def encode(frames, path, fps, width, height):
+
+def encode(frames, path, fps, width, height, *, cancel_event=None, register_proc=None):
+    _check_cancel(cancel_event)
     with Path(str(path) + '.ffmpeg.log').open('wb') as log:
-        process = subprocess.Popen(['ffmpeg', '-v', 'error', '-nostdin', '-n', '-f', 'rawvideo', '-pixel_format', 'rgb24', '-video_size', f'{width}x{height}', '-framerate', str(fps), '-i', 'pipe:0', '-an', '-c:v', 'libx264', '-threads', '4', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709', str(path)], stdin=subprocess.PIPE, stderr=log)
+        process = subprocess.Popen(
+            [
+                'ffmpeg',
+                '-v',
+                'error',
+                '-nostdin',
+                '-n',
+                '-f',
+                'rawvideo',
+                '-pixel_format',
+                'rgb24',
+                '-video_size',
+                f'{width}x{height}',
+                '-framerate',
+                str(fps),
+                '-i',
+                'pipe:0',
+                '-an',
+                '-c:v',
+                'libx264',
+                '-threads',
+                '4',
+                '-preset',
+                'fast',
+                '-crf',
+                '18',
+                '-pix_fmt',
+                'yuv420p',
+                '-color_primaries',
+                'bt709',
+                '-color_trc',
+                'bt709',
+                '-colorspace',
+                'bt709',
+                str(path),
+            ],
+            stdin=subprocess.PIPE,
+            stderr=log,
+        )
+        if register_proc is not None:
+            register_proc(process)
         try:
             for frame in frames:
+                _check_cancel(cancel_event)
                 if frame.shape != (height, width, 3) or frame.dtype != np.uint8:
                     raise MediaError('invalid_output_frame')
-                process.stdin.write(np.ascontiguousarray(frame).tobytes())
+                try:
+                    process.stdin.write(np.ascontiguousarray(frame).tobytes())
+                except BrokenPipeError as exc:
+                    _check_cancel(cancel_event)
+                    raise MediaError('video_encode_failed') from exc
             process.stdin.close()
-            if process.wait(timeout=300):
+            rc = process.wait(timeout=300)
+            _check_cancel(cancel_event)
+            if rc:
                 raise MediaError('video_encode_failed')
         finally:
             if process.poll() is None:
@@ -96,50 +283,181 @@ def encode(frames, path, fps, width, height):
                 process.wait()
             if not process.stdin.closed:
                 process.stdin.close()
+            if register_proc is not None:
+                register_proc(None)
+
 
 def validate_request(req, media):
-    if max(media['width'], media['height']) > 2048:
+    max_edge = int(os.environ.get('VIDEO_INTERPOLATION_MAX_EDGE', '3072'))
+    if max(media['width'], media['height']) > max_edge:
         raise MediaError('input_exceeds_resource_limit')
     fps = Fraction(req.target_fps_num, req.target_fps_den)
     if fps != Fraction(media['frame_rate']) * 2 or fps > 120:
         raise MediaError('only_2x_interpolation_supported')
     return {**media, 'frame_rate': str(fps), 'frames': media['frames'] * 2}
 
+
 def is_scene_cut(left, right):
     a = cv2.resize(left, (64, 64)).astype(np.float32) / 255
     b = cv2.resize(right, (64, 64)).astype(np.float32) / 255
     return float(np.abs(a - b).mean()) > 0.3
 
-def interpolate_frames(engine, source, media):
-    frames = iter(read_frames(source, media))
+
+def interpolate_frames(engine, source, media, *, cancel_event=None):
+    frames = iter(read_frames(source, media, cancel_event=cancel_event))
     left = next(frames)
     for right in frames:
+        _check_cancel(cancel_event)
         yield left
+        _check_cancel(cancel_event)
         yield (left if is_scene_cut(left, right) else engine.midpoint(left, right))
         left = right
+    _check_cancel(cancel_event)
     yield left
     yield left
 
-def process(engine, source, directory, req):
+
+def process(engine, source, directory, req, *, cancel_event=None, register_proc=None):
+    _check_cancel(cancel_event)
     media = probe(source)
     expected = validate_request(req, media)
-    window_report = None
-    frames = interpolate_frames(engine, source, media)
+    frames = interpolate_frames(engine, source, media, cancel_event=cancel_event)
     silent = directory / 'silent.mp4'
-    encode(frames, silent, expected['frame_rate'], expected['width'], expected['height'])
+    encode(
+        frames,
+        silent,
+        expected['frame_rate'],
+        expected['width'],
+        expected['height'],
+        cancel_event=cancel_event,
+        register_proc=register_proc,
+    )
     (output, preview) = (directory / 'output.mp4', directory / 'preview.mp4')
     media_timeout = max(300, math.ceil(expected['duration_seconds'] * 10))
-    command(['ffmpeg', '-v', 'error', '-nostdin', '-n', '-i', str(silent), '-i', str(source), '-map', '0:v:0', '-map', '1:a:0?', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-t', str(expected['duration_seconds']), '-movflags', '+faststart', str(output)], timeout=media_timeout)
+    if media['audio']:
+        (audio_codec, audio_duration) = _probe_audio_stream_info(source)
+        aligned_aac = (
+            audio_codec == 'aac'
+            and audio_duration is not None
+            and abs(float(audio_duration) - float(expected['duration_seconds'])) <= 0.1
+        )
+        if aligned_aac:
+            audio_mode = 'copy'
+            audio_args = ['-map', '1:a:0', '-c:a', 'copy', '-t', str(expected['duration_seconds'])]
+        else:
+            audio_mode = 'transcode'
+            audio_args = ['-map', '1:a:0', '-c:a', 'aac', '-b:a', '192k', '-t', str(expected['duration_seconds'])]
+        command(
+            [
+                'ffmpeg',
+                '-v',
+                'error',
+                '-nostdin',
+                '-n',
+                '-i',
+                str(silent),
+                '-i',
+                str(source),
+                '-map',
+                '0:v:0',
+                *audio_args,
+                '-c:v',
+                'copy',
+                '-movflags',
+                '+faststart',
+                str(output),
+            ],
+            timeout=media_timeout,
+            cancel_event=cancel_event,
+            register_proc=register_proc,
+        )
+    else:
+        audio_mode = 'none'
+        command(
+            [
+                'ffmpeg',
+                '-v',
+                'error',
+                '-nostdin',
+                '-n',
+                '-i',
+                str(silent),
+                '-map',
+                '0:v:0',
+                '-an',
+                '-c:v',
+                'copy',
+                '-movflags',
+                '+faststart',
+                str(output),
+            ],
+            timeout=media_timeout,
+            cancel_event=cancel_event,
+            register_proc=register_proc,
+        )
     (w, h, fps) = (expected['width'], expected['height'], expected['frame_rate'])
-    command(['ffmpeg', '-v', 'error', '-nostdin', '-n', '-i', str(source), '-i', str(output), '-filter_complex_threads', '1', '-filter_complex', f'[0:v]scale={w}:{h}:flags=bicubic,fps={fps},setsar=1[left];[left][1:v]hstack=inputs=2:shortest=1[v]', '-map', '[v]', '-map', '1:a:0?', '-c:v', 'libx264', '-threads', '4', '-crf', '18', '-pix_fmt', 'yuv420p', '-c:a', 'copy', '-movflags', '+faststart', str(preview)], timeout=media_timeout)
+    (pw, ph) = preview_geometry(w, h)
+    panel_w = pw // 2
+    command(
+        [
+            'ffmpeg',
+            '-v',
+            'error',
+            '-nostdin',
+            '-n',
+            '-i',
+            str(source),
+            '-i',
+            str(output),
+            '-filter_complex_threads',
+            '1',
+            '-filter_complex',
+            (
+                f'[0:v]scale={panel_w}:{ph}:flags=bicubic,fps={fps},setsar=1[left];'
+                f'[1:v]scale={panel_w}:{ph}:flags=bicubic,setsar=1[right];'
+                '[left][right]hstack=inputs=2:shortest=1[v]'
+            ),
+            '-map',
+            '[v]',
+            '-map',
+            '1:a:0?',
+            '-c:v',
+            'libx264',
+            '-threads',
+            '4',
+            '-crf',
+            '18',
+            '-pix_fmt',
+            'yuv420p',
+            '-c:a',
+            'copy',
+            '-movflags',
+            '+faststart',
+            str(preview),
+        ],
+        timeout=media_timeout,
+        cancel_event=cancel_event,
+        register_proc=register_proc,
+    )
     (actual, preview_media) = (probe(output), probe(preview))
     for key in ('width', 'height', 'frames', 'frame_rate', 'audio'):
-        if actual[key] != expected[key] or preview_media[key] != (expected[key] * 2 if key == 'width' else expected[key]):
+        if actual[key] != expected[key]:
+            raise MediaError('output_media_mismatch')
+    if (preview_media['width'], preview_media['height']) != (pw, ph):
+        raise MediaError('output_media_mismatch')
+    for key in ('frames', 'frame_rate', 'audio'):
+        if preview_media[key] != expected[key]:
             raise MediaError('output_media_mismatch')
     for path in (output, preview):
-        command(['ffmpeg', '-v', 'error', '-xerror', '-i', str(path), '-f', 'null', '-'], timeout=media_timeout)
-    silent.unlink()
+        command(
+            ['ffmpeg', '-v', 'error', '-xerror', '-i', str(path), '-f', 'null', '-'],
+            timeout=media_timeout,
+            cancel_event=cancel_event,
+            register_proc=register_proc,
+        )
+    silent.unlink(missing_ok=True)
+    actual['audio_mode'] = audio_mode
     parameters = req.model_dump(exclude={'project_id', 'idempotency_key', 'source_artifact_id', 'source_sha256'})
-    parameters.update(audio='aac_if_present', video_codec='h264', pixel_format='yuv420p', crf=18)
+    parameters.update(audio='aac_copy_if_aligned', video_codec='h264', pixel_format='yuv420p', crf=18)
     parameters.update(scene_cut_threshold=0.3, last_frame='hold')
     return {'input_media': media, 'media': actual, 'preview_media': preview_media, 'parameters': parameters}

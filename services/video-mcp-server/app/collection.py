@@ -39,7 +39,7 @@ class ResultCollector:
     def eligible(record):
         # Grok/Google/Higgsfield already collect as part of their own authorized state
         # machine; never duplicate their central Artifact or delivery workflow.
-        needs_preview = record.service in {"depth", "sr", "interpolate"} and not (record.media or {}).get("preview_artifact_id")
+        needs_preview = record.service in {"depth", "sr", "interpolate", "regenerate_2k"} and not (record.media or {}).get("preview_artifact_id")
         return (record.status == "succeeded" and (not record.artifact_id or needs_preview)
                 and record.service not in MANAGED_COLLECTORS)
 
@@ -54,7 +54,7 @@ class ResultCollector:
         if not self.stale_cached(record) or self.eligible(record):
             return record
         ids = [record.artifact_id]
-        if record.service in {"depth", "sr", "interpolate"}:
+        if record.service in {"depth", "sr", "interpolate", "regenerate_2k"}:
             ids.append(record.media["preview_artifact_id"])
         completed = []
         try:

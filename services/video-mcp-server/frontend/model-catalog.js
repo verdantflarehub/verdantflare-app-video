@@ -75,18 +75,25 @@
     const rank = value => value === '2K' ? 2000 : Number.parseInt(value,10) || 0;
     return rank(b) - rank(a);
   })[0];
+  const capForEntry = (entry, mode) => {
+    const m = entry?.model;
+    if (m?.model_id === 'open-h3-regenerate-2k-ic' || m?.id === 'local-h3-regenerate-2k-ic' || m?.upstream_model_id === 'open-h3-regenerate-2k-ic') {
+      return ['VSR2VA', '超分音视频'];
+    }
+    return modeToCap[mode];
+  };
   const deriveSpecs = entries => {
     const profiles = entries.map(profileFor);
     const caps = [...new Map(entries.flatMap(entry => {
       const active = entry.model.team_profiles?.length ? entry.model.team_profiles : entry.model.supplier_profiles;
       const list = active?.length ? active.map(p => p.mode) : [modeFor(entry)];
-      return list.map(mode => modeToCap[mode]).filter(Boolean);
+      return list.map(mode => capForEntry(entry, mode)).filter(Boolean);
     }).map(pair => [pair[0],pair])).values()];
     const summarize = values => {
       const grouped = new Map();
       values.forEach((value,index) => {
         if (!value) return;
-        const code = modeToCap[modeFor(entries[index])]?.[0] || modes[modeFor(entries[index])];
+        const code = capForEntry(entries[index], modeFor(entries[index]))?.[0] || modes[modeFor(entries[index])];
         if (!grouped.has(value)) grouped.set(value, []);
         if (code && !grouped.get(value).includes(code)) grouped.get(value).push(code);
       });
