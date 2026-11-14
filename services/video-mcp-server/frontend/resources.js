@@ -84,6 +84,18 @@ const videoCapabilityCatalog=[
     "pending": true
   },
   {
+    "id": "video.regenerate_2k",
+    "title": "H3 2K 同源重生成",
+    "description": "基于已完成 H3 原片在 2K 潜空间网格执行同源音视频重生成（Open-H3-Regenerate-2K-IC），支持串联 RIFE 48 FPS 补帧。",
+    "input": "项目内已完成 H3 视频 Artifact · 可选提示词 / 网格档位",
+    "output": "2K 24FPS / 48FPS 音视频产物",
+    "tools": [
+      "video.regenerate_2k",
+      "video.status",
+      "video.result"
+    ]
+  },
+  {
     "id": "video.interpolate",
     "title": "视频插帧",
     "description": "提高视频帧率，保持画面尺寸与原始时长。",

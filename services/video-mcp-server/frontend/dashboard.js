@@ -91,12 +91,54 @@ const taskResolution = (task) => {
   if (task.service === "higgsfield" || task.service === "grok") return "720p";
   return "";
 };
+const parseFrameRateNumber = (value) => {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (/^\d+\/\d+$/.test(trimmed)) {
+      const [num, den] = trimmed.split("/").map(Number);
+      if (den > 0) return num / den;
+    }
+    const parsed = Number(trimmed);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return null;
+};
+const taskDurationSecondsValue = (t) => {
+  if (t?.duration_seconds != null && Number.isFinite(Number(t.duration_seconds))) {
+    return Number(t.duration_seconds);
+  }
+  const mediaDur = Number(t?.media?.duration_seconds);
+  if (t?.media?.duration_seconds != null && Number.isFinite(mediaDur) && mediaDur > 0) {
+    return Math.round(mediaDur * 10) / 10;
+  }
+  const frames = Number(t?.media?.frames);
+  const fps = parseFrameRateNumber(t?.media?.frame_rate ?? t?.media?.fps);
+  if (Number.isFinite(frames) && frames > 0 && fps) {
+    return Math.round((frames / fps) * 10) / 10;
+  }
+  return null;
+};
+const taskAspectOrSizeText = (t) => {
+  if (t?.aspect_ratio) return String(t.aspect_ratio);
+  if (t?.media?.width && t?.media?.height) return `${t.media.width}×${t.media.height}`;
+  return "";
+};
+const taskDurationAspect = (t) => {
+  const dur = taskDurationSecondsValue(t);
+  const aspect = taskAspectOrSizeText(t);
+  const parts = [];
+  if (dur != null) parts.push(`${dur}s`);
+  if (aspect) parts.push(aspect);
+  return parts.length ? parts.join(" · ") : "—";
+};
 const taskFps = (task) => `${task.media?.frame_rate || 24}FPS`;
 const taskTags = (task) => {
   if (generationServices.has(task.service)) {
     const res = taskResolution(task);
     const fps = taskFps(task);
-    return `${generationBadge(task)}${res ? `<span>${escapeHTML(res)}</span>` : ""}${task.aspect_ratio ? `<span>${escapeHTML(task.aspect_ratio)}</span>` : ""}${task.duration_seconds != null ? `<span>${escapeHTML(task.duration_seconds)}S</span>` : ""}${fps ? `<span>${escapeHTML(fps)}</span>` : ""}`;
+    const dur = taskDurationSecondsValue(task);
+    return `${generationBadge(task)}${res ? `<span>${escapeHTML(res)}</span>` : ""}${task.aspect_ratio ? `<span>${escapeHTML(task.aspect_ratio)}</span>` : ""}${dur != null ? `<span>${escapeHTML(dur)}S</span>` : ""}${fps ? `<span>${escapeHTML(fps)}</span>` : ""}`;
   }
   const media = task.media || {};
   const size =
@@ -148,10 +190,22 @@ const seconds = (v) => {
   const n = Math.max(0, Math.floor(v));
   return n < 60 ? `${n}s` : `${Math.floor(n / 60)}m${n % 60}s`;
 };
+const preciseSeconds = (v) => {
+  const num = Number(v);
+  if (v == null || !Number.isFinite(num)) return "—";
+  const clamped = Math.max(0, num);
+  const exact = `${clamped.toFixed(2)}s`;
+  return clamped >= 60 ? `${exact}（${seconds(clamped)}）` : exact;
+};
 function elapsed(t) {
   if (t.service === "higgsfield") {
     if (t.timing?.processing_seconds != null) return `运行约 ${seconds(t.timing.processing_seconds)}`;
     if (t.status === "succeeded" || t.runtime_stage === "collecting") return "运行时间未记录";
+  }
+  const chainActive = t.delivery?.timing?.chain_active_seconds;
+  if (chainActive != null && Number.isFinite(Number(chainActive)) && Number(chainActive) > 0 && t.status === "succeeded") {
+    const q = t.delivery?.timing?.queue_seconds ?? t.timing?.queue_seconds;
+    return q != null ? `排队 ${seconds(q)} / 链路活跃 ${seconds(Number(chainActive))}` : `链路活跃 ${seconds(Number(chainActive))}`;
   }
   if (t.timing) {
     const q = t.timing.queue_seconds;
@@ -623,7 +677,7 @@ function render(data) {
   const tableHTML = loadedTasks
     .map(
       (t) =>
-        `<tr data-task="${escapeHTML(t.video_task_id)}"><td title="${escapeHTML(taskDisplayName(t))}">${escapeHTML(taskDisplayName(t))}</td><td>${taskTableIdentity(t)}</td><td>${escapeHTML((t.prompt || "").slice(0, 100))}</td><td>${escapeHTML(t.duration_seconds)}s · ${escapeHTML(t.aspect_ratio)}</td><td>${elapsed(t)}</td><td>${nsfwBadge(t)}${badge(t)}</td><td>${cardActionMenu(t)}</td></tr>`,
+        `<tr data-task="${escapeHTML(t.video_task_id)}"><td title="${escapeHTML(taskDisplayName(t))}">${escapeHTML(taskDisplayName(t))}</td><td>${taskTableIdentity(t)}</td><td>${escapeHTML((t.prompt || "").slice(0, 100))}</td><td>${escapeHTML(taskDurationAspect(t))}</td><td>${elapsed(t)}</td><td>${nsfwBadge(t)}${badge(t)}</td><td>${cardActionMenu(t)}</td></tr>`,
     )
     .join("");
   if ($("taskRows").innerHTML !== tableHTML)
@@ -1084,6 +1138,8 @@ $("dispatchForm").addEventListener("submit", async (event) => {
       if (references.images.length) delete body.aspect_ratio;
     }
     body.references = references;
+    const postprocess = buildDispatchPostprocess(body.route);
+    if (postprocess) body.postprocess = postprocess;
     const task = await api("/api/tasks", {
       method: "POST",
       body: JSON.stringify(body),
@@ -1102,6 +1158,22 @@ $("dispatchForm").addEventListener("submit", async (event) => {
   }
 });
 
+function buildDispatchPostprocess(route) {
+  if (!["h3", "h3-fasth3", "h3-singularity"].includes(route)) return null;
+  const useRegen2k = Boolean($("postprocessRegen2k")?.checked);
+  const useInterpolate = Boolean($("postprocessInterpolate")?.checked);
+  if (!useRegen2k && !useInterpolate) return null;
+  const postprocess = {};
+  if (useRegen2k) {
+    const gridMode = $("postprocessGridMode")?.value === "exact_2x" ? "exact_2x" : "budget_1440p";
+    postprocess.regenerate_2k = { profile: "open_h3_2k_ic", grid_mode: gridMode };
+  }
+  if (useInterpolate) {
+    postprocess.interpolate = { profile: "rife_2x" };
+  }
+  return postprocess;
+}
+
 const syncDispatchRouteControls = () => {
   const duration = $("dispatchForm").elements.duration_seconds;
   const route = $("dispatchForm").elements.route.value;
@@ -1115,6 +1187,11 @@ const syncDispatchRouteControls = () => {
   $("referenceInput").required = !grok;
   $("grokResolution").hidden = !hasResolution;
   $("dispatchForm").elements.resolution.disabled = !hasResolution;
+  const localModernH3 = ["h3", "h3-fasth3", "h3-singularity"].includes(route);
+  if ($("postprocessGroup")) $("postprocessGroup").hidden = !localModernH3;
+  if ($("postprocessGridMode")) {
+    $("postprocessGridMode").disabled = !localModernH3 || !Boolean($("postprocessRegen2k")?.checked);
+  }
   const legacy916Only = route.startsWith("h3-sol") || route === "h3-vdn";
   const minFive = legacy916Only || (fal && !falSeedance);
   const ratio = $("dispatchForm").elements.aspect_ratio;
@@ -1137,6 +1214,7 @@ const syncDispatchRouteControls = () => {
 };
 $("dispatchForm").elements.route.addEventListener("change", syncDispatchRouteControls);
 $("falModelSelect")?.addEventListener?.("change", syncDispatchRouteControls);
+$("postprocessRegen2k")?.addEventListener?.("change", syncDispatchRouteControls);
 
 window.addEventListener("DOMContentLoaded", () => {
   if (window.studioEmbedded) {

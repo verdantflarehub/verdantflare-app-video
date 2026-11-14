@@ -695,27 +695,35 @@ class Dashboard:
                     value = artifact.model_dump()
                 else:
                     inputs = Submission.model_validate_json(body)
-                    service = ("higgsfield" if inputs.route == "higgsfield" else "google" if inputs.route == "google" else "grok" if inputs.route == "grok" else "fal" if inputs.route == "fal" else
-                               "h3-sol" if inputs.route.startswith("h3-sol") else
-                               "h3-fasth3" if inputs.route == "h3-fasth3" else
-                               "h3-singularity" if inputs.route == "h3-singularity" else "h3")
+                    effective_route = (
+                        self.executor.runtime_route
+                        if inputs.route == "h3"
+                        and "h3" not in self.executor.runtime_routes
+                        and self.executor.runtime_route in {"h3-fasth3", "h3-singularity"}
+                        else inputs.route
+                    )
+                    service = ("higgsfield" if effective_route == "higgsfield" else "google" if effective_route == "google" else "grok" if effective_route == "grok" else "fal" if effective_route == "fal" else
+                               "h3-sol" if effective_route.startswith("h3-sol") else
+                               "h3-fasth3" if effective_route == "h3-fasth3" else
+                               "h3-singularity" if effective_route == "h3-singularity" else "h3")
                     if service not in {"h3", "h3-sol", "h3-fasth3", "h3-singularity", "fal", "grok", "google", "higgsfield"}:
                         return JSONResponse({"error": "service_not_connected"}, status_code=409)
                     if service == "fal" and not self.executor.fal.connected():
                         return JSONResponse({"error": "service_not_connected"}, status_code=409)
                     if service == "h3-sol":
-                        selected_route = inputs.route
+                        selected_route = effective_route
                         route_config = self.executor.runtime_routes.get(selected_route)
                         route_requires_token = route_config is not None and route_config["requires_token"]
                         if (route_config is None and not (self.executor.sol_url and self.executor.sol_token)) or (route_requires_token and not self.executor.sol_token):
                             return JSONResponse({"error": "service_not_connected"}, status_code=409)
                     if service == "h3-fasth3":
-                        if (inputs.route not in self.executor.runtime_routes and inputs.route != self.executor.runtime_route) or not self.executor.fasth3_token:
+                        if (effective_route not in self.executor.runtime_routes and effective_route != self.executor.runtime_route) or not self.executor.fasth3_token:
                             return JSONResponse({"error": "service_not_connected"}, status_code=409)
                     if service == "h3-singularity":
-                        if inputs.route not in self.executor.runtime_routes or not self.executor.singularity_token:
+                        if (effective_route not in self.executor.runtime_routes and effective_route != self.executor.runtime_route) or not self.executor.singularity_token:
                             return JSONResponse({"error": "service_not_connected"}, status_code=409)
                     kwargs = inputs.model_dump(exclude={"model"})
+                    kwargs["route"] = effective_route
                     record, naming = await run_in_threadpool(titles.create, self.executor, model=inputs.model, **kwargs)
                     value = {**self._public_task(record, self.executor.tasks), **naming}
             return JSONResponse(value, headers={"Cache-Control": "no-store"})

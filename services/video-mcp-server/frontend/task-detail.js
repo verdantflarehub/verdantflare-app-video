@@ -36,6 +36,7 @@ function clearTaskDetail() {
   $("detailStatus").textContent = "";
   if ($("detailIdentityBar")) $("detailIdentityBar").replaceChildren();
   if ($("detailOutputMeta")) $("detailOutputMeta").replaceChildren();
+  if ($("detailStageTiming")) { $("detailStageTiming").replaceChildren(); $("detailStageTiming").hidden = true; }
   $("taskPrompt").replaceChildren();
   $("taskParameters").replaceChildren();
   $("referenceGroups").replaceChildren();
@@ -238,7 +239,8 @@ async function refreshTaskDetail(id, version) {
   $("detailMessage").textContent = "";
   $("detailContent").hidden = false;
   const res = taskResolution(task);
-  const specSummary = [res, task.aspect_ratio, task.duration_seconds != null ? `${task.duration_seconds}S` : null, taskFps(task)].filter(Boolean).join(" / ");
+  const durSec = taskDurationSecondsValue(task);
+  const specSummary = [res, task.aspect_ratio, durSec != null ? `${durSec}S` : null, taskFps(task)].filter(Boolean).join(" / ");
   $("detailSubtitle").textContent = `${date(task.created_at)} · ${taskOperation(task)}${specSummary ? ` · 规格：${specSummary}` : ""}`;
   $("detailStatus").className = `detail-status ${task.status}`;
   $("detailStatus").textContent = taskStatusLabel(task);
@@ -261,7 +263,7 @@ async function refreshTaskDetail(id, version) {
       }
       if (res) pills.push(`<span>${escapeHTML(res)}</span>`);
       if (task.aspect_ratio) pills.push(`<span>${escapeHTML(task.aspect_ratio)}</span>`);
-      if (task.duration_seconds != null) pills.push(`<span>${escapeHTML(task.duration_seconds)}S</span>`);
+      if (durSec != null) pills.push(`<span>${escapeHTML(durSec)}S</span>`);
       const fps = taskFps(task);
       if (fps) pills.push(`<span>${escapeHTML(fps)}</span>`);
     } else {
@@ -271,7 +273,41 @@ async function refreshTaskDetail(id, version) {
     }
     $("detailOutputMeta").innerHTML = pills.join("");
   }
-  const rows = [["任务 ID", task.video_task_id], ["项目 ID", task.project_id], ["幂等键", task.idempotency_key], ["模型", taskModel(task)], ["渠道", taskRoute(task)], ["生成类型", task.presentation?.generation_code ? `${task.presentation.generation_code} · ${task.presentation.generation_label}` : "未记录"], ["执行后端", task.route || task.service || "未记录"], ["执行实例", task.execution_instance_id || "未上报"], ["开始时间", date(task.created_at)], ["排队时间", seconds(task.timing?.queue_seconds)], ["运行时间", seconds(task.timing?.processing_seconds ?? task.timing?.processing_elapsed_seconds)], ["总耗时", seconds(task.timing?.total_seconds)], ["时长 / 画幅", `${task.duration_seconds}s · ${task.aspect_ratio}`], ["Seed", task.seed], ["Runtime 版本", task.runtime_version], ["输入摘要", task.input_digest]];
+  const dt = task.delivery?.timing;
+  const hasRegen2k = Boolean(
+    task.service === "regenerate_2k" ||
+    task.delivery?.regenerate_2k_artifact_id ||
+    task.delivery?.profile === "open_h3_2k_ic" ||
+    (Array.isArray(task.delivery?.profiles) && task.delivery.profiles.includes("open_h3_2k_ic"))
+  );
+  const hasInterpolate = Boolean(
+    task.delivery?.profile === "rife_2x" ||
+    (Array.isArray(task.delivery?.profiles) && task.delivery.profiles.includes("rife_2x"))
+  );
+  if ($("detailStageTiming")) {
+    if (dt && typeof dt === "object") {
+      const stagePills = [];
+      if (dt.queue_seconds != null) stagePills.push(`<span><strong>排队</strong> ${escapeHTML(preciseSeconds(dt.queue_seconds))}</span>`);
+      if (task.service !== "regenerate_2k" && dt.generation_active_seconds != null) {
+        stagePills.push(`<span><strong>P1 生成</strong> ${escapeHTML(preciseSeconds(dt.generation_active_seconds))}</span>`);
+      }
+      if (hasRegen2k && dt.regenerate_2k_active_seconds != null) {
+        stagePills.push(`<span><strong>P2 2K 重生成</strong> ${escapeHTML(preciseSeconds(dt.regenerate_2k_active_seconds))}</span>`);
+      }
+      if (hasInterpolate && dt.interpolation_active_seconds != null) {
+        stagePills.push(`<span><strong>P3 RIFE 补帧</strong> ${escapeHTML(preciseSeconds(dt.interpolation_active_seconds))}</span>`);
+      }
+      if (dt.chain_active_seconds != null) {
+        stagePills.push(`<span><strong>链路活跃合计</strong> ${escapeHTML(preciseSeconds(dt.chain_active_seconds))}</span>`);
+      }
+      $("detailStageTiming").innerHTML = stagePills.join("");
+      $("detailStageTiming").hidden = stagePills.length === 0;
+    } else {
+      $("detailStageTiming").replaceChildren();
+      $("detailStageTiming").hidden = true;
+    }
+  }
+  const rows = [["任务 ID", task.video_task_id], ["项目 ID", task.project_id], ["幂等键", task.idempotency_key], ["模型", taskModel(task)], ["渠道", taskRoute(task)], ["生成类型", task.presentation?.generation_code ? `${task.presentation.generation_code} · ${task.presentation.generation_label}` : "未记录"], ["执行后端", task.route || task.service || "未记录"], ["执行实例", task.execution_instance_id || "未上报"], ["开始时间", date(task.created_at)], ["排队时间", seconds(task.timing?.queue_seconds)], ["运行时间", seconds(task.timing?.processing_seconds ?? task.timing?.processing_elapsed_seconds)], ["总耗时", seconds(task.timing?.total_seconds)], ["时长 / 画幅", taskDurationAspect(task)], ["Seed", task.seed], ["Runtime 版本", task.runtime_version], ["输入摘要", task.input_digest]];
   if (task.service === "higgsfield") {
     rows.splice(rows.findIndex(([label]) => label === "总耗时"), 1);
     const runtime = rows.find(row => row[0] === "运行时间");
@@ -283,9 +319,26 @@ async function refreshTaskDetail(id, version) {
   if (gridMode) rows.push(["2K 网格档位", gridMode]);
   if (task.delivery) {
     rows.push(["交付阶段", `${task.delivery.stage || "—"} / ${task.delivery.status || "—"}`]);
+    if (dt && typeof dt === "object") {
+      if (dt.queue_seconds != null) rows.push(["链路排队耗时", preciseSeconds(dt.queue_seconds)]);
+      if (task.service !== "regenerate_2k" && dt.generation_active_seconds != null) {
+        rows.push(["P1 生成活跃耗时", preciseSeconds(dt.generation_active_seconds)]);
+      }
+      if (hasRegen2k && dt.regenerate_2k_active_seconds != null) {
+        rows.push(["P2 2K 重生成活跃耗时", preciseSeconds(dt.regenerate_2k_active_seconds)]);
+      }
+      if (hasInterpolate && dt.interpolation_active_seconds != null) {
+        rows.push(["P3 RIFE 补帧活跃耗时", preciseSeconds(dt.interpolation_active_seconds)]);
+      }
+      if (dt.chain_active_seconds != null) {
+        rows.push(["全链路活跃总耗时", preciseSeconds(dt.chain_active_seconds)]);
+      }
+    }
+    if (task.delivery.total_seconds != null) {
+      rows.push(["全链路交付总耗时", preciseSeconds(task.delivery.total_seconds)]);
+    }
     if (task.delivery.source_artifact_id) rows.push(["M1 原片产物 ID", task.delivery.source_artifact_id]);
     if (task.delivery.regenerate_2k_artifact_id) rows.push(["M2 2K 24FPS 产物 ID", task.delivery.regenerate_2k_artifact_id]);
-    const hasInterpolate = Array.isArray(task.delivery.profiles) ? task.delivery.profiles.includes("rife_2x") : task.delivery.profile === "rife_2x";
     if (hasInterpolate && task.delivery.final_artifact_id) rows.push([task.delivery.regenerate_2k_artifact_id ? "M3 2K 48FPS 产物 ID" : "48FPS 插帧产物 ID", task.delivery.final_artifact_id]);
   }
   if (task.runtime_stage) rows.push(["任务阶段", task.runtime_stage === "submission_unknown" ? "提交待确认，请勿重复生成" : task.service === "higgsfield" && task.runtime_stage === "collecting" ? "视频已生成" : task.runtime_stage]);

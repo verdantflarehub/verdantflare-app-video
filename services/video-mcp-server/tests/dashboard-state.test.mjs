@@ -351,3 +351,140 @@ test('regenerate_2k and 2K proportional grid dimensions render VSR2VA badge and 
   assert.doesNotMatch(tagsHtml, /1080p|121/);
 });
 
+test('stage timing breakdown, standalone regenerate_2k duration/size fallback, and optional postprocess switches', async () => {
+  const app = setup();
+  const detailScript = readFileSync(new URL('../frontend/task-detail.js', import.meta.url), 'utf8');
+  app.run(detailScript);
+
+  // 1. Standalone regenerate_2k without duration_seconds/aspect_ratio must never render "nulls · null".
+  assert.equal(app.run(`taskDurationAspect({ service: 'regenerate_2k', duration_seconds: null, aspect_ratio: null, media: { width: 1408, height: 2464, frames: 214, frame_rate: '48' } })`), '4.5s · 1408×2464');
+  assert.equal(app.run(`taskDurationAspect({ service: 'regenerate_2k', duration_seconds: null, aspect_ratio: null })`), '—');
+
+  // 2. Optional postprocess switches default to off and emit normalized payloads only when enabled on local H3 routes.
+  for (const html of [
+    readFileSync(new URL('../frontend/dashboard.html', import.meta.url), 'utf8'),
+    readFileSync(new URL('../frontend/task-detail.html', import.meta.url), 'utf8'),
+  ]) {
+    assert.match(html, /id="postprocessGroup"/);
+    assert.match(html, /id="postprocessRegen2k"/);
+    assert.match(html, /id="postprocessGridMode"/);
+    assert.match(html, /id="postprocessInterpolate"/);
+    assert.match(html, /id="detailStageTiming"/);
+  }
+  assert.equal(app.run(`buildDispatchPostprocess('h3')`), null);
+  app.run(`$("postprocessRegen2k").checked = true; $("postprocessGridMode").value = "budget_1440p"; $("postprocessInterpolate").checked = true;`);
+  assert.deepEqual(JSON.parse(app.run(`JSON.stringify(buildDispatchPostprocess('h3'))`)), {
+    regenerate_2k: { profile: 'open_h3_2k_ic', grid_mode: 'budget_1440p' },
+    interpolate: { profile: 'rife_2x' },
+  });
+  assert.equal(app.run(`buildDispatchPostprocess('fal')`), null);
+
+  // 3. Task detail renders explicit P1 / P2 / P3 stage timing in both #detailStageTiming and #taskParameters.
+  await app.run(`(async () => {
+    authorized = true;
+    revision = 7;
+    document.createDocumentFragment = () => ({ append() {} });
+    document.createTextNode = text => ({ text });
+    const origGet = document.getElementById;
+    document.getElementById = id => id.startsWith('reference-') ? null : origGet(id);
+    $("videoBreadcrumb").querySelector = () => null;
+    $("imagePreview").close = () => {};
+    $("imagePreviewImage").removeAttribute = () => {};
+    $("taskParameters").querySelector = () => ({ append() {} });
+    renderReferences = () => {};
+    loadTaskResult = async () => {};
+    api = async () => ({
+      video_task_id: 'video_task_e2e2',
+      project_id: 'demo',
+      idempotency_key: 'k2',
+      service: 'regenerate_2k',
+      route: 'h3-regenerate-2k',
+      status: 'succeeded',
+      created_at: '2026-11-14T14:40:00Z',
+      duration_seconds: null,
+      aspect_ratio: null,
+      artifact: { artifact_id: 'art_m3' },
+      grid_mode: 'budget_1440p',
+      media: { width: 1408, height: 2464, frames: 214, frame_rate: '48' },
+      presentation: { is_generation: true, model_label: 'Open-H3-Regenerate-2K-IC', channel_label: '本地', channel_icon: 'local', generation_code: 'VSR2VA', generation_label: '超分音视频' },
+      timing: { queue_seconds: 0, processing_seconds: 389.94, total_seconds: 412.1 },
+      delivery: {
+        stage: 'done',
+        status: 'succeeded',
+        profile: 'rife_2x',
+        profiles: ['rife_2x'],
+        grid_mode: 'budget_1440p',
+        source_artifact_id: 'art_src',
+        regenerate_2k_artifact_id: 'art_m2',
+        final_artifact_id: 'art_m3',
+        total_seconds: 412.1,
+        timing: {
+          queue_seconds: 0,
+          generation_active_seconds: 0,
+          regenerate_2k_active_seconds: 389.94,
+          interpolation_active_seconds: 22.05,
+          chain_active_seconds: 411.99,
+        },
+      },
+    });
+    await refreshTaskDetail('video_task_e2e2', 7);
+  })()`);
+  const stageTimingHtml = app.nodes.get('detailStageTiming').innerHTML;
+  const paramsHtml = app.nodes.get('taskParameters').innerHTML;
+  assert.equal(app.nodes.get('detailStageTiming').hidden, false);
+  assert.match(stageTimingHtml, /P2 2K 重生成.*389\.94s/);
+  assert.match(stageTimingHtml, /P3 RIFE 补帧.*22\.05s/);
+  assert.match(stageTimingHtml, /链路活跃合计.*411\.99s/);
+  assert.doesNotMatch(stageTimingHtml, /P1 生成/);
+  assert.match(paramsHtml, /P2 2K 重生成活跃耗时.*389\.94s/);
+  assert.match(paramsHtml, /P3 RIFE 补帧活跃耗时.*22\.05s/);
+  assert.match(paramsHtml, /全链路活跃总耗时.*411\.99s/);
+  assert.match(paramsHtml, /4\.5s · 1408×2464/);
+  assert.doesNotMatch(paramsHtml, /nulls|null/);
+
+  // 4. Full P1 -> P2 -> P3 chain task renders P1, P2, P3, and chain active total.
+  await app.run(`(async () => {
+    api = async () => ({
+      video_task_id: 'video_task_e2e1',
+      project_id: 'demo',
+      idempotency_key: 'k1',
+      service: 'h3-fasth3',
+      route: 'h3-fasth3',
+      status: 'succeeded',
+      created_at: '2026-11-14T14:20:00Z',
+      duration_seconds: 5,
+      aspect_ratio: '16:9',
+      artifact: { artifact_id: 'art_m3_16x9' },
+      grid_mode: 'budget_1440p',
+      media: { width: 2464, height: 1408, frames: 248, frame_rate: '48' },
+      presentation: { is_generation: true, model_label: 'Open-H3-FastH3-Ref2VA', channel_label: '本地', channel_icon: 'local', generation_code: 'R2V', generation_label: '参考生视频' },
+      timing: { queue_seconds: 0, processing_seconds: 61.08, total_seconds: 567.2 },
+      delivery: {
+        stage: 'done',
+        status: 'succeeded',
+        profile: 'rife_2x',
+        profiles: ['open_h3_2k_ic', 'rife_2x'],
+        grid_mode: 'budget_1440p',
+        source_artifact_id: 'art_m1',
+        regenerate_2k_artifact_id: 'art_m2',
+        final_artifact_id: 'art_m3_16x9',
+        total_seconds: 567.2,
+        timing: {
+          queue_seconds: 0,
+          generation_active_seconds: 61.08,
+          regenerate_2k_active_seconds: 483.0,
+          interpolation_active_seconds: 22.36,
+          chain_active_seconds: 566.44,
+        },
+      },
+    });
+    await refreshTaskDetail('video_task_e2e1', 7);
+  })()`);
+  assert.match(app.nodes.get('detailStageTiming').innerHTML, /P1 生成.*61\.08s/);
+  assert.match(app.nodes.get('detailStageTiming').innerHTML, /P2 2K 重生成.*483\.00s/);
+  assert.match(app.nodes.get('detailStageTiming').innerHTML, /P3 RIFE 补帧.*22\.36s/);
+  assert.match(app.nodes.get('detailStageTiming').innerHTML, /链路活跃合计.*566\.44s/);
+  assert.match(app.nodes.get('taskParameters').innerHTML, /P1 生成活跃耗时.*61\.08s/);
+});
+
+

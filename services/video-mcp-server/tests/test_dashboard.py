@@ -422,3 +422,51 @@ class DashboardTest(unittest.TestCase):
             self.assertEqual(failed_extract.json(), {"error": "preview_extraction_failed"})
             self.assertNotIn("secret", failed_extract.text)
 
+    def test_default_h3_alias_resolves_to_active_fasth3_runtime_route(self):
+        captured: dict[str, object] = {}
+
+        def fake_create(executor_obj, **kwargs):
+            captured.update(kwargs)
+            record = self.tasks.create(
+                project_id=kwargs["project_id"],
+                idempotency_key=kwargs["idempotency_key"],
+                request={"route": kwargs["route"], "prompt": kwargs["prompt"]},
+                input_digest="alias-digest",
+                runtime_task_id="rt-fasth3-alias",
+                status="queued",
+            )
+            return record, {"title": "Alias Task", "title_source": "fallback", "title_revision": 0, "title_updated_at": None}
+
+        with mock.patch.object(self.executor, "runtime_route", "h3-fasth3"), \
+             mock.patch.object(self.executor, "runtime_routes", {"h3-fasth3": {"url": "http://fasth3", "requires_token": True}}), \
+             mock.patch.object(self.executor, "fasth3_token", "tok-fasth3"), \
+             mock.patch("app.dashboard.titles.create", side_effect=fake_create):
+            res = self.client.post(
+                "/api/tasks",
+                headers=self.headers,
+                json={
+                    "project_id": "demo",
+                    "idempotency_key": "alias-h3-postprocess",
+                    "route": "h3",
+                    "model": "minimax-h3-ref2va",
+                    "prompt": "test alias",
+                    "duration_seconds": 5,
+                    "aspect_ratio": "16:9",
+                    "postprocess": {
+                        "regenerate_2k": {"profile": "open_h3_2k_ic", "grid_mode": "budget_1440p"},
+                        "interpolate": {"profile": "rife_2x"},
+                    },
+                    "references": {"images": [{"artifact_id": "art_ref", "purpose": "identity"}]},
+                },
+            )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(captured["route"], "h3-fasth3")
+        self.assertEqual(
+            captured["postprocess"],
+            {
+                "regenerate_2k": {"profile": "open_h3_2k_ic", "grid_mode": "budget_1440p"},
+                "interpolate": {"profile": "rife_2x"},
+            },
+        )
+
+

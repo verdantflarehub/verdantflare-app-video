@@ -1220,5 +1220,16 @@ html[data-page="task"] [data-action="dispatch"] { display: none !important; }
 .card-action-item:hover,.card-action-item:focus-visible{background:rgba(76,227,154,0.14);color:var(--green);outline:none}
 .card-action-item.danger{color:var(--rose)}
 .card-action-item.danger:hover,.card-action-item.danger:focus-visible{background:rgba(255,101,112,0.16);color:var(--rose)}
+.stage-timing-meta span{background:rgba(76,227,154,0.08);border-color:rgba(76,227,154,0.28);color:#cfe4d6}
+.stage-timing-meta strong{color:var(--green);font-weight:600}
+.postprocess-fieldset{display:flex;flex-direction:column;gap:10px;padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:#101713}
+.postprocess-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;font-size:12px}
+.postprocess-head strong{color:var(--paper);font-size:13px}
+.postprocess-head span{color:var(--muted);font-size:11.5px}
+.postprocess-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;align-items:center}
+.form-grid label.postprocess-check{flex-direction:row;align-items:center;gap:8px;margin:0;color:var(--paper);font-size:12.5px;cursor:pointer}
+.form-grid label.postprocess-check input[type="checkbox"]{width:16px;height:16px;padding:0;margin:0;flex:none;accent-color:var(--green)}
+.form-grid label.postprocess-grid-select{margin:0;font-size:12px}
+.form-grid label.postprocess-grid-select select{padding:8px 10px;font-size:12px}
 
 
