@@ -114,7 +114,8 @@ class ComfyUIVideoLocalChannelTests(unittest.TestCase):
                 "COMFYUI_ORGANIZATION_ID": ORG_A,
                 "VIDEO_ARTIFACT_SERVICE_URL": "http://station-core.verdantflare-station.svc.cluster.local:8080",
                 "VIDEO_ARTIFACT_SERVICE_TOKEN": "station-artifact-token-1234567890",
-                "VIDEO_PROJECT_SERVICE_URL": "",
+                "VIDEO_PROJECT_SERVICE_URL": "http://project.verdantflare-app.svc.cluster.local:8080",
+                "VIDEO_PROJECT_SERVICE_TOKEN": "video-project-token-1234567890",
                 "H3_RUNTIME_ROUTE": "h3",
                 "H3_RUNTIME_ROUTES": "",
                 "FAL_KEY": "",
@@ -126,6 +127,15 @@ class ComfyUIVideoLocalChannelTests(unittest.TestCase):
 
         def transport_handler(req: httpx.Request) -> httpx.Response:
             path = req.url.path
+            if path == "/internal/v1/project/open" and req.method == "POST":
+                if req.headers.get("Authorization") != "Bearer video-project-token-1234567890":
+                    return httpx.Response(401, json={"error": "unauthorized"})
+                p_body = json.loads(req.content.decode("utf-8"))
+                req_org = (req.headers.get("X-Organization-Id") or "").strip().lower()
+                req_uid = (req.headers.get("X-User-Id") or "").strip().lower()
+                if p_body.get("project_id") != PROJ_A or req_org != ORG_A or req_uid != USER_A:
+                    return httpx.Response(403, json={"error": "forbidden"})
+                return httpx.Response(200, json={"ok": True, "project_id": PROJ_A})
             if path == "/internal/v1/comfyui/published-channels":
                 if req.headers.get("Authorization") != "Bearer comfy-internal-token-1234567890":
                     return httpx.Response(401, json={"error": "unauthorized"})
@@ -431,6 +441,221 @@ class ComfyUIVideoLocalChannelTests(unittest.TestCase):
             self.assertEqual(cancelled["status"], "cancelled")
             self.assertEqual(len(self.cancel_calls), 1)
             self.assertEqual(self.cancel_calls[0]["task_id"], REMOTE_TASK_ID)
+        finally:
+            CALLER.reset(tok)
+
+    def test_slug_regex_parity_4_to_64_chars_and_letter_start(self) -> None:
+        from app.providers.comfyui import MODEL_ID_RE
+
+        self.assertIsNotNone(MODEL_ID_RE.fullmatch("comfyui:abcd@1.0.0"))
+        self.assertIsNotNone(MODEL_ID_RE.fullmatch("comfyui:" + ("a" + "b" * 62 + "9") + "@2.3.4"))
+        self.assertIsNone(MODEL_ID_RE.fullmatch("comfyui:abc@1.0.0"))
+        self.assertIsNone(MODEL_ID_RE.fullmatch("comfyui:9abcd@1.0.0"))
+        self.assertIsNone(MODEL_ID_RE.fullmatch("comfyui:" + ("a" * 65) + "@1.0.0"))
+
+    def test_actor_fail_closed_and_caller_authorization_on_cancel_status_result(self) -> None:
+        # 1. Missing user_id in CALLER or saved_authority never falls back to default_user_id
+        tok_missing_uid = CALLER.set({"organization_id": ORG_A, "user_id": ""})
+        try:
+            with self.assertRaises(PermissionError):
+                self.executor.comfyui._resolve_actor(PROJ_A)
+        finally:
+            CALLER.reset(tok_missing_uid)
+        with self.assertRaises(PermissionError):
+            self.executor.comfyui._resolve_actor(PROJ_A, saved_authority={"organization_id": ORG_A, "user_id": ""})
+
+        # 2. Create task under verified ORG_A caller
+        tok_a = CALLER.set({"organization_id": ORG_A, "user_id": USER_A})
+        try:
+            created = server.video_create(
+                project_id=PROJ_A,
+                idempotency_key="idem-auth-video-01",
+                model="comfyui:wan-i2v-local@1.0.0",
+                route="comfyui",
+                prompt="Auth check task",
+                references={"images": [{"artifact_id": self.ref_image.artifact_id, "purpose": "first_frame"}]},
+            ).structured_content
+            task_id = created["video_task_id"]
+        finally:
+            CALLER.reset(tok_a)
+
+        # Unauthenticated caller (CALLER=None) is rejected
+        for fn in (server.video_cancel, server.video_status, server.video_result):
+            res = fn(video_task_id=task_id).model_dump(by_alias=True)
+            self.assertTrue(res["isError"])
+
+        # Cross-org caller ORG_B is rejected
+        tok_b = CALLER.set({"organization_id": ORG_B, "user_id": USER_A})
+        try:
+            for fn in (server.video_cancel, server.video_status, server.video_result):
+                res = fn(video_task_id=task_id).model_dump(by_alias=True)
+                self.assertTrue(res["isError"])
+        finally:
+            CALLER.reset(tok_b)
+        self.assertEqual(self.cancel_calls, [])
+
+        # Project write revocation allows status (require_write=False) but denies cancel (require_write=True)
+        def fake_project_open(client, project_id, authority=None, *, require_write=True):
+            if require_write:
+                raise PermissionError("project access denied")
+            return {"organization_id": ORG_A, "user_id": USER_A}
+
+        with (
+            mock.patch.dict(os.environ, {"VIDEO_PROJECT_SERVICE_URL": "http://project.svc:8080"}, clear=False),
+            mock.patch("app.providers.comfyui.authorize", side_effect=fake_project_open),
+        ):
+            tok_ro = CALLER.set({"organization_id": ORG_A, "user_id": USER_A})
+            try:
+                ok_status = server.video_status(video_task_id=task_id).model_dump(by_alias=True)
+                self.assertFalse(ok_status.get("isError", False))
+                denied_cancel = server.video_cancel(video_task_id=task_id).model_dump(by_alias=True)
+                self.assertTrue(denied_cancel["isError"])
+            finally:
+                CALLER.reset(tok_ro)
+        self.assertEqual(self.cancel_calls, [])
+
+        # Missing project authorization config MUST fail closed even for a same-org caller (R2-H01)
+        other_same_org_user = "0196ed00-0000-7000-8000-000000000099"
+        rec_existing = self.executor.tasks.get(task_id)
+        with mock.patch.dict(
+            os.environ,
+            {"VIDEO_PROJECT_SERVICE_URL": "", "VIDEO_PROJECT_SERVICE_TOKEN": ""},
+            clear=False,
+        ):
+            tok_same_org = CALLER.set({"organization_id": ORG_A, "user_id": other_same_org_user})
+            try:
+                with self.assertRaises(PermissionError):
+                    self.executor.comfyui.authorize_record(rec_existing, require_write=True)
+                with self.assertRaises(PermissionError):
+                    self.executor.comfyui.authorize_record(rec_existing, require_write=False)
+                for fn in (server.video_cancel, server.video_status, server.video_result):
+                    res_unconf = fn(video_task_id=task_id).model_dump(by_alias=True)
+                    self.assertTrue(res_unconf["isError"])
+            finally:
+                CALLER.reset(tok_same_org)
+        self.assertEqual(self.cancel_calls, [])
+
+    def test_prepared_crash_recovery_and_unconfirmed_cancel_settlement(self) -> None:
+        from starlette.testclient import TestClient
+
+        tok = CALLER.set({"organization_id": ORG_A, "user_id": USER_A})
+        try:
+            created = server.video_create(
+                project_id=PROJ_A,
+                idempotency_key="idem-recover-unconfirmed-01",
+                model="comfyui:wan-i2v-local@1.0.0",
+                route="comfyui",
+                prompt="Recover and unconfirmed cancel",
+                references={"images": [{"artifact_id": self.ref_image.artifact_id, "purpose": "first_frame"}]},
+            ).structured_content
+            task_id = created["video_task_id"]
+            self.assertEqual(len(self.upload_commits), 1)
+            self.assertEqual(len(self.invoke_calls), 1)
+
+            # 1. Simulate crash in 'prepared' before runtime_task_id was saved -> status() replays _submit without re-uploading!
+            rec = self.executor.tasks.get(task_id)
+            pstate = dict(rec.provider_state or {})
+            pstate["invoke_dispatched"] = False
+            rec = self.executor.tasks.update(rec, runtime_task_id="", status="queued", runtime_stage="prepared", provider_state=pstate)
+            st_recovered = server.video_status(video_task_id=task_id).structured_content
+            self.assertIn(st_recovered["status"], {"queued", "running"})
+            self.assertEqual(len(self.upload_commits), 1)
+            self.assertEqual(len(self.invoke_calls), 2)
+
+            # 2. Simulate timeout during api.invoke (invoke_dispatched=True, runtime_task_id="")
+            #    followed by 409 OPERATION_IN_PROGRESS on replay (R2-H02) + remote reconciling on cancel
+            rec = self.executor.tasks.get(task_id)
+            pstate = dict(rec.provider_state or {})
+            pstate["invoke_dispatched"] = True
+            pstate["_cancel_requested"] = True
+            pstate["worker_settled"] = False
+            self.executor.tasks.update(
+                rec,
+                runtime_task_id="",
+                status="running",
+                runtime_stage="canceling",
+                provider_state=pstate,
+            )
+
+            orig_call = self.executor.comfyui._call_headless
+            allow_terminal_cancel = False
+            return_409_in_progress = True
+
+            def staged_headless(*, tool_name, arguments, actor, timeout=30.0):
+                if tool_name == "api.invoke" and return_409_in_progress:
+                    return 409, {
+                        "code": "OPERATION_IN_PROGRESS",
+                        "message": "idempotent invoke still executing",
+                    }
+                if tool_name == "task.cancel" and not allow_terminal_cancel:
+                    self.cancel_calls.append(arguments)
+                    return 200, {
+                        "task_id": REMOTE_TASK_ID,
+                        "instance_id": INSTANCE_ID,
+                        "project_id": arguments["project_id"],
+                        "state": "reconciling",
+                        "cancel_requested": True,
+                    }
+                if tool_name == "task.get" and not allow_terminal_cancel:
+                    return 200, {
+                        "task_id": REMOTE_TASK_ID,
+                        "instance_id": INSTANCE_ID,
+                        "project_id": arguments["project_id"],
+                        "state": "reconciling",
+                        "result": None,
+                    }
+                return orig_call(tool_name=tool_name, arguments=arguments, actor=actor, timeout=timeout)
+
+            with mock.patch.object(self.executor.comfyui, "_call_headless", side_effect=staged_headless):
+                # Replay hitting 409 OPERATION_IN_PROGRESS MUST NOT settle as failed; keeps canceling + blocks /delete!
+                in_prog_status = server.video_status(video_task_id=task_id).structured_content
+                self.assertEqual(in_prog_status["status"], "running")
+                self.assertEqual(in_prog_status["stage"], "canceling")
+                in_prog_rec = self.executor.tasks.get(task_id)
+                self.assertFalse(in_prog_rec.provider_state.get("worker_settled"))
+                self.assertTrue(in_prog_rec.provider_state.get("_cancel_requested"))
+
+                dash_app_pre = server.dashboard.routes()
+                from starlette.applications import Starlette
+                pre_app = Starlette(routes=dash_app_pre)
+                pre_app.state.tasks = self.executor.tasks
+                pre_app.state.artifacts = self.executor.artifacts
+                pre_app.state.ratings = ContentRatingStore(self.executor.tasks.db_path, domain="video")
+                with TestClient(pre_app) as pre_client:
+                    del_409 = pre_client.post(f"/api/tasks/{task_id}/delete")
+                    self.assertEqual(del_409.status_code, 409)
+                    self.assertEqual(del_409.json()["error"], "task_cancel_pending")
+
+                return_409_in_progress = False
+                cancel_pending = server.video_cancel(video_task_id=task_id).structured_content
+                self.assertEqual(cancel_pending["status"], "running")
+                self.assertEqual(cancel_pending["stage"], "canceling")
+                self.assertTrue(cancel_pending["cancel_pending"])
+                mid_rec = self.executor.tasks.get(task_id)
+                self.assertEqual(mid_rec.runtime_task_id, REMOTE_TASK_ID)
+                self.assertFalse(mid_rec.provider_state.get("worker_settled"))
+
+                # Dashboard /delete refuses with 409 while remote cancel is unconfirmed!
+                dash_app = server.dashboard.routes()
+                from starlette.applications import Starlette
+                test_app = Starlette(routes=dash_app)
+                test_app.state.tasks = self.executor.tasks
+                test_app.state.artifacts = self.executor.artifacts
+                test_app.state.ratings = ContentRatingStore(self.executor.tasks.db_path, domain="video")
+                with TestClient(test_app) as client:
+                    del_resp = client.post(f"/api/tasks/{task_id}/delete")
+                    self.assertEqual(del_resp.status_code, 409)
+                    self.assertEqual(del_resp.json()["error"], "task_cancel_pending")
+
+                # Once ComfyUI confirms cancelled, status settles to cancelled + worker_settled=True, and delete succeeds!
+                allow_terminal_cancel = True
+                self.remote_state = "cancelled"
+                settled = server.video_status(video_task_id=task_id).structured_content
+                self.assertEqual(settled["status"], "cancelled")
+                self.assertTrue(self.executor.tasks.get(task_id).provider_state.get("worker_settled"))
+                with TestClient(test_app) as client:
+                    del_ok = client.post(f"/api/tasks/{task_id}/delete")
+                    self.assertEqual(del_ok.status_code, 200)
         finally:
             CALLER.reset(tok)
 

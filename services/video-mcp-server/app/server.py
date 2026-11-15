@@ -864,6 +864,8 @@ def video_cancel(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
     existing = t_store.get(tid)
     if _is_task_nsfw(existing):
         raise TaskNotFound(f"NOT_FOUND: {tid}")
+    if existing.service == "comfyui":
+        executor.comfyui.authorize_record(existing, require_write=True)
     if existing.service == "higgsfield":
         executor.higgsfield.authorize_record(existing)
     if existing.service == "fal":
@@ -874,6 +876,8 @@ def video_cancel(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
         "task_id": record.video_task_id,
         "video_task_id": record.video_task_id,
         "status": record.status,
+        "stage": record.runtime_stage,
+        "cancel_pending": record.runtime_stage == "canceling",
         "service": record.service,
         "runtime_route": record.runtime_route,
         "error": record.error,
@@ -890,6 +894,8 @@ def video_status(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
     existing = t_store.get(tid)
     if _is_task_nsfw(existing):
         raise TaskNotFound(f"NOT_FOUND: {tid}")
+    if existing.service == 'comfyui':
+        executor.comfyui.authorize_record(existing, require_write=False)
     if existing.service == 'higgsfield':
         executor.higgsfield.authorize_record(existing)
     if existing.service == 'fal':
@@ -905,7 +911,7 @@ def video_status(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
                     "collection": public_collection(record),
                     "service": record.service, "runtime_route": record.runtime_route,
                     "execution_instance_id": record.execution_instance_id, "stage": record.runtime_stage,
-                    "needs_attention": record.runtime_stage == "submission_unknown",
+                    "needs_attention": record.runtime_stage in {"submission_unknown", "canceling"},
                     "progress": (record.provider_state or {}).get("progress")})
 
 
@@ -926,6 +932,8 @@ def video_result(video_task_id: str = "", task_id: str = "", execution_proof_onl
         if existing.authority and existing.authority.get('organization_id') != actor['organization_id']:
             raise PermissionError('execution_proof_access_denied')
         return _result({'execution_proof': proof(existing, a_store)})
+    if existing.service == 'comfyui':
+        executor.comfyui.authorize_record(existing, require_write=False)
     if existing.service == 'higgsfield':
         executor.higgsfield.authorize_record(existing)
     if existing.service == 'fal':

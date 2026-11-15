@@ -11,6 +11,7 @@ import math
 import os
 from pathlib import Path
 import re
+import ssl
 import subprocess
 import threading
 import time
@@ -22,14 +23,14 @@ import httpx
 
 from ..artifacts import ArtifactNotFound
 from ..channel_errors import ChannelError
-from ..delivery import CALLER, authorize
+from ..delivery import CALLER, authorize, request_id
 from ..tasks import TaskConflict, TaskRecord
 
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
-MODEL_ID_RE = re.compile(r"^comfyui:([a-z0-9][a-z0-9-]{1,46}[a-z0-9])@([0-9]+\.[0-9]+\.[0-9]+)$")
+MODEL_ID_RE = re.compile(r"^comfyui:([a-z][a-z0-9-]{2,62}[a-z0-9])@([0-9]+\.[0-9]+\.[0-9]+)$")
 CLUSTER_HOST_SUFFIXES = (".svc.cluster.local", ".svc")
 FORBIDDEN_WORKFLOW_KEYS = frozenset(
     {
@@ -225,31 +226,88 @@ class ComfyUIVideoAdapter:
         return None
 
     def _resolve_actor(self, project_id: str, saved_authority: dict[str, Any] | None = None) -> dict[str, str]:
-        if saved_authority and _is_uuid(saved_authority.get("organization_id")):
-            uid = str(saved_authority.get("user_id") or self.default_user_id).strip()
-            return {
-                "organization_id": str(saved_authority["organization_id"]).strip().lower(),
-                "user_id": uid.lower() if _is_uuid(uid) else self.default_user_id.lower(),
-            }
-        if os.getenv("VIDEO_PROJECT_SERVICE_URL", "").strip():
-            actor = authorize(self.executor.client, project_id)
-            return {
-                "organization_id": str(actor["organization_id"]).strip().lower(),
-                "user_id": str(actor["user_id"]).strip().lower(),
-            }
-        caller = CALLER.get()
-        if caller is not None:
-            org = str(caller.get("organization_id") or "").strip()
-            uid = str(caller.get("user_id") or self.default_user_id).strip()
+        if saved_authority is not None:
+            org = str(saved_authority.get("organization_id") or "").strip()
+            uid = str(saved_authority.get("user_id") or "").strip()
             if not _is_uuid(org) or not _is_uuid(uid):
                 raise PermissionError("verified Studio organization_id and user_id required")
-            return {"organization_id": org.lower(), "user_id": uid.lower()}
+            return {
+                "organization_id": org.lower(),
+                "user_id": uid.lower(),
+                "caller_verified": "true" if str(saved_authority.get("caller_verified") or "").lower() == "true" else "false",
+            }
+        caller = CALLER.get()
+        proj_url = os.getenv("VIDEO_PROJECT_SERVICE_URL", "").strip()
+        proj_tok = os.getenv("VIDEO_PROJECT_SERVICE_TOKEN", "").strip()
+        has_caller_identity = isinstance(caller, dict) and bool(
+            str(caller.get("organization_id") or "").strip()
+            or str(caller.get("user_id") or "").strip()
+        )
+        if has_caller_identity or proj_url or proj_tok:
+            caller_org = str((caller or {}).get("organization_id") or "").strip().lower() if isinstance(caller, dict) else ""
+            caller_uid = str((caller or {}).get("user_id") or "").strip().lower() if isinstance(caller, dict) else ""
+            if not _is_uuid(caller_org) or not _is_uuid(caller_uid):
+                raise PermissionError("verified Studio organization_id and user_id required")
+            try:
+                actor = authorize(self.executor.client, project_id, require_write=True)
+            except Exception as exc:
+                if isinstance(exc, PermissionError):
+                    raise
+                raise PermissionError(str(exc)) from exc
+            org = str(actor.get("organization_id") or "").strip().lower()
+            uid = str(actor.get("user_id") or "").strip().lower()
+            if not _is_uuid(org) or not _is_uuid(uid):
+                raise PermissionError("verified Studio organization_id and user_id required")
+            if org != caller_org:
+                raise PermissionError("project_access_denied")
+            return {
+                "organization_id": org,
+                "user_id": uid,
+                "caller_verified": "true",
+            }
         if _is_uuid(self.default_organization_id) and _is_uuid(self.default_user_id):
             return {
                 "organization_id": self.default_organization_id.lower(),
                 "user_id": self.default_user_id.lower(),
+                "caller_verified": "false",
             }
         raise PermissionError("organization_id context required for ComfyUI local channel")
+
+    def authorize_record(self, record: TaskRecord, *, require_write: bool = True) -> dict[str, str]:
+        saved_auth = record.authority if isinstance(record.authority, dict) else {}
+        saved_org = str(saved_auth.get("organization_id") or "").strip().lower()
+        caller_verified = str(saved_auth.get("caller_verified") or "").strip().lower() == "true"
+        proj_url = os.getenv("VIDEO_PROJECT_SERVICE_URL", "").strip()
+        proj_tok = os.getenv("VIDEO_PROJECT_SERVICE_TOKEN", "").strip()
+        caller = CALLER.get()
+        has_caller_identity = isinstance(caller, dict) and bool(
+            str(caller.get("organization_id") or "").strip()
+            or str(caller.get("user_id") or "").strip()
+        )
+        if has_caller_identity or caller_verified or proj_url or proj_tok:
+            caller_org = str((caller or {}).get("organization_id") or "").strip().lower() if isinstance(caller, dict) else ""
+            caller_uid = str((caller or {}).get("user_id") or "").strip().lower() if isinstance(caller, dict) else ""
+            if not _is_uuid(caller_org) or not _is_uuid(caller_uid):
+                raise PermissionError("verified Studio organization_id and user_id required")
+            try:
+                actor = authorize(self.executor.client, record.project_id, require_write=require_write)
+            except Exception as exc:
+                if isinstance(exc, PermissionError):
+                    raise
+                raise PermissionError(str(exc)) from exc
+            org = str(actor.get("organization_id") or "").strip().lower()
+            uid = str(actor.get("user_id") or "").strip().lower()
+            if not _is_uuid(org) or not _is_uuid(uid):
+                raise PermissionError("verified Studio organization_id and user_id required")
+            if org != caller_org or (saved_org and org != saved_org):
+                raise PermissionError("project_access_denied")
+            return {"organization_id": org, "user_id": uid}
+        if _is_uuid(self.default_organization_id) and _is_uuid(self.default_user_id):
+            org = self.default_organization_id.lower()
+            if saved_org and org != saved_org:
+                raise PermissionError("project_access_denied")
+            return {"organization_id": org, "user_id": self.default_user_id.lower()}
+        raise PermissionError("verified Studio organization_id and user_id required")
 
     def discover_models(self, organization_id: str | None = None) -> list[dict[str, Any]]:
         if not self.configured():
@@ -603,6 +661,20 @@ class ComfyUIVideoAdapter:
             return wf_proj.lower()
         raise ChannelError("invalid_request", source="comfyui", accepted=False)
 
+    @contextmanager
+    def _artifact_http_client(self):
+        ca_file = (
+            os.getenv("VIDEO_ARTIFACT_CA_FILE", "").strip()
+            or os.getenv("IMAGE_ARTIFACT_CA_FILE", "").strip()
+        )
+        if ca_file:
+            trust = ssl.create_default_context()
+            trust.load_verify_locations(ca_file)
+            with httpx.Client(trust_env=False, follow_redirects=False, timeout=180.0, verify=trust) as client:
+                yield client
+        else:
+            yield self.executor.client
+
     def _upload_local_artifact_to_studio(
         self,
         *,
@@ -617,58 +689,81 @@ class ComfyUIVideoAdapter:
             raise ChannelError("provider_not_configured", source="comfyui", accepted=False)
         art = self.executor.artifacts.get(local_artifact_id, local_project_id)
         raw = self.executor.artifacts.content_path(art).read_bytes()
+        clean_mime = (art.media_type.split(";")[0].strip() or "image/png")
+        handle_id = request_id()
         headers = {
             "Authorization": f"Bearer {self.artifact_service_token}",
             "X-Organization-Id": actor["organization_id"],
             "X-User-Id": actor["user_id"],
-            "X-Request-Id": str(uuid.uuid4()),
+            "X-Request-Id": request_id(),
         }
-        init_resp = self.executor.client.post(
-            f"{self.artifact_service_url}/v2/artifacts/uploads",
-            headers=headers,
-            json={
-                "project_id": studio_project_id,
-                "filename": art.filename,
-                "mime_type": art.media_type,
-                "size_bytes": len(raw),
-                "sha256": art.sha256,
-                "idempotency_key": f"vid-in-{local_artifact_id}-{art.sha256[:16]}",
-            },
-            timeout=30,
-        )
-        if init_resp.status_code not in {200, 201}:
-            raise ChannelError("reference_upload_failed", source="comfyui", accepted=False)
-        init_data = init_resp.json()
-        upload_id = str(init_data.get("upload_id") or "").strip()
-        if not upload_id:
-            raise ChannelError("upload_protocol_error", source="comfyui", accepted=False)
+        with self._artifact_http_client() as art_client:
+            init_resp = art_client.post(
+                f"{self.artifact_service_url}/v2/artifacts/uploads",
+                headers=headers,
+                json={
+                    "write_id": request_id(),
+                    "source": {
+                        "kind": "legacy_import",
+                        "project_id": studio_project_id,
+                        "original_ref": {
+                            "service_id": "comfyui-input",
+                            "artifact_id": handle_id,
+                            "version_id": "v1",
+                        },
+                    },
+                    "sha256": art.sha256,
+                    "size": len(raw),
+                    "mime": clean_mime,
+                },
+                timeout=30,
+            )
+            if init_resp.status_code not in {200, 201}:
+                raise ChannelError("reference_upload_failed", source="comfyui", accepted=False)
+            init_data = init_resp.json()
+            upload_id = str(init_data.get("upload_id") or "").strip()
+            if not upload_id:
+                raise ChannelError("upload_protocol_error", source="comfyui", accepted=False)
+            is_v2_native = bool(init_data.get("content_path"))
 
-        put_resp = self.executor.client.put(
-            f"{self.artifact_service_url}/v2/artifacts/uploads/{quote(upload_id, safe='')}/content",
-            headers={
-                **headers,
-                "Content-Type": art.media_type,
-                "X-Request-Id": str(uuid.uuid4()),
-            },
-            content=raw,
-            timeout=120,
-        )
-        if put_resp.status_code not in {200, 201, 204}:
-            raise ChannelError("reference_upload_failed", source="comfyui", accepted=False)
+            if str(init_data.get("state") or "prepared") == "prepared":
+                put_resp = art_client.put(
+                    f"{self.artifact_service_url}/v2/artifacts/uploads/{quote(upload_id, safe='')}/content",
+                    headers={
+                        **headers,
+                        "Content-Type": clean_mime,
+                        "Content-Length": str(len(raw)),
+                        "X-Request-Id": request_id(),
+                    },
+                    content=raw,
+                    timeout=120,
+                )
+                if put_resp.status_code not in {200, 201, 204}:
+                    raise ChannelError("reference_upload_failed", source="comfyui", accepted=False)
 
-        commit_resp = self.executor.client.post(
-            f"{self.artifact_service_url}/v2/artifacts/uploads/{quote(upload_id, safe='')}/commit",
-            headers={**headers, "X-Request-Id": str(uuid.uuid4())},
-            json={"project_id": studio_project_id},
-            timeout=30,
-        )
-        if commit_resp.status_code not in {200, 201}:
-            raise ChannelError("reference_upload_failed", source="comfyui", accepted=False)
-        commit_data = commit_resp.json()
-        studio_id = str(commit_data.get("artifact_id") or "").strip().lower()
-        if not _is_uuid(studio_id):
-            raise ChannelError("upload_protocol_error", source="comfyui", accepted=False)
-        return studio_id
+            if is_v2_native:
+                commit_resp = art_client.post(
+                    f"{self.artifact_service_url}/v2/artifacts/uploads/{quote(upload_id, safe='')}/commit",
+                    headers={**headers, "X-Request-Id": request_id()},
+                    timeout=30,
+                )
+                if commit_resp.status_code not in {200, 201}:
+                    raise ChannelError("reference_upload_failed", source="comfyui", accepted=False)
+                return handle_id.lower()
+
+            commit_resp = art_client.post(
+                f"{self.artifact_service_url}/v2/artifacts/uploads/{quote(upload_id, safe='')}/commit",
+                headers={**headers, "X-Request-Id": request_id()},
+                json={"project_id": studio_project_id},
+                timeout=30,
+            )
+            if commit_resp.status_code not in {200, 201}:
+                raise ChannelError("reference_upload_failed", source="comfyui", accepted=False)
+            commit_data = commit_resp.json()
+            studio_id = str(commit_data.get("artifact_id") or "").strip().lower()
+            if not _is_uuid(studio_id):
+                raise ChannelError("upload_protocol_error", source="comfyui", accepted=False)
+            return studio_id
 
     def _call_headless(
         self,
@@ -684,7 +779,7 @@ class ComfyUIVideoAdapter:
                 "Authorization": f"Bearer {self.token}",
                 "X-Organization-Id": actor["organization_id"],
                 "X-User-Id": actor["user_id"],
-                "X-Request-Id": str(uuid.uuid4()),
+                "X-Request-Id": request_id(),
             },
             json={"name": tool_name, "arguments": arguments},
             timeout=timeout,
@@ -812,7 +907,34 @@ class ComfyUIVideoAdapter:
                 provider_state=state,
             )
 
-        rec = self.executor.tasks.update(rec, runtime_stage="submitting", provider_state=state)
+        already_dispatched = bool(state.get("invoke_dispatched"))
+
+        def _mark_unsettled(cur_rec: TaskRecord) -> TaskRecord:
+            state["invoke_dispatched"] = True
+            state["worker_settled"] = False
+            if state.get("_cancel_requested"):
+                return self.executor.tasks.update(
+                    cur_rec,
+                    status="running",
+                    runtime_stage="canceling",
+                    error={"code": "cancel_pending", "message": "ComfyUI cancellation pending remote recovery"},
+                    provider_state=state,
+                )
+            return self.executor.tasks.update(
+                cur_rec,
+                status="queued",
+                runtime_stage="submission_unknown",
+                error={"code": "submission_unknown", "message": "ComfyUI invoke outcome unknown; do not resubmit"},
+                provider_state=state,
+            )
+
+        state["invoke_dispatched"] = True
+        state["worker_settled"] = False
+        rec = self.executor.tasks.update(
+            rec,
+            runtime_stage="canceling" if state.get("_cancel_requested") else "submitting",
+            provider_state=state,
+        )
         try:
             code, body = self._call_headless(
                 tool_name="api.invoke",
@@ -827,31 +949,44 @@ class ComfyUIVideoAdapter:
                 timeout=30.0,
             )
         except (httpx.HTTPError, OSError):
-            return self.executor.tasks.update(
-                rec,
-                status="queued",
-                runtime_stage="submission_unknown",
-                error={"code": "submission_unknown", "message": "ComfyUI invoke outcome unknown; do not resubmit"},
-                provider_state=state,
-            )
+            return _mark_unsettled(rec)
 
-        if 400 <= code < 500:
-            err_code = str(body.get("code") or "provider_rejected")
+        err_code = ""
+        if isinstance(body, dict):
+            sc = body.get("structuredContent")
+            if isinstance(sc, dict) and isinstance(sc.get("error"), dict) and sc["error"].get("code"):
+                err_code = str(sc["error"]["code"]).strip()
+            elif body.get("code"):
+                err_code = str(body["code"]).strip()
+            elif isinstance(body.get("error"), str) and body["error"].strip():
+                err_code = body["error"].strip()
+        norm_err_upper = err_code.upper()
+        transient_conflict_codes = {
+            "OPERATION_IN_PROGRESS",
+            "HEADLESS_POOL_BUSY",
+            "HEADLESS_WORKER_ACTIVE",
+        }
+
+        if (
+            code >= 500
+            or code in {408, 425, 429}
+            or (code == 409 and (already_dispatched or norm_err_upper in transient_conflict_codes))
+            or (isinstance(body, dict) and body.get("isError") is True and norm_err_upper in transient_conflict_codes)
+        ):
+            return _mark_unsettled(rec)
+
+        if 400 <= code < 500 or (isinstance(body, dict) and body.get("isError") is True):
+            final_err = err_code or "provider_rejected"
+            state["worker_settled"] = True
             return self.executor.tasks.update(
                 rec,
                 status="failed",
                 runtime_stage="failed",
-                error={"code": err_code, "message": str(body.get("message") or err_code)},
+                error={"code": final_err, "message": str((body or {}).get("message") or final_err)},
                 provider_state=state,
             )
-        if code >= 500 or not isinstance(body.get("task_id"), str) or not body["task_id"].strip():
-            return self.executor.tasks.update(
-                rec,
-                status="queued",
-                runtime_stage="submission_unknown",
-                error={"code": "submission_unknown", "message": "ComfyUI invoke outcome unknown; do not resubmit"},
-                provider_state=state,
-            )
+        if not isinstance(body.get("task_id"), str) or not body["task_id"].strip():
+            return _mark_unsettled(rec)
 
         remote_id = body["task_id"].strip()
         remote_state = str(body.get("state") or "queued")
@@ -865,10 +1000,12 @@ class ComfyUIVideoAdapter:
             runtime_task_id=remote_id,
             status=mapped_status,
             runtime_stage="remote_pending",
-            dispatched_at=datetime.now(UTC).isoformat(),
+            dispatched_at=rec.dispatched_at or datetime.now(UTC).isoformat(),
             error=None,
             provider_state=state,
         )
+        if state.get("_cancel_requested"):
+            return self.cancel(rec)
         if remote_state in {"succeeded", "failed", "cancelled"}:
             return self._apply_remote_snapshot(rec, body)
         return rec
@@ -925,6 +1062,8 @@ class ComfyUIVideoAdapter:
             )
         primary = result_items[0]
         studio_artifact_id = str(primary.get("artifact_id") or "").strip().lower()
+        studio_store_id = str(primary.get("store_id") or "").strip().lower()
+        studio_version_id = str(primary.get("version_id") or "").strip().lower()
         expected_sha256 = str(primary.get("sha256") or "").strip().lower()
         expected_size = int(primary.get("size_bytes") or 0)
         media_type = str(primary.get("mime_type") or "video/mp4").strip() or "video/mp4"
@@ -947,15 +1086,21 @@ class ComfyUIVideoAdapter:
                 pending = output.with_suffix(".part")
                 digest = hashlib.sha256()
                 size = 0
-                with self.executor.client.stream(
+                if _is_uuid(studio_store_id) and _is_uuid(studio_version_id):
+                    target_path_id = studio_version_id
+                    target_params = {"store_id": studio_store_id, "artifact_id": studio_artifact_id}
+                else:
+                    target_path_id = studio_artifact_id
+                    target_params = {"project_id": studio_project_id, "artifact_id": studio_artifact_id}
+                with self._artifact_http_client() as art_client, art_client.stream(
                     "GET",
-                    f"{self.artifact_service_url}/v2/artifacts/{quote(studio_artifact_id, safe='')}/content",
-                    params={"project_id": studio_project_id, "artifact_id": studio_artifact_id},
+                    f"{self.artifact_service_url}/v2/artifacts/{quote(target_path_id, safe='')}/content",
+                    params=target_params,
                     headers={
                         "Authorization": f"Bearer {self.artifact_service_token}",
                         "X-Organization-Id": actor["organization_id"],
                         "X-User-Id": actor["user_id"],
-                        "X-Request-Id": str(uuid.uuid4()),
+                        "X-Request-Id": request_id(),
                     },
                     timeout=180.0,
                 ) as resp:
@@ -1035,14 +1180,24 @@ class ComfyUIVideoAdapter:
                 provider_state=state,
                 error=None,
             )
-        if remote_state in {"dispatching", "running", "collecting", "reconciling"}:
+        if remote_state in {"dispatching", "running", "collecting", "reconciling", "cancelling"}:
+            state["worker_settled"] = False
+            effective_stage = (
+                "canceling"
+                if (remote_state == "cancelling" or state.get("_cancel_requested"))
+                else remote_state
+            )
             return self.executor.tasks.update(
                 rec,
                 status="running",
-                runtime_stage=remote_state,
+                runtime_stage=effective_stage,
                 execution_instance_id=instance_id,
                 provider_state=state,
-                error=None,
+                error=(
+                    {"code": "cancel_pending", "message": "ComfyUI cancellation requested; waiting for worker settlement"}
+                    if state.get("_cancel_requested")
+                    else None
+                ),
             )
         if remote_state == "cancelled":
             state["worker_settled"] = True
@@ -1087,34 +1242,38 @@ class ComfyUIVideoAdapter:
             actor = self._resolve_actor(rec.project_id, saved_authority=rec.authority)
             studio_project_id = self._effective_comfy_project_id(rec, state)
             if not rec.runtime_task_id:
-                if rec.runtime_stage == "submission_unknown":
-                    try:
-                        code, body = self._call_headless(
-                            tool_name="api.invoke",
-                            arguments={
-                                "project_id": studio_project_id,
-                                "idempotency_key": f"vid-{rec.video_task_id}",
-                                "endpoint_slug": state["endpoint_slug"],
-                                "version": state["version"],
-                                "params": {
-                                    k: state.get("uploaded_refs", {}).get(v, v)
-                                    for k, v in (rec.request.get("workflow_params") or {}).items()
-                                },
-                            },
-                            actor=actor,
-                            timeout=20.0,
-                        )
-                        if code == 200 and isinstance(body.get("task_id"), str) and body["task_id"].strip():
-                            rec = self.executor.tasks.update(
-                                rec,
-                                runtime_task_id=body["task_id"].strip(),
-                                dispatched_at=rec.dispatched_at or datetime.now(UTC).isoformat(),
-                                error=None,
-                            )
-                            return self._apply_remote_snapshot(rec, body)
-                    except (httpx.HTTPError, OSError):
-                        pass
+                if state.get("_cancel_requested") and not state.get("invoke_dispatched"):
+                    state["worker_settled"] = True
+                    return self.executor.tasks.update(
+                        rec,
+                        status="cancelled",
+                        runtime_stage="cancelled",
+                        provider_state=state,
+                        error={"code": "cancelled", "message": "ComfyUI workflow task was cancelled"},
+                    )
+                if rec.runtime_stage in {"prepared", "submitting", "submission_unknown", "canceling"}:
+                    return self._submit(rec)
                 return rec
+
+            if state.get("_cancel_requested") and not state.get("cancel_delivered"):
+                try:
+                    c_code, c_body = self._call_headless(
+                        tool_name="task.cancel",
+                        arguments={
+                            "project_id": studio_project_id,
+                            "idempotency_key": f"cancel-{rec.video_task_id}",
+                            "task_id": rec.runtime_task_id,
+                        },
+                        actor=actor,
+                        timeout=20.0,
+                    )
+                    if c_code == 200 and isinstance(c_body, dict):
+                        state["cancel_delivered"] = True
+                        rec = self.executor.tasks.update(rec, provider_state=state)
+                        if str(c_body.get("state") or "") in {"cancelled", "succeeded", "failed"}:
+                            return self._apply_remote_snapshot(rec, c_body)
+                except (httpx.HTTPError, OSError):
+                    pass
 
             try:
                 code, body = self._call_headless(
@@ -1128,6 +1287,7 @@ class ComfyUIVideoAdapter:
             if code == 404:
                 state["missing_count"] = int(state.get("missing_count", 0)) + 1
                 if state["missing_count"] >= 3:
+                    state["worker_settled"] = True
                     return self.executor.tasks.update(
                         rec,
                         status="failed",
@@ -1154,17 +1314,57 @@ class ComfyUIVideoAdapter:
             if rec.status in {"succeeded", "failed", "cancelled"}:
                 return rec
             state = dict(rec.provider_state or {})
-            if not rec.runtime_task_id:
-                state["worker_settled"] = True
-                return self.executor.tasks.update(
-                    rec,
-                    status="cancelled",
-                    runtime_stage="cancelled",
-                    provider_state=state,
-                    error={"code": "cancelled", "message": "ComfyUI workflow task was cancelled"},
-                )
             actor = self._resolve_actor(rec.project_id, saved_authority=rec.authority)
             studio_project_id = self._effective_comfy_project_id(rec, state)
+
+            if not rec.runtime_task_id:
+                if not state.get("invoke_dispatched") and rec.runtime_stage == "prepared":
+                    state["worker_settled"] = True
+                    return self.executor.tasks.update(
+                        rec,
+                        status="cancelled",
+                        runtime_stage="cancelled",
+                        provider_state=state,
+                        error={"code": "cancelled", "message": "ComfyUI workflow task was cancelled"},
+                    )
+                state["_cancel_requested"] = True
+                state["worker_settled"] = False
+                rec = self.executor.tasks.update(
+                    rec,
+                    status="running",
+                    runtime_stage="canceling",
+                    provider_state=state,
+                    error={"code": "cancel_pending", "message": "ComfyUI cancellation pending remote recovery"},
+                )
+                try:
+                    code, body = self._call_headless(
+                        tool_name="api.invoke",
+                        arguments={
+                            "project_id": studio_project_id,
+                            "idempotency_key": f"vid-{rec.video_task_id}",
+                            "endpoint_slug": state["endpoint_slug"],
+                            "version": state["version"],
+                            "params": {
+                                k: state.get("uploaded_refs", {}).get(v, v)
+                                for k, v in (rec.request.get("workflow_params") or {}).items()
+                            },
+                        },
+                        actor=actor,
+                        timeout=20.0,
+                    )
+                except (httpx.HTTPError, OSError):
+                    return rec
+                if code != 200 or not isinstance(body.get("task_id"), str) or not body["task_id"].strip():
+                    return rec
+                rec = self.executor.tasks.update(
+                    rec,
+                    runtime_task_id=body["task_id"].strip(),
+                    dispatched_at=rec.dispatched_at or datetime.now(UTC).isoformat(),
+                    provider_state=state,
+                )
+
+            state["_cancel_requested"] = True
+            state["worker_settled"] = False
             try:
                 code, body = self._call_headless(
                     tool_name="task.cancel",
@@ -1178,9 +1378,37 @@ class ComfyUIVideoAdapter:
                 )
                 if code == 200 and isinstance(body, dict):
                     state["cancel_delivered"] = True
+                    latest_body = body
+                    r_state = str(latest_body.get("state") or "")
+                    if r_state not in {"cancelled", "succeeded", "failed"}:
+                        try:
+                            g_code, g_body = self._call_headless(
+                                tool_name="task.get",
+                                arguments={"project_id": studio_project_id, "task_id": rec.runtime_task_id},
+                                actor=actor,
+                                timeout=10.0,
+                            )
+                            if g_code == 200 and isinstance(g_body, dict):
+                                latest_body = g_body
+                                r_state = str(latest_body.get("state") or "")
+                        except (httpx.HTTPError, OSError):
+                            pass
                     rec = self.executor.tasks.update(rec, provider_state=state)
-                    return self._apply_remote_snapshot(rec, body)
+                    if r_state in {"cancelled", "succeeded", "failed"}:
+                        return self._apply_remote_snapshot(rec, latest_body)
+                    return self.executor.tasks.update(
+                        rec,
+                        status="running",
+                        runtime_stage="canceling",
+                        provider_state=state,
+                        error={"code": "cancel_pending", "message": "ComfyUI cancellation requested; waiting for worker settlement"},
+                    )
             except (httpx.HTTPError, OSError):
                 pass
-            state["_cancel_requested"] = True
-            return self.executor.tasks.update(rec, provider_state=state)
+            return self.executor.tasks.update(
+                rec,
+                status="running",
+                runtime_stage="canceling",
+                provider_state=state,
+                error={"code": "cancel_pending", "message": "ComfyUI cancellation delivery pending; retry cancel or status"},
+            )

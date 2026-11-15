@@ -626,8 +626,21 @@ class Dashboard:
                 task_id = request.path_params["task_id"]
                 def _delete():
                     tasks_store, _, _ = self._stores(request)
+                    rec = tasks_store.get(task_id)
+                    if rec.service == "comfyui" and rec.status not in {"succeeded", "failed", "cancelled"}:
+                        settled = self.executor.comfyui.cancel(rec) if tasks_store is self.executor.tasks else rec
+                        if settled.status not in {"succeeded", "failed", "cancelled"}:
+                            return {
+                                "_conflict_pending": True,
+                                "error": "task_cancel_pending",
+                                "status": settled.status,
+                                "stage": settled.runtime_stage,
+                                "video_task_id": task_id,
+                            }
                     return tasks_store.delete_task(task_id)
                 value = await run_in_threadpool(_delete)
+                if isinstance(value, dict) and value.pop("_conflict_pending", False):
+                    return JSONResponse(value, status_code=409)
             elif action.endswith("/result"):
                 def result():
                     tasks_store, _, ratings_store = self._stores(request)
@@ -635,6 +648,11 @@ class Dashboard:
                     record = tasks_store.get(request.path_params["task_id"])
                     if not include_nsfw and tasks_store.is_record_nsfw(record, ratings_store):
                         raise TaskNotFound(f"NOT_FOUND: {request.path_params['task_id']}")
+                    if record.service == "comfyui":
+                        import os
+                        from .delivery import CALLER
+                        if CALLER.get() is not None or os.getenv("VIDEO_PROJECT_SERVICE_URL", "").strip():
+                            self.executor.comfyui.authorize_record(record, require_write=False)
                     if record.service == "higgsfield":
                         self.executor.higgsfield.authorize_record(record)
                     if record.service == "fal":
