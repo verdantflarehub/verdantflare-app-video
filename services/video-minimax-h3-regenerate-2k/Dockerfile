@@ -10,7 +10,7 @@ COPY src ./src
 RUN python3 -m pip install --no-deps --no-cache-dir . && python3 -m compileall -q /opt/h3-regenerate-2k/src
 
 LABEL org.opencontainers.image.title="VerdantFlare MiniMax H3 Regenerate-2K IC" \
-      org.opencontainers.image.version="0.1.3" \
+      org.opencontainers.image.version="0.1.4" \
       org.opencontainers.image.licenses="Apache-2.0 AND MIT AND LicenseRef-MiniMax-H3-Community"
 
 ENV PYTHONPATH=/opt/h3-regenerate-2k/src:/opt/comfy \
