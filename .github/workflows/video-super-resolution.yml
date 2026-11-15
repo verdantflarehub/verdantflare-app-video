@@ -2,6 +2,11 @@ name: Video Super Resolution
 
 on:
   workflow_dispatch:
+  push:
+    branches: [release]
+    paths:
+      - services/video-super-resolution/**
+      - .github/workflows/video-super-resolution.yml
 
 permissions:
   contents: read
@@ -12,7 +17,7 @@ concurrency:
 
 env:
   SERVICE: video-super-resolution
-  VERSION: 0.1.4
+  VERSION: 0.1.5
 
 jobs:
   build:

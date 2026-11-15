@@ -6,7 +6,9 @@ from pathlib import Path
 import re
 import sqlite3
 import httpx
+from .channel_errors import MESSAGES
 from .executor import ExecutionError, serialized, task_serialized
+from .gpu_lease import LeaseBusy
 from .tasks import TaskConflict
 from .archive import ArchiveError, S3Archive
 from .artifacts import ArtifactError
@@ -17,12 +19,21 @@ class H3LatentExecutor:
 
     def __init__(self, executor):
         self.executor = executor
-        self.tasks, self.artifacts, self.client = executor.tasks, executor.artifacts, executor.client
+        self.tasks, self.artifacts = executor.tasks, executor.artifacts
+        self._client_override = None
         self._lock = executor._lock
         self.url = os.environ.get('H3_LATENT_RUNTIME_URL', 'http://video-h3-latent-upscaler:8000').rstrip('/')
         self.token = os.environ.get('H3_LATENT_RUNTIME_TOKEN', '')
         self.index = Path(os.environ.get('H3_LATENT_SOURCE_INDEX', '/data/h3-latent/source-index.sqlite'))
         self.node = os.environ.get('H3_LATENT_NODE_NAME', '')
+
+    @property
+    def client(self):
+        return self._client_override if self._client_override is not None else self.executor.client
+
+    @client.setter
+    def client(self, value) -> None:
+        self._client_override = value
 
     def archive(self):
         return S3Archive.from_environment()
@@ -132,28 +143,105 @@ class H3LatentExecutor:
         record = self.tasks.create(project_id=source.project_id, idempotency_key=key, input_digest=digest,
                                    request=request, runtime_task_id=None, status='queued',
                                    error={'code': 'submission_unconfirmed', 'message': 'Submission is pending confirmation'})
+        record = self.tasks.update(record, service=self.service)
         return self.submit(record)
+
+    def _fail_record(self, record, error):
+        pstate = {
+            k: v
+            for k, v in (record.provider_state or {}).items()
+            if k not in {'waiting_reason', 'gpu_dispatched'}
+        }
+        pstate['worker_settled'] = True
+        updated = self.tasks.update(record, status='failed', error=error, provider_state=pstate)
+        self.executor.stage_slot.release(updated.video_task_id, force=True)
+        return self.executor.maybe_release_scheduler_lease(updated)
 
     def submit(self, record):
         payload = {key: value for key, value in record.request.items() if key != 'service'}
         payload['idempotency_key'] = record.video_task_id
+        acquired = False
+        grant_headers = {}
         try:
-            response = self.client.post(self.url + '/v1/upscales', json=payload, headers=self.headers, timeout=30)
+            local_gating = bool(self.executor.gpu.enabled or self.executor.stage_slot.enabled)
+            if self.executor.scheduler.enabled:
+                try:
+                    sched_ok, record, grant_headers = self.executor.acquire_scheduler_grant(
+                        record,
+                        self.service,
+                        runtime_url=self.url,
+                        runtime_headers=self.headers,
+                        bind_immediately=not local_gating,
+                    )
+                except LeaseBusy:
+                    return self._fail_record(
+                        record,
+                        {'code': 'gpu_busy', 'message': MESSAGES['gpu_busy'], 'retryable': True},
+                    )
+                if not sched_ok:
+                    return record
+
+            if local_gating:
+                try:
+                    acquired = self.executor.acquire_local_gpu(record.video_task_id, self.service, record=record)
+                except LeaseBusy:
+                    return self._fail_record(
+                        record,
+                        {'code': 'gpu_busy', 'message': MESSAGES['gpu_busy'], 'retryable': True},
+                    )
+                if not acquired:
+                    record = self.executor.rollback_unstarted_scheduler_grant(record)
+                    return self.executor.defer_local_gpu_queue(record)
+
+            if self.executor.scheduler.enabled:
+                record, grant_headers = self.executor.ensure_scheduler_target_bound(
+                    record,
+                    runtime_url=self.url,
+                    runtime_headers=self.headers,
+                )
+
+            if record.provider_state or self.executor.gpu.enabled or self.executor.stage_slot.enabled or self.executor.scheduler.enabled:
+                pstate = {k: v for k, v in (record.provider_state or {}).items() if k != 'waiting_reason'}
+                pstate['gpu_dispatched'] = True
+                record = self.tasks.update(record, provider_state=pstate)
+
+            response = self.client.post(
+                self.url + '/v1/upscales',
+                json=payload,
+                headers={**self.headers, **grant_headers},
+                timeout=30,
+            )
             if response.status_code in {400, 404, 409, 422, 429, 503}:
-                return self.tasks.update(record, status='failed', error={
+                return self._fail_record(record, {
                     'code': 'upscale_request_rejected', 'message': 'Source, profile or runtime capacity is unavailable'})
             response.raise_for_status()
             return self.update(record, response.json())
         except (httpx.HTTPError, ValueError, KeyError, TypeError):
             return self.tasks.update(record, error={'code': 'submission_unconfirmed', 'message': 'Query this task ID to recover'})
+        finally:
+            if acquired:
+                self.executor.release_or_reconcile_local_gpu(record.video_task_id)
 
     def update(self, record, data):
         if data.get('video_task_id') != record.video_task_id or data.get('status') not in {'queued', 'running', 'succeeded', 'failed'}:
             raise ValueError('invalid runtime task response')
+        pstate = dict(record.provider_state or {})
+        for key in ('started_at', 'finished_at', 'worker_settled', 'gpu_epoch', 'reclaim_proof'):
+            if key in data:
+                pstate[key] = data[key]
         if data['status'] == 'succeeded':
+            if pstate:
+                pstate.setdefault('worker_settled', True)
+                record = self.tasks.update(record, provider_state=pstate)
             return self.collect(record, data['result'])
         error = None if data['status'] != 'failed' else {'code': 'upscale_failed', 'message': 'H3 latent post-processing failed'}
-        return self.tasks.update(record, status=data['status'], error=error)
+        if data['status'] == 'failed' and (pstate or self.executor.stage_slot.enabled or self.executor.scheduler.enabled):
+            pstate.setdefault('worker_settled', True)
+        updated = self.tasks.update(record, status=data['status'], error=error, provider_state=pstate or None)
+        if self.executor.stage_slot.is_task_settled(updated):
+            self.executor.stage_slot.release(updated.video_task_id)
+            updated = self.executor.maybe_release_scheduler_lease(updated)
+        return updated
 
     def collect(self, record, result):
         if result.get('source_video_task_id') != record.request['source_video_task_id']:
@@ -191,16 +279,20 @@ class H3LatentExecutor:
         except (ArchiveError, ArtifactError, httpx.HTTPError, OSError):
             return self.tasks.update(record, error={'code': 'archive_pending',
                 'message': 'Result delivery is pending; query this task to retry without repeating inference'})
-        return self.tasks.update(record, status='succeeded', runtime_stage='completed',
+        updated = self.tasks.update(record, status='succeeded', runtime_stage='completed',
             artifact_id=state['artifacts']['content'], error=None,
             media={**result['media'], 'preview_artifact_id': state['artifacts']['preview'], 'source_video_task_id': result['source_video_task_id']},
             runtime_metrics=result.get('runtime_metrics'))
+        self.executor.stage_slot.release(updated.video_task_id)
+        return self.executor.maybe_release_scheduler_lease(updated)
 
     @task_serialized
     def status(self, task_id):
         record = self.tasks.get(task_id)
         if record.service != self.service:
             raise ValueError('not an H3 latent task')
+        if record.status == 'queued' and (record.provider_state or {}).get('gpu_dispatched') is False:
+            return self.submit(record)
         if record.status in {'succeeded', 'failed'}:
             return record
         try:
@@ -221,9 +313,18 @@ class H3LatentExecutor:
         return record
 
     def public_status(self, record):
-        return {'video_task_id': record.video_task_id, 'source_video_task_id': record.request['source_video_task_id'],
-                'service': self.service, 'status': record.status, 'error': record.error,
-                'timing': record.timing, 'runtime_metrics': record.runtime_metrics}
+        value = {'video_task_id': record.video_task_id, 'source_video_task_id': record.request['source_video_task_id'],
+                 'service': self.service, 'status': record.status, 'error': record.error,
+                 'timing': record.timing, 'runtime_metrics': record.runtime_metrics}
+        pstate = record.provider_state or {}
+        if any(pstate.get(k) is not None for k in ('waiting_reason', 'queue_position', 'blocking_reason')):
+            value['gpu_queue'] = {
+                'waiting_reason': pstate.get('waiting_reason'),
+                'queue_position': pstate.get('queue_position'),
+                'blocking_reason': pstate.get('blocking_reason'),
+                'blocking_holder_id': pstate.get('blocking_holder_id') or None,
+            }
+        return value
 
     def public_result(self, record, preview=False):
         artifact_id = record.media['preview_artifact_id'] if preview else record.artifact_id

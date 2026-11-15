@@ -3,7 +3,7 @@
 FROM registry.cn-qingdao.aliyuncs.com/wod/verdantflare-app:video-depth-anything-api-v0.2.0@sha256:c024ea884c4f9793ec2585a045f5b0e7db8b12238875a2d7ec37d008b81000ae
 LABEL org.opencontainers.image.source="https://github.com/verdantflarehub/verdantflare-app-video"
 LABEL org.opencontainers.image.title="VerdantFlare Video Depth Anything"
-LABEL org.opencontainers.image.version="0.2.4"
+LABEL org.opencontainers.image.version="0.2.5"
 WORKDIR /app
 COPY pyproject.toml ./
 RUN python3 -m pip install --break-system-packages --no-cache-dir --no-deps .

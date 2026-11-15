@@ -250,8 +250,9 @@ async function refreshTaskDetail(id, version) {
       $("detailIdentityBar").innerHTML =
         `<span class="identity-channel detail-identity-pill"><strong class="identity-model">${escapeHTML(taskModel(task))}</strong> <span class="identity-separator" aria-hidden="true">×</span> ${channelLogo(task)}<span>${escapeHTML(taskRoute(task))}</span></span>`;
     } else {
+      const route = taskRoute(task) || "本地";
       $("detailIdentityBar").innerHTML =
-        `<span class="identity-channel detail-identity-pill"><strong>${escapeHTML(taskOperation(task))}</strong> <span class="identity-separator" aria-hidden="true">·</span> <span>${escapeHTML(taskService(task) || task.service || "视频处理")}</span></span>`;
+        `<span class="identity-channel detail-identity-pill"><strong class="identity-model">${escapeHTML(taskOperation(task))}</strong> <span class="identity-separator" aria-hidden="true">×</span> ${channelLogo(task)}<span>${escapeHTML(route)}</span></span>`;
     }
   }
   if ($("detailOutputMeta")) {
@@ -285,8 +286,13 @@ async function refreshTaskDetail(id, version) {
     (Array.isArray(task.delivery?.profiles) && task.delivery.profiles.includes("rife_2x"))
   );
   if ($("detailStageTiming")) {
+    const stagePills = [];
+    if (task.status === "queued" && task.gpu_queue) {
+      stagePills.push(`<span><strong>调度状态</strong> ${escapeHTML(taskStatusLabel(task))}</span>`);
+      const qReason = gpuQueueReasonText(task);
+      if (qReason) stagePills.push(`<span><strong>阻塞原因</strong> ${escapeHTML(qReason)}</span>`);
+    }
     if (dt && typeof dt === "object") {
-      const stagePills = [];
       if (dt.queue_seconds != null) stagePills.push(`<span><strong>排队</strong> ${escapeHTML(preciseSeconds(dt.queue_seconds))}</span>`);
       if (task.service !== "regenerate_2k" && dt.generation_active_seconds != null) {
         stagePills.push(`<span><strong>P1 生成</strong> ${escapeHTML(preciseSeconds(dt.generation_active_seconds))}</span>`);
@@ -300,14 +306,25 @@ async function refreshTaskDetail(id, version) {
       if (dt.chain_active_seconds != null) {
         stagePills.push(`<span><strong>链路活跃合计</strong> ${escapeHTML(preciseSeconds(dt.chain_active_seconds))}</span>`);
       }
+    }
+    if (stagePills.length) {
       $("detailStageTiming").innerHTML = stagePills.join("");
-      $("detailStageTiming").hidden = stagePills.length === 0;
+      $("detailStageTiming").hidden = false;
     } else {
       $("detailStageTiming").replaceChildren();
       $("detailStageTiming").hidden = true;
     }
   }
-  const rows = [["任务 ID", task.video_task_id], ["项目 ID", task.project_id], ["幂等键", task.idempotency_key], ["模型", taskModel(task)], ["渠道", taskRoute(task)], ["生成类型", task.presentation?.generation_code ? `${task.presentation.generation_code} · ${task.presentation.generation_label}` : "未记录"], ["执行后端", task.route || task.service || "未记录"], ["执行实例", task.execution_instance_id || "未上报"], ["开始时间", date(task.created_at)], ["排队时间", seconds(task.timing?.queue_seconds)], ["运行时间", seconds(task.timing?.processing_seconds ?? task.timing?.processing_elapsed_seconds)], ["总耗时", seconds(task.timing?.total_seconds)], ["时长 / 画幅", taskDurationAspect(task)], ["Seed", task.seed], ["Runtime 版本", task.runtime_version], ["输入摘要", task.input_digest]];
+  const safeBackendLabel =
+    task.presentation?.channel_id === "local" || localProcessingServices.has(task.service) || taskRoute(task) === "本地"
+      ? "本地"
+      : taskRoute(task) || "未记录";
+  const rows = [["任务 ID", task.video_task_id], ["项目 ID", task.project_id], ["幂等键", task.idempotency_key], ["模型", taskModel(task) || taskOperation(task)], ["渠道", taskRoute(task) || "本地"], ["生成类型", task.presentation?.generation_code ? `${task.presentation.generation_code} · ${task.presentation.generation_label}` : "未记录"], ["执行后端", safeBackendLabel], ["执行实例", task.execution_instance_id || "未上报"], ["开始时间", date(task.created_at)], ["排队时间", seconds(task.timing?.queue_seconds)], ["运行时间", seconds(task.timing?.processing_seconds ?? task.timing?.processing_elapsed_seconds)], ["总耗时", seconds(task.timing?.total_seconds)], ["时长 / 画幅", taskDurationAspect(task)], ["Seed", task.seed], ["Runtime 版本", task.runtime_version], ["输入摘要", task.input_digest]];
+  if (task.status === "queued" && task.gpu_queue) {
+    rows.push(["排队顺位", taskStatusLabel(task)]);
+    const qReason = gpuQueueReasonText(task);
+    if (qReason) rows.push(["排队阻塞原因", qReason]);
+  }
   if (task.service === "higgsfield") {
     rows.splice(rows.findIndex(([label]) => label === "总耗时"), 1);
     const runtime = rows.find(row => row[0] === "运行时间");

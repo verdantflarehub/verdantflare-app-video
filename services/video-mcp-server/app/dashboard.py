@@ -61,6 +61,7 @@ class Submission(BaseModel):
     postprocess: dict[str, object] | None = None
     channel_account_id: str | None = Field(default=None, max_length=36)
     budget_limit: str | None = Field(default=None, max_length=32)
+    workflow_params: dict[str, object] | None = None
     references: References
 
 
@@ -88,7 +89,7 @@ class ContentRatingUpdate(BaseModel):
 def task_channel(record):
     route = record.request.get("route") or record.runtime_route or record.service
     local = {"h3", "h3-sol", "h3-vdn", "h3-fasth3", "h3-singularity", "minimax-h3-sol-ref2va",
-             "h3-latent-upscale", "sr", "interpolate", "regenerate_2k", "depth"}
+             "h3-latent-upscale", "sr", "interpolate", "regenerate_2k", "depth", "comfyui", "local"}
     return "local" if route in local else route or "unknown"
 
 
@@ -118,7 +119,7 @@ def task_presentation(record, catalog=None):
             "generation_label": "超分音视频：潜空间超分与音视频同步重生成（Video Super-Resolution to Video-Audio）",
         }
     local = {"h3", "h3-sol", "h3-vdn", "h3-fasth3", "h3-singularity"}
-    generating = record.service in local | {"fal", "grok", "google", "higgsfield"}
+    generating = record.service in local | {"comfyui", "fal", "grok", "google", "higgsfield"}
     route = record.request.get("route") or record.runtime_route or record.service
     channel = task_channel(record)
     local_channel = channel == "local"
@@ -134,6 +135,10 @@ def task_presentation(record, catalog=None):
             if model and model in {entry.get("model_id"), entry.get("upstream_model_id"), execution.get("model")}:
                 label = entry.get("display_name")
                 break
+    if not label and record.service == "comfyui":
+        saved_label = (getattr(record, "provider_state", None) or {}).get("display_name")
+        if isinstance(saved_label, str) and saved_label.strip():
+            label = saved_label.strip()
     label = label or "未记录模型"
     modes = {"text_to_video": ("T2V", "文生视频"), "image_to_video": ("I2V", "图生视频"),
              "lip_sync": ("A2V", "音频驱动口型"),
@@ -145,8 +150,8 @@ def task_presentation(record, catalog=None):
     code, explanation = modes.get(mode, (None, None)) if generating else (None, None)
     return {"is_generation": generating, "channel_id": channel,
             "model_label": label if generating else None,
-            "channel_label": channel_label(channel) if generating else None,
-            "channel_icon": ("local" if local_channel else "higgsfield" if route == "higgsfield" else None) if generating else None,
+            "channel_label": channel_label(channel) if (generating or local_channel) else None,
+            "channel_icon": "local" if local_channel else ("higgsfield" if (generating and route == "higgsfield") else None),
             "generation_code": code, "generation_label": explanation}
 
 
@@ -178,6 +183,20 @@ def public_task(record, store=None, ratings_store=None, catalog=None):
     grid_mode = record.request.get("grid_mode") or (
         ((record.request.get("postprocess") or {}).get("regenerate_2k") or {}).get("grid_mode")
     )
+    pstate = record.provider_state or {}
+    gpu_queue = (
+        {
+            "lease_state": pstate.get("lease_state") or ("draining" if pstate.get("waiting_reason") == "draining_peer" else "queued"),
+            "waiting_reason": pstate.get("waiting_reason"),
+            "queue_position": pstate.get("queue_position"),
+            "blocking_reason": pstate.get("blocking_reason"),
+            "blocking_holder_id": pstate.get("blocking_holder_id") or None,
+        }
+        if record.status == "queued" and any(
+            pstate.get(k) is not None for k in ("lease_state", "waiting_reason", "queue_position", "blocking_reason")
+        )
+        else None
+    )
     return {**naming, "video_task_id": record.video_task_id, "project_id": record.project_id,
             "idempotency_key": record.idempotency_key, "service": record.service, "route": record.runtime_route or record.request.get("route"),
             "model": model, "presentation": task_presentation(record, catalog),
@@ -185,10 +204,11 @@ def public_task(record, store=None, ratings_store=None, catalog=None):
             "quality_profile": record.request.get("quality_profile"), "grid_mode": grid_mode,
             "needs_attention": record.runtime_stage == "submission_unknown" or bool(record.error),
             "progress": (record.provider_state or {}).get("progress"),
+            "gpu_queue": gpu_queue,
             "prompt": record.request.get("prompt", ""),
             "duration_seconds": record.request.get("duration_seconds"),
             "aspect_ratio": record.request.get("aspect_ratio"),
-            "seed": record.request.get("seed", None if record.service in {"fal", "grok", "google"} else 7),
+            "seed": record.request.get("seed", None if record.service in {"fal", "grok", "google", "comfyui"} else 7),
             "status": record.status, "created_at": record.created_at, "updated_at": record.updated_at,
             "completed_at": record.completed_at or (record.updated_at if record.status in {"succeeded", "failed", "cancelled"} else None),
             "artifact_id": (record.delivery or {}).get("final_artifact_id") or record.artifact_id,
@@ -316,7 +336,7 @@ class Dashboard:
         errors = 0
         for record in self.records():
             channel_pending = record.service == 'fal' and self.executor.fal._channel_record(record)
-            if record.status in {"queued", "running"} and (record.runtime_task_id or channel_pending or record.service in {"depth", "sr", "interpolate", "regenerate_2k", "h3-fasth3", "h3-singularity", "grok", "google", "higgsfield"}):
+            if record.status in {"queued", "running"} and (record.runtime_task_id or channel_pending or record.service in {"depth", "sr", "interpolate", "regenerate_2k", "h3-fasth3", "h3-singularity", "grok", "google", "higgsfield", "comfyui"}):
                 try:
                     self.executor.status(record.video_task_id)
                 except (ExecutionError, OSError, ValueError):
@@ -328,7 +348,7 @@ class Dashboard:
         for record in self.records():
             if record.service == 'fal' and self.executor.fal._channel_record(record):
                 continue  # The channel ledger resolves unknown acceptance by the original operation key.
-            if record.status == "queued" and not record.runtime_task_id and record.service not in {"depth", "sr", "interpolate", "regenerate_2k", "grok", "google", "higgsfield"}:
+            if record.status == "queued" and not record.runtime_task_id and record.service not in {"depth", "sr", "interpolate", "regenerate_2k", "grok", "google", "higgsfield", "comfyui"}:
                 self.executor.tasks.update(record, status="queued" if record.service in {"h3-fasth3", "h3-singularity"} else "failed", error={
                     "code": "submission_unconfirmed",
                     "message": "Submission interrupted; do not resubmit automatically"})
@@ -696,17 +716,22 @@ class Dashboard:
                 else:
                     inputs = Submission.model_validate_json(body)
                     effective_route = (
-                        self.executor.runtime_route
+                        "comfyui"
+                        if inputs.route == "local" and isinstance(inputs.model, str) and inputs.model.strip().startswith("comfyui:")
+                        else self.executor.runtime_route
                         if inputs.route == "h3"
                         and "h3" not in self.executor.runtime_routes
                         and self.executor.runtime_route in {"h3-fasth3", "h3-singularity"}
                         else inputs.route
                     )
-                    service = ("higgsfield" if effective_route == "higgsfield" else "google" if effective_route == "google" else "grok" if effective_route == "grok" else "fal" if effective_route == "fal" else
+                    service = ("comfyui" if effective_route == "comfyui" else
+                               "higgsfield" if effective_route == "higgsfield" else "google" if effective_route == "google" else "grok" if effective_route == "grok" else "fal" if effective_route == "fal" else
                                "h3-sol" if effective_route.startswith("h3-sol") else
                                "h3-fasth3" if effective_route == "h3-fasth3" else
                                "h3-singularity" if effective_route == "h3-singularity" else "h3")
-                    if service not in {"h3", "h3-sol", "h3-fasth3", "h3-singularity", "fal", "grok", "google", "higgsfield"}:
+                    if service not in {"comfyui", "h3", "h3-sol", "h3-fasth3", "h3-singularity", "fal", "grok", "google", "higgsfield"}:
+                        return JSONResponse({"error": "service_not_connected"}, status_code=409)
+                    if service == "comfyui" and not self.executor.comfyui.configured():
                         return JSONResponse({"error": "service_not_connected"}, status_code=409)
                     if service == "fal" and not self.executor.fal.connected():
                         return JSONResponse({"error": "service_not_connected"}, status_code=409)

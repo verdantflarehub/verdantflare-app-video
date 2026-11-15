@@ -17,7 +17,7 @@ concurrency:
 
 env:
   SERVICE: video-depth-anything
-  VERSION: 0.2.4
+  VERSION: 0.2.5
 
 jobs:
   build:

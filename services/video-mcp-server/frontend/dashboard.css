@@ -657,6 +657,12 @@ body {
   color: var(--muted);
 }
 
+.badge-status.queued.draining {
+  background: rgba(216, 154, 69, 0.14);
+  border-color: rgba(216, 154, 69, 0.42);
+  color: var(--amber);
+}
+
 .badge-status.failed {
   background: rgba(255, 101, 112, 0.16);
   border: 1px solid rgba(255, 101, 112, 0.44);
@@ -696,6 +702,14 @@ body {
   line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.card-queue-reason,
+.table-queue-reason {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--amber);
 }
 
 .model-tags {

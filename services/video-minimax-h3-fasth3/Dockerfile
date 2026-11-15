@@ -10,7 +10,7 @@ COPY src ./src
 RUN python3 -m pip install --no-deps --no-cache-dir . && python3 -m compileall -q /opt/h3-fasth3/src
 
 LABEL org.opencontainers.image.title="VerdantFlare MiniMax H3 FastH3 NVFP4 Ref2VA" \
-      org.opencontainers.image.version="0.1.0" \
+      org.opencontainers.image.version="0.1.1" \
       org.opencontainers.image.licenses="Apache-2.0 AND MIT AND LicenseRef-MiniMax-H3-Community"
 
 ENV PYTHONPATH=/opt/h3-fasth3/src:/opt/comfy \

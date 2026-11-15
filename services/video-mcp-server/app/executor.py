@@ -23,7 +23,15 @@ import httpx
 
 from .artifacts import MAX_ARTIFACT_BYTES, ArtifactRecord, ArtifactStore, require_filename, require_project_id
 from .channel_errors import MESSAGES
-from .gpu_lease import GpuCoordinator, LeaseBusy, LocalGpuStageSlot
+from .gpu_lease import (
+    SCHEDULER_CONSUMER_SPECS,
+    GpuCoordinator,
+    LeaseBusy,
+    LocalGpuStageSlot,
+    SchedulerError,
+    SchedulerLeaseClient,
+    is_lease_granted,
+)
 from .regenerate import (
     H3_PROFILE_NFE,
     ROUTE_QUALITY_PROFILE,
@@ -41,7 +49,7 @@ H3_DURATION_TOLERANCE_MS = 1000
 MAX_INLINE_IMAGE_BYTES = 3 * 1024 * 1024
 MODERN_H3_SERVICES = {"h3-fasth3", "h3-singularity"}
 LOCAL_H3_SERVICES = {"h3", "h3-vdn", "h3-sol", *MODERN_H3_SERVICES}
-LOCAL_GPU_SERVICES = LOCAL_H3_SERVICES | {"regenerate_2k", "interpolate"}
+LOCAL_GPU_SERVICES = LOCAL_H3_SERVICES | {"regenerate_2k", "interpolate", "sr", "depth", "h3-latent-upscale"}
 TERMINAL_TASK_STATUS = {"succeeded", "failed", "cancelled", "canceled"}
 
 
@@ -143,6 +151,13 @@ class VideoExecutor:
         self.client = client or httpx.Client(timeout=httpx.Timeout(connect=10, read=3600, write=600, pool=10), follow_redirects=False, verify=trust)
         self.gpu = GpuCoordinator.from_environment()
         self.stage_slot = LocalGpuStageSlot.from_environment(self.tasks)
+        journal_dir = getattr(self.tasks, "root", None) or (
+            Path(self.tasks.db_path).parent if getattr(self.tasks, "db_path", None) else None
+        )
+        self.scheduler = SchedulerLeaseClient.from_environment(
+            holder_app_id="video-mcp",
+            pending_releases_path=(Path(journal_dir) / "gpu_pending_releases.json") if journal_dir is not None else None,
+        )
         from .depth import DepthExecutor
         self.depth = DepthExecutor(self)
         from .processing import ProcessingExecutor
@@ -157,6 +172,8 @@ class VideoExecutor:
         self.google = GoogleVideoAdapter(self)
         from .providers.higgsfield import HiggsfieldAdapter
         self.higgsfield = HiggsfieldAdapter(self)
+        from .providers.comfyui import ComfyUIVideoAdapter
+        self.comfyui = ComfyUIVideoAdapter(self)
         from .delivery import Delivery
         self.delivery = Delivery(self)
         from .collection import ResultCollector
@@ -186,10 +203,487 @@ class VideoExecutor:
         try:
             if holder_service in self.processing:
                 self.processing[holder_service].status(holder_task_id)
+            elif holder_service == "depth":
+                self.depth.status(holder_task_id)
             else:
                 self.status(holder_task_id)
         except Exception:
             pass
+
+    def probe_runtime_identity(self, runtime_url: str, headers: dict[str, str] | None = None) -> dict:
+        if not runtime_url:
+            return {}
+        try:
+            resp = self.client.get(f"{runtime_url.rstrip('/')}/health", headers=headers or {}, timeout=5)
+            if resp.status_code == 200:
+                body = resp.json()
+                if isinstance(body, dict) and isinstance(body.get("runtime_identity"), dict):
+                    return dict(body["runtime_identity"])
+        except Exception:
+            pass
+        return {}
+
+    @staticmethod
+    def _has_concrete_runtime_identity(ident: dict | None) -> bool:
+        if not isinstance(ident, dict):
+            return False
+        visible = ident.get("visible_gpu_uuids")
+        if not isinstance(visible, list) or not any(str(u).strip() for u in visible):
+            return False
+        return (
+            SchedulerLeaseClient._is_concrete_identity_value(ident.get("pod_uid"))
+            and SchedulerLeaseClient._is_concrete_identity_value(ident.get("container_id"))
+            and SchedulerLeaseClient._is_concrete_identity_value(ident.get("boot_id"))
+        )
+
+    @staticmethod
+    def _is_lease_identity_bound(lease_doc: dict | None) -> bool:
+        if not isinstance(lease_doc, dict):
+            return False
+        return (
+            SchedulerLeaseClient._is_concrete_identity_value(lease_doc.get("pod_uid"))
+            and SchedulerLeaseClient._is_concrete_identity_value(lease_doc.get("container_id"))
+            and SchedulerLeaseClient._is_concrete_identity_value(lease_doc.get("boot_id"))
+        )
+
+    @staticmethod
+    def _is_authoritative_reclaim_proof(
+        proof: dict | None,
+        *,
+        reclaim_mode: str,
+        lease_id: str,
+        fencing_token: int,
+    ) -> bool:
+        if not isinstance(proof, dict) or proof.get("reclaimed") is not True:
+            return False
+        if str(proof.get("revoked_lease_id") or "") != lease_id:
+            return False
+        try:
+            consumed = int(proof.get("consumed_fencing_token") or 0)
+            sup_pid = int(proof.get("supervisor_pid") or 0)
+            sup_ticks = int(proof.get("supervisor_starttime_ticks") or 0)
+        except (TypeError, ValueError):
+            return False
+        if fencing_token > 0 and consumed < fencing_token:
+            return False
+        if sup_pid <= 0 or sup_ticks <= 0:
+            return False
+        for id_key in ("sealed_pod_uid", "sealed_container_id", "sealed_boot_id"):
+            if not SchedulerLeaseClient._is_concrete_identity_value(proof.get(id_key)):
+                return False
+        if reclaim_mode == "warm_idle_settled":
+            try:
+                active = int(proof.get("active_tasks", -1))
+            except (TypeError, ValueError):
+                return False
+            return (
+                proof.get("proof_source") == "receiver_guard"
+                and proof.get("token_sealed") is True
+                and active == 0
+            )
+        if reclaim_mode == "epoch_unload":
+            try:
+                epoch = int(proof.get("sealed_gpu_epoch") or 0)
+            except (TypeError, ValueError):
+                return False
+            return epoch > 0
+        return False
+
+    def _resolve_service_runtime_target(
+        self,
+        service: str,
+        record: TaskRecord | None = None,
+    ) -> tuple[str, dict[str, str]]:
+        if service == "h3-latent-upscale":
+            latent = self.processing["h3-latent-upscale"]
+            hdrs = {"Authorization": f"Bearer {latent.token}"} if getattr(latent, "token", "") else {}
+            return latent.url, hdrs
+        if service in self.processing:
+            url, hdrs, _ = self.processing[service]._runtime_target(record)
+            return url, dict(hdrs)
+        if service == "depth":
+            tok = os.environ.get("VIDEO_DEPTH_RUNTIME_TOKEN", "").strip()
+            hdrs = {"Authorization": f"Bearer {tok}"} if tok else {}
+            return self.depth.url, hdrs
+        route = self._record_route(record) if record is not None else None
+        url, hdrs, _, _ = self.runtime(route)
+        if record is not None and record.runtime_endpoint:
+            url = record.runtime_endpoint
+        return url, dict(hdrs)
+
+    def fetch_receiver_reclaim_proof(
+        self,
+        service: str,
+        record: TaskRecord | None,
+        lease_doc: dict,
+    ) -> tuple[dict | None, int | None]:
+        lease_id = str(lease_doc.get("lease_id") or "")
+        token = int(lease_doc.get("fencing_token") or 0)
+        if not lease_id:
+            return None, None
+        spec = SCHEDULER_CONSUMER_SPECS.get(service, SCHEDULER_CONSUMER_SPECS["h3"])
+        reclaim_mode = str(spec["reclaim_mode"])
+        try:
+            runtime_url, runtime_headers = self._resolve_service_runtime_target(service, record)
+        except Exception:
+            return None, None
+        if not runtime_url:
+            return None, None
+        req_headers = dict(runtime_headers)
+        if "Authorization" not in req_headers and self.scheduler.token:
+            req_headers["Authorization"] = f"Bearer {self.scheduler.token}"
+        try:
+            resp = self.client.post(
+                f"{runtime_url.rstrip('/')}/internal/v1/gpu-guard/reclaim",
+                headers=req_headers,
+                json={"lease_id": lease_id, "fencing_token": token},
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                return None, None
+            body = resp.json()
+            if not isinstance(body, dict):
+                return None, None
+            proof = body.get("reclaim_proof") if isinstance(body.get("reclaim_proof"), dict) else body
+            if not self._is_authoritative_reclaim_proof(
+                proof,
+                reclaim_mode=reclaim_mode,
+                lease_id=lease_id,
+                fencing_token=token,
+            ):
+                return None, None
+            epoch_val = body.get("gpu_epoch") or proof.get("sealed_gpu_epoch")
+            epoch_int = int(epoch_val) if isinstance(epoch_val, int) and epoch_val > 0 else None
+            return dict(proof), epoch_int
+        except Exception:
+            return None, None
+
+    def acquire_scheduler_grant(
+        self,
+        record: TaskRecord,
+        service: str,
+        *,
+        runtime_url: str,
+        runtime_headers: dict[str, str] | None = None,
+        inherited_lease: dict | None = None,
+        bind_immediately: bool = True,
+    ) -> tuple[bool, TaskRecord, dict[str, str]]:
+        if not self.scheduler.enabled or service not in LOCAL_GPU_SERVICES:
+            return True, record, {}
+        from .delivery import _to_epoch
+
+        pstate = dict(record.provider_state or {})
+        target_ident = self.probe_runtime_identity(runtime_url, runtime_headers)
+        if inherited_lease is not None:
+            pstate["_gpu_lease"] = dict(inherited_lease)
+            pstate["_gpu_lease_owned"] = False
+            pstate["_gpu_active_service"] = service
+            pstate["_gpu_target_identity"] = target_ident
+            for qk in ("lease_state", "queue_position", "blocking_reason", "blocking_holder_id", "waiting_reason"):
+                pstate.pop(qk, None)
+            record = self.tasks.update(record, provider_state=pstate)
+            grant_hdrs = SchedulerLeaseClient.build_grant_headers(
+                inherited_lease,
+                parent_task_id=str(inherited_lease.get("holder_task_id") or record.video_task_id),
+                stage_id=str(inherited_lease.get("stage_id") or ""),
+                target_identity=target_ident,
+            )
+            return True, record, grant_hdrs
+
+        existing_lease = pstate.get("_gpu_lease")
+        if (
+            is_lease_granted(existing_lease)
+            and not pstate.get("_gpu_lease_released")
+        ):
+            if bind_immediately and not self._is_lease_identity_bound(existing_lease):
+                record, grant_hdrs = self.ensure_scheduler_target_bound(
+                    record,
+                    runtime_url=runtime_url,
+                    runtime_headers=runtime_headers,
+                )
+                return True, record, grant_hdrs
+            grant_hdrs = SchedulerLeaseClient.build_grant_headers(
+                existing_lease,
+                parent_task_id=record.video_task_id,
+                target_identity=target_ident or pstate.get("_gpu_target_identity"),
+            )
+            return True, record, grant_hdrs
+
+        queue_seconds = self.gpu.queue_seconds if self.gpu.enabled else self.stage_slot.queue_seconds
+        now_wall = time.time()
+        q_started_iso = pstate.get("queue_started_at") or record.created_at
+        q_wall = _to_epoch(q_started_iso)
+        elapsed = max(0.0, now_wall - q_wall) if q_wall is not None else 0.0
+
+        attempt_id = str(pstate.get("_gpu_attempt_id") or f"att-{record.video_task_id[-12:]}")
+        try:
+            if (
+                isinstance(existing_lease, dict)
+                and existing_lease.get("lease_id")
+                and str(existing_lease.get("state") or "") in {"queued", "draining"}
+                and not pstate.get("_gpu_lease_released")
+            ):
+                dec = self.scheduler.get_lease(str(existing_lease["lease_id"]))
+            else:
+                dec = self.scheduler.acquire(
+                    record.video_task_id,
+                    service,
+                    attempt_id=attempt_id,
+                    runtime_identity=target_ident,
+                    bind_identity=bind_immediately,
+                )
+        except SchedulerError as exc:
+            raise ExecutionError(f"GPU scheduler acquire failed ({exc.code})") from exc
+
+        pstate["_gpu_attempt_id"] = attempt_id
+        pstate["_gpu_lease"] = dec
+        pstate["_gpu_lease_owned"] = True
+        pstate["_gpu_active_service"] = service
+        pstate["_gpu_target_identity"] = target_ident
+        pstate.pop("_gpu_lease_released", None)
+
+        if not is_lease_granted(dec):
+            lease_state = str(dec.get("state") or "queued")
+            pstate["lease_state"] = lease_state
+            pstate["queue_position"] = dec.get("queue_position")
+            pstate["blocking_reason"] = dec.get("blocking_reason") or "gpu_scheduler_queue"
+            pstate["blocking_holder_id"] = dec.get("blocking_holder_id") or ""
+            if queue_seconds <= 0 or elapsed >= queue_seconds:
+                try:
+                    if dec.get("lease_id"):
+                        self.scheduler.release(
+                            str(dec["lease_id"]),
+                            fencing_token=int(dec.get("fencing_token") or 0),
+                            worker_settled=True,
+                            expected_version=int(dec.get("version") or 0),
+                        )
+                        pstate["_gpu_lease_released"] = True
+                except Exception:
+                    pass
+                record = self.tasks.update(record, provider_state=pstate)
+                raise LeaseBusy(str(dec.get("blocking_holder_id") or dec.get("blocking_reason") or "gpu_scheduler"))
+            record = self.tasks.update(record, provider_state=pstate)
+            waiting_reason = (
+                "draining_peer"
+                if lease_state == "draining"
+                else str(dec.get("blocking_reason") or "gpu_scheduler_queue")
+            )
+            deferred = self.defer_local_gpu_queue(
+                record,
+                waiting_reason=waiting_reason,
+            )
+            return False, deferred, {}
+
+        for qk in ("lease_state", "queue_position", "blocking_reason", "blocking_holder_id", "waiting_reason"):
+            pstate.pop(qk, None)
+        record = self.tasks.update(record, provider_state=pstate)
+        if bind_immediately and not self._is_lease_identity_bound(dec):
+            record, grant_hdrs = self.ensure_scheduler_target_bound(
+                record,
+                runtime_url=runtime_url,
+                runtime_headers=runtime_headers,
+            )
+            return True, record, grant_hdrs
+        grant_hdrs = SchedulerLeaseClient.build_grant_headers(
+            dec,
+            parent_task_id=record.video_task_id,
+            target_identity=target_ident,
+        )
+        return True, record, grant_hdrs
+
+    def ensure_scheduler_target_bound(
+        self,
+        record: TaskRecord,
+        *,
+        runtime_url: str,
+        runtime_headers: dict[str, str] | None = None,
+    ) -> tuple[TaskRecord, dict[str, str]]:
+        if not self.scheduler.enabled:
+            return record, {}
+        pstate = dict(record.provider_state or {})
+        lease_doc = pstate.get("_gpu_lease")
+        if not is_lease_granted(lease_doc) or pstate.get("_gpu_lease_released"):
+            return record, {}
+        target_ident = self.probe_runtime_identity(runtime_url, runtime_headers)
+        if not self._has_concrete_runtime_identity(target_ident):
+            prev_ident = pstate.get("_gpu_target_identity")
+            if self._has_concrete_runtime_identity(prev_ident):
+                target_ident = dict(prev_ident)
+        if pstate.get("_gpu_lease_owned") is not False and not self._is_lease_identity_bound(lease_doc):
+            if not self._has_concrete_runtime_identity(target_ident):
+                raise ExecutionError("GPU target runtime identity unavailable; refusing unbound dispatch")
+            try:
+                lease_doc = self.scheduler.bind_target(
+                    str(lease_doc["lease_id"]),
+                    fencing_token=int(lease_doc.get("fencing_token") or 0),
+                    target_identity=target_ident,
+                    expected_version=int(lease_doc.get("version") or 0),
+                )
+            except SchedulerError as exc:
+                raise ExecutionError(f"GPU scheduler bind-target failed ({exc.code})") from exc
+            pstate["_gpu_lease"] = lease_doc
+            pstate["_gpu_target_identity"] = target_ident
+            record = self.tasks.update(record, provider_state=pstate)
+        elif self._has_concrete_runtime_identity(target_ident) and pstate.get("_gpu_target_identity") != target_ident:
+            pstate["_gpu_target_identity"] = target_ident
+            record = self.tasks.update(record, provider_state=pstate)
+
+        parent_tid = (
+            str(lease_doc.get("holder_task_id") or record.video_task_id)
+            if pstate.get("_gpu_lease_owned") is False
+            else record.video_task_id
+        )
+        grant_hdrs = SchedulerLeaseClient.build_grant_headers(
+            lease_doc,
+            parent_task_id=parent_tid,
+            stage_id=str(lease_doc.get("stage_id") or ""),
+            target_identity=target_ident,
+        )
+        return record, grant_hdrs
+
+    def rollback_unstarted_scheduler_grant(self, record: TaskRecord) -> TaskRecord:
+        if not self.scheduler.enabled:
+            return record
+        pstate = dict(record.provider_state or {})
+        lease_doc = pstate.get("_gpu_lease")
+        if (
+            not isinstance(lease_doc, dict)
+            or pstate.get("_gpu_lease_released")
+            or pstate.get("_gpu_lease_owned") is False
+            or pstate.get("gpu_dispatched") is True
+            or self._is_lease_identity_bound(lease_doc)
+        ):
+            return record
+        lease_id = str(lease_doc.get("lease_id") or "")
+        token = int(lease_doc.get("fencing_token") or 0)
+        if not lease_id:
+            return record
+        try:
+            self.scheduler.release(
+                lease_id,
+                fencing_token=token,
+                worker_settled=False,
+                reclaim_mode="abort_unstarted",
+                expected_version=int(lease_doc.get("version") or 0),
+                idempotency_key=f"abort-unstarted:{lease_id}:{token}",
+            )
+            pstate.pop("_gpu_lease", None)
+            pstate.pop("_gpu_lease_released", None)
+            record = self.tasks.update(record, provider_state=pstate)
+        except Exception:
+            logging.getLogger(__name__).warning("Rollback of unstarted scheduler grant deferred for %s", record.video_task_id)
+        return record
+
+    def maybe_release_scheduler_lease(
+        self,
+        record: TaskRecord,
+        *,
+        force_release_owned: bool = False,
+    ) -> TaskRecord:
+        if not self.scheduler.enabled:
+            return record
+        pstate = dict(record.provider_state or {})
+        lease_doc = pstate.get("_gpu_lease")
+        if not isinstance(lease_doc, dict) or pstate.get("_gpu_lease_released"):
+            return record
+        if pstate.get("_gpu_lease_owned") is False and not force_release_owned:
+            return record
+        if not self.stage_slot.is_task_settled(record):
+            return record
+        if (
+            record.request.get("postprocess")
+            and record.status == "succeeded"
+            and (record.delivery or {}).get("status") not in {"succeeded", "failed"}
+            and not force_release_owned
+        ):
+            return record
+        lease_id = str(lease_doc.get("lease_id") or "")
+        token = int(lease_doc.get("fencing_token") or 0)
+        if not lease_id:
+            return record
+
+        if str(lease_doc.get("state") or "") in {"queued", "draining"}:
+            try:
+                self.scheduler.release(
+                    lease_id,
+                    fencing_token=token,
+                    worker_settled=True,
+                    expected_version=int(lease_doc.get("version") or 0),
+                )
+                pstate["_gpu_lease_released"] = True
+                for qk in ("queue_position", "blocking_reason", "blocking_holder_id", "waiting_reason"):
+                    pstate.pop(qk, None)
+                record = self.tasks.update(record, provider_state=pstate)
+            except Exception:
+                logging.getLogger(__name__).warning("Queued scheduler lease release deferred for %s", record.video_task_id)
+            return record
+
+        if pstate.get("gpu_dispatched") is not True and not self._is_lease_identity_bound(lease_doc):
+            try:
+                self.scheduler.release(
+                    lease_id,
+                    fencing_token=token,
+                    worker_settled=False,
+                    reclaim_mode="abort_unstarted",
+                    expected_version=int(lease_doc.get("version") or 0),
+                )
+                pstate["_gpu_lease_released"] = True
+                for qk in ("queue_position", "blocking_reason", "blocking_holder_id", "waiting_reason"):
+                    pstate.pop(qk, None)
+                record = self.tasks.update(record, provider_state=pstate)
+            except Exception:
+                logging.getLogger(__name__).warning("Unstarted scheduler lease abort deferred for %s", record.video_task_id)
+            return record
+
+        active_service = str(pstate.get("_gpu_active_service") or record.service)
+        spec = SCHEDULER_CONSUMER_SPECS.get(active_service, SCHEDULER_CONSUMER_SPECS["h3"])
+        reclaim_mode = str(spec["reclaim_mode"])
+        reclaim_proof = pstate.get("reclaim_proof") if isinstance(pstate.get("reclaim_proof"), dict) else None
+        cur_ident = pstate.get("_gpu_target_identity") if isinstance(pstate.get("_gpu_target_identity"), dict) else None
+        gpu_epoch = int(pstate.get("gpu_epoch") or 0)
+
+        if not self._is_authoritative_reclaim_proof(
+            reclaim_proof,
+            reclaim_mode=reclaim_mode,
+            lease_id=lease_id,
+            fencing_token=token,
+        ):
+            fetched_proof, fetched_epoch = self.fetch_receiver_reclaim_proof(active_service, record, lease_doc)
+            if fetched_proof is None:
+                logging.getLogger(__name__).warning(
+                    "Receiver reclaim proof unavailable for %s (%s); keeping scheduler lease unreleased",
+                    record.video_task_id,
+                    lease_id,
+                )
+                return record
+            reclaim_proof = fetched_proof
+            pstate["reclaim_proof"] = fetched_proof
+            if fetched_epoch is not None and fetched_epoch > 0:
+                gpu_epoch = fetched_epoch
+                pstate["gpu_epoch"] = fetched_epoch
+            record = self.tasks.update(record, provider_state=pstate)
+
+        if gpu_epoch <= 0 and isinstance(reclaim_proof.get("sealed_gpu_epoch"), int):
+            gpu_epoch = int(reclaim_proof["sealed_gpu_epoch"])
+
+        try:
+            self.scheduler.release(
+                lease_id,
+                fencing_token=token,
+                worker_settled=True,
+                reclaim_mode=reclaim_mode,
+                reclaim_proof=reclaim_proof,
+                current_identity=cur_ident,
+                gpu_epoch=gpu_epoch,
+                expected_version=int(lease_doc.get("version") or 0),
+            )
+            pstate["_gpu_lease_released"] = True
+            for qk in ("lease_state", "queue_position", "blocking_reason", "blocking_holder_id", "waiting_reason"):
+                pstate.pop(qk, None)
+            record = self.tasks.update(record, provider_state=pstate)
+        except Exception:
+            logging.getLogger(__name__).warning("Scheduler lease release deferred for %s", record.video_task_id)
+        return record
 
     def acquire_local_gpu(self, task_id: str, service: str, *, record: TaskRecord | None = None) -> bool:
         """Non-blocking local GPU slot + K8s lease admission.
@@ -317,7 +811,8 @@ class VideoExecutor:
 
     @staticmethod
     def _service_for_route(route: str) -> str:
-        return ("google" if route == "google" else "grok" if route == "grok" else "fal" if route == "fal" else
+        return ("comfyui" if route == "comfyui" else
+                "google" if route == "google" else "grok" if route == "grok" else "fal" if route == "fal" else
                 "h3-vdn" if route == "h3-vdn" else
                 "h3-sol" if route.startswith("h3-sol") else
                 "h3-fasth3" if route == "h3-fasth3" else
@@ -469,6 +964,8 @@ class VideoExecutor:
         route_templates = [item for item in routes if item["route"] in external]
         routes = [item for item in routes if item["route"] not in external]
         routes.extend(external_routes(route_templates, catalog))
+        if self.comfyui.configured():
+            routes.extend(self.comfyui.capabilities())
         return {"catalog": catalog, "channel_capabilities": catalog.get("channel_capabilities", {}),
                 "default_model": "minimax-h3-ref2va", "default_route": self.runtime_route,
                 "models": [{"model": "minimax-h3-ref2va"}, *dynamic_models],
@@ -693,12 +1190,16 @@ class VideoExecutor:
                  quality_profile: str | None = None, mode: str | None = None,
                  resolution: str | None = None, postprocess: dict | None = None,
                  channel_account_id: str | None = None, budget_limit: str | None = None,
-                 price_ceiling: float | None = None, audio_guidance: str | None = None, image_guidance: str | None = None) -> TaskRecord:
+                 price_ceiling: float | None = None, audio_guidance: str | None = None,
+                 image_guidance: str | None = None,
+                 workflow_params: dict[str, object] | None = None) -> TaskRecord:
         with self._lock:
             project_id = require_project_id(project_id)
             if not idempotency_key.strip() or len(idempotency_key) > 128:
                 raise ValueError("idempotency_key is invalid")
             explicit_route = route
+            if explicit_route in {None, "local"} and isinstance(model, str) and model.strip().startswith("comfyui:"):
+                explicit_route = "comfyui"
             explicit_qp = quality_profile
             existing_hint = self.tasks.find_idempotency(project_id, idempotency_key) if explicit_route is None else None
             route = explicit_route if explicit_route is not None else (self._record_route(existing_hint) if existing_hint is not None else self.runtime_route)
@@ -710,8 +1211,25 @@ class VideoExecutor:
                 raise ValueError("price_ceiling_not_supported")
             if route not in {'fal', 'grok', 'google'} and (channel_account_id is not None or budget_limit is not None):
                 raise ValueError('channel_budget_not_supported')
+            if route != "comfyui" and workflow_params is not None:
+                raise ValueError("unsupported_parameter")
             from .delivery import normalize, authorize
             normalize(postprocess, route)
+            if route == "comfyui":
+                with self.tasks.exclusive():
+                    return self.comfyui.generate(
+                        project_id=project_id,
+                        idempotency_key=idempotency_key,
+                        model=model,
+                        prompt=prompt,
+                        duration_seconds=duration_seconds,
+                        aspect_ratio=aspect_ratio,
+                        references=references,
+                        quality_profile=quality_profile,
+                        mode=mode,
+                        resolution=resolution,
+                        workflow_params=workflow_params,
+                    )
             if route == "higgsfield":
                 with self.tasks.exclusive():
                     return self.higgsfield.generate(project_id=project_id, idempotency_key=idempotency_key,
@@ -964,7 +1482,9 @@ class VideoExecutor:
                     "error": err,
                     "completed_at": datetime.now(UTC).isoformat(),
                 }
-            return self.tasks.update(record, **updates)
+            updated = self.tasks.update(record, **updates)
+            self.stage_slot.release(updated.video_task_id, force=True)
+            return self.maybe_release_scheduler_lease(updated)
 
         try:
             runtime_url, runtime_headers, _, _ = self.runtime(route)
@@ -978,13 +1498,37 @@ class VideoExecutor:
 
         acquired = False
         try:
-            if service in LOCAL_H3_SERVICES and (self.gpu.enabled or self.stage_slot.enabled):
+            grant_headers: dict[str, str] = {}
+            local_gating = bool(self.gpu.enabled or self.stage_slot.enabled)
+            if self.scheduler.enabled and service in LOCAL_H3_SERVICES:
+                try:
+                    sched_ok, record, grant_headers = self.acquire_scheduler_grant(
+                        record,
+                        service,
+                        runtime_url=runtime_url,
+                        runtime_headers=runtime_headers,
+                        bind_immediately=not local_gating,
+                    )
+                except LeaseBusy:
+                    return _fail_pre_submit("gpu_busy", MESSAGES["gpu_busy"], retryable=True)
+                if not sched_ok:
+                    return record
+
+            if service in LOCAL_H3_SERVICES and local_gating:
                 try:
                     acquired = self.acquire_local_gpu(record.video_task_id, service, record=record)
                 except LeaseBusy:
                     return _fail_pre_submit("gpu_busy", MESSAGES["gpu_busy"], retryable=True)
                 if not acquired:
+                    record = self.rollback_unstarted_scheduler_grant(record)
                     return self.defer_local_gpu_queue(record)
+
+            if self.scheduler.enabled and service in LOCAL_H3_SERVICES:
+                record, grant_headers = self.ensure_scheduler_target_bound(
+                    record,
+                    runtime_url=runtime_url,
+                    runtime_headers=runtime_headers,
+                )
 
             if service in {"h3-vdn", *MODERN_H3_SERVICES}:
                 try:
@@ -1043,7 +1587,8 @@ class VideoExecutor:
             record = self.tasks.update(record, provider_state=dispatched_pstate)
 
             try:
-                response = self.client.post(f"{runtime_url}/v1/videos", json=payload, headers=runtime_headers)
+                post_headers = {**runtime_headers, **grant_headers}
+                response = self.client.post(f"{runtime_url}/v1/videos", json=payload, headers=post_headers)
                 response.raise_for_status()
                 runtime_task_id = response.json()["id"]
                 if not isinstance(runtime_task_id, str) or not runtime_task_id.strip():
@@ -1092,6 +1637,45 @@ class VideoExecutor:
                 self.release_or_reconcile_local_gpu(record.video_task_id)
 
     def reconcile_gpu(self) -> None:
+        if self.scheduler.enabled:
+            try:
+                self.scheduler.flush_pending_releases()
+            except Exception:
+                pass
+            root = getattr(self.tasks, "root", None)
+            if root is not None and root.is_dir():
+                try:
+                    with os.scandir(root) as entries:
+                        for entry in entries:
+                            if not entry.name.startswith("video_task_") or not entry.name.endswith(".json"):
+                                continue
+                            try:
+                                rec = TaskRecord.model_validate_json(Path(entry.path).read_text(encoding="utf-8"))
+                            except Exception:
+                                continue
+                            pstate = rec.provider_state or {}
+                            lease_doc = pstate.get("_gpu_lease")
+                            if (
+                                is_lease_granted(lease_doc)
+                                and not pstate.get("_gpu_lease_released")
+                                and pstate.get("_gpu_lease_owned") is not False
+                            ):
+                                if self.stage_slot.is_task_settled(rec):
+                                    self.maybe_release_scheduler_lease(rec)
+                                else:
+                                    try:
+                                        self.scheduler.heartbeat(
+                                            str(lease_doc["lease_id"]),
+                                            fencing_token=int(lease_doc.get("fencing_token") or 0),
+                                            expected_version=int(lease_doc.get("version") or 0),
+                                        )
+                                    except Exception:
+                                        pass
+                except OSError:
+                    pass
+            if not self.gpu.enabled:
+                self.dispatch_queued_local_tasks()
+                return
         if not self.gpu.enabled:
             return
         with self._state_guard:
@@ -1122,6 +1706,8 @@ class VideoExecutor:
         if root is None or not root.is_dir():
             raise ExecutionError("GPU task reconciliation storage is unavailable")
         saw_interpolate = False
+        saw_sr = False
+        saw_depth = False
         unsettled_records: list[TaskRecord] = []
         # scandir propagates unreadable-directory errors; glob can silently
         # produce an empty collection and incorrectly imply an idle backend.
@@ -1130,10 +1716,17 @@ class VideoExecutor:
                 if not entry.name.startswith("video_task_") or not entry.name.endswith(".json"):
                     continue
                 record = TaskRecord.model_validate_json(Path(entry.path).read_text(encoding="utf-8"))
-                if (record.provider_state or {}).get("gpu_dispatched") is False and not record.runtime_task_id:
+                if (record.provider_state or {}).get("gpu_dispatched") is False and (
+                    not record.runtime_task_id
+                    or record.service in {"sr", "interpolate", "regenerate_2k", "depth", "h3-latent-upscale"}
+                ):
                     continue
                 if record.service == "interpolate":
                     saw_interpolate = True
+                elif record.service == "sr":
+                    saw_sr = True
+                elif record.service == "depth":
+                    saw_depth = True
                 if record.service in LOCAL_GPU_SERVICES and (
                     record.status not in TERMINAL_TASK_STATUS or
                     (record.status == "failed" and (record.error or {}).get("code") in
@@ -1177,6 +1770,10 @@ class VideoExecutor:
             or "VIDEO_PROJECT_SERVICE_URL" in os.environ
         ):
             health_targets.append((f"{self.processing['interpolate'].url}/health", {}))
+        if saw_sr or "VIDEO_SR_RUNTIME_URL" in os.environ:
+            health_targets.append((f"{self.processing['sr'].url}/health", {}))
+        if saw_depth or "VIDEO_DEPTH_RUNTIME_URL" in os.environ:
+            health_targets.append((f"{self.depth.url}/health", {}))
 
         for h_url, h_headers in health_targets:
             try:
@@ -1191,6 +1788,8 @@ class VideoExecutor:
 
     def cancel_generation(self, record: TaskRecord, *, timeout_error: dict[str, object] | None = None) -> TaskRecord:
         record = self.tasks.get(record.video_task_id)
+        if record.service == "comfyui":
+            return self.comfyui.cancel(record)
         prev_state = dict(record.provider_state or {})
         now_epoch = time.time()
         attempts = int(prev_state.get("_cancel_attempts", 0)) + 1
@@ -1285,6 +1884,7 @@ class VideoExecutor:
         )
         if worker_settled:
             self.stage_slot.release(updated.video_task_id)
+            updated = self.maybe_release_scheduler_lease(updated)
         return updated
 
     def _fail_route_unavailable(self, record: TaskRecord) -> TaskRecord:
@@ -1310,11 +1910,14 @@ class VideoExecutor:
             }
         updated = self.tasks.update(record, **updates)
         self.stage_slot.release(updated.video_task_id, force=True)
+        updated = self.maybe_release_scheduler_lease(updated)
         return updated
 
     @task_serialized
     def status(self, video_task_id: str) -> TaskRecord:
         record = self.tasks.get(video_task_id)
+        if record.service == "comfyui":
+            return self.comfyui.status(record)
         if record.service == "higgsfield":
             return self.higgsfield.status(record)
         if record.service == "grok":
@@ -1382,19 +1985,49 @@ class VideoExecutor:
                             if not runtime_supports_first_frame(data) or data.get('ready') is not True:
                                 raise ValueError('first_frame_not_supported_or_not_ready')
                         acquired = False
-                        try:
-                            acquired = self.acquire_local_gpu(record.video_task_id, record.service, record=record)
-                        except LeaseBusy:
-                            return self.tasks.update(
+                        grant_hdrs: dict[str, str] = {}
+                        local_gating = bool(self.gpu.enabled or self.stage_slot.enabled)
+                        if self.scheduler.enabled and record.service in LOCAL_H3_SERVICES:
+                            try:
+                                sched_ok, record, grant_hdrs = self.acquire_scheduler_grant(
+                                    record,
+                                    record.service,
+                                    runtime_url=url,
+                                    runtime_headers=headers,
+                                    bind_immediately=not local_gating,
+                                )
+                            except LeaseBusy:
+                                failed_rec = self.tasks.update(
+                                    record,
+                                    status="failed",
+                                    provider_state={**(record.provider_state or {}), "worker_settled": True},
+                                    error={"code": "gpu_busy", "message": MESSAGES["gpu_busy"], "retryable": True},
+                                )
+                                return self.maybe_release_scheduler_lease(failed_rec)
+                            if not sched_ok:
+                                return record
+                        if local_gating:
+                            try:
+                                acquired = self.acquire_local_gpu(record.video_task_id, record.service, record=record)
+                            except LeaseBusy:
+                                failed_rec = self.tasks.update(
+                                    record,
+                                    status="failed",
+                                    provider_state={**(record.provider_state or {}), "worker_settled": True},
+                                    error={"code": "gpu_busy", "message": MESSAGES["gpu_busy"], "retryable": True},
+                                )
+                                return self.maybe_release_scheduler_lease(failed_rec)
+                            if not acquired:
+                                record = self.rollback_unstarted_scheduler_grant(record)
+                                return self.defer_local_gpu_queue(record)
+                        if self.scheduler.enabled and record.service in LOCAL_H3_SERVICES:
+                            record, grant_hdrs = self.ensure_scheduler_target_bound(
                                 record,
-                                status="failed",
-                                provider_state={**(record.provider_state or {}), "worker_settled": True},
-                                error={"code": "gpu_busy", "message": MESSAGES["gpu_busy"], "retryable": True},
+                                runtime_url=url,
+                                runtime_headers=headers,
                             )
-                        if not acquired:
-                            return self.defer_local_gpu_queue(record)
                         try:
-                            response = self.client.post(f'{url}/v1/videos', headers=headers, json=payload, timeout=30)
+                            response = self.client.post(f'{url}/v1/videos', headers={**headers, **grant_hdrs}, json=payload, timeout=30)
                         finally:
                             if acquired:
                                 self.release_or_reconcile_local_gpu(record.video_task_id)
@@ -1439,21 +2072,24 @@ class VideoExecutor:
                             **(record.provider_state or {}),
                             "worker_settled": bool(body.get("worker_settled", False)),
                         }
-                        for key in ("started_at", "finished_at"):
+                        for key in ("started_at", "finished_at", "gpu_epoch", "reclaim_proof"):
                             if key in body:
                                 pstate[key] = body[key]
                         record = self.tasks.update(record, provider_state=pstate)
                         if pstate.get("worker_settled") is True:
                             self.stage_slot.release(record.video_task_id)
+                            record = self.maybe_release_scheduler_lease(record)
                     elif poll.status_code == 404:
                         pstate = {**(record.provider_state or {}), "worker_settled": True}
                         record = self.tasks.update(record, provider_state=pstate)
                         self.stage_slot.release(record.video_task_id)
+                        record = self.maybe_release_scheduler_lease(record)
                 except ExecutionError as exc:
                     if str(exc) == "route_unavailable":
                         pstate = {**(record.provider_state or {}), "worker_settled": True}
                         record = self.tasks.update(record, provider_state=pstate)
                         self.stage_slot.release(record.video_task_id, force=True)
+                        record = self.maybe_release_scheduler_lease(record)
                 except (httpx.HTTPError, ValueError, TypeError):
                     pass
             return record
@@ -1505,7 +2141,7 @@ class VideoExecutor:
         if record.service in MODERN_H3_SERVICES and isinstance(runtime_data.get("result"), dict):
             metrics = {**metrics, "result_sha256": runtime_data["result"].get("content_sha256")}
         provider_state = dict(record.provider_state or {})
-        for key in ("started_at", "finished_at", "worker_settled"):
+        for key in ("started_at", "finished_at", "worker_settled", "gpu_epoch", "reclaim_proof"):
             if key in runtime_data:
                 provider_state[key] = runtime_data[key]
         if mapped in {"succeeded", "failed", "cancelled"} and "worker_settled" not in runtime_data:
@@ -1530,6 +2166,7 @@ class VideoExecutor:
         )
         if self.stage_slot.is_task_settled(updated):
             self.stage_slot.release(updated.video_task_id)
+            updated = self.maybe_release_scheduler_lease(updated)
         if (
             updated.service in MODERN_H3_SERVICES
             and updated.status == "running"
@@ -1556,6 +2193,8 @@ class VideoExecutor:
 
     def _result(self, video_task_id: str) -> TaskRecord:
         record = self.tasks.get(video_task_id)
+        if record.service == "comfyui":
+            return self.comfyui.result(record)
         if record.service == "higgsfield":
             return self.higgsfield.result(record)
         if record.service == "grok":

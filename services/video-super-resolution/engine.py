@@ -26,7 +26,12 @@ class Engine:
         os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
         import torch
         from video_sr.gpu_guard import verify_gpu
-        verify_gpu(torch, os.environ.get("VIDEO_GPU_ALLOCATION", ""))
+        self.sharing_strategy = os.environ.get('VIDEO_GPU_SHARING_STRATEGY', 'none')
+        verify_gpu(
+            torch,
+            os.environ.get('VIDEO_GPU_ALLOCATION', ''),
+            sharing_strategy=self.sharing_strategy,
+        )
         if not torch.cuda.is_available() or torch.cuda.device_count() != 1 or not torch.cuda.is_bf16_supported():
             raise RuntimeError('one_bf16_cuda_device_required')
         self.torch = torch
@@ -75,7 +80,7 @@ class Engine:
         self.runner.configure_diffusion()
         self.embeddings = {'texts_pos': [torch.load(self.root / 'pos_emb.pt', map_location='cpu', weights_only=True)],
                            'texts_neg': [torch.load(self.root / 'neg_emb.pt', map_location='cpu', weights_only=True)]}
-        self.metadata['runtime_version'] = 'video-super-resolution-v0.1.4'
+        self.metadata['runtime_version'] = 'video-super-resolution-v0.1.5'
 
     def capacity_identity(self):
         from video_sr import windowing, media, capacity
@@ -108,7 +113,12 @@ class Engine:
         self.torch.cuda.synchronize()
         self.torch.cuda.empty_cache()
         free, total = self.torch.cuda.mem_get_info()
-        if total - free > self.profile.data['baseline_used_bytes'] + min(self.profile.data['reserve_bytes'], 64 * 1024 * 1024):
+        strategy = getattr(self, 'sharing_strategy', os.environ.get('VIDEO_GPU_SHARING_STRATEGY', 'none'))
+        if strategy in ('time-slicing', 'native'):
+            min_free = int(os.environ.get('VIDEO_SR_MIN_FREE_BYTES', str(8 * 1024**3)))
+            if free < min_free:
+                raise CapacityError('gpu_memory_occupancy_changed')
+        elif total - free > self.profile.data['baseline_used_bytes'] + min(self.profile.data['reserve_bytes'], 64 * 1024 * 1024):
             raise CapacityError('gpu_memory_occupancy_changed')
         return policy
 

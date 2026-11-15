@@ -10,14 +10,28 @@ import shutil
 import sqlite3
 import threading
 import time
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from .integrity import sha256
 from .media import process, MediaError, TaskCancelledError
-from .gpu_guard import GPUMemoryUnavailable
+from .gpu_guard import (
+    FencePersistenceError,
+    GPUMemoryUnavailable,
+    LeaseFenceGuard,
+    StaleFenceError,
+    read_runtime_identity,
+    verify_internal_bearer,
+)
 from .schemas import InterpolationRequest
 
 TASK_PATTERN = re.compile('video_task_[0-9a-f]{32}')
+
+
+class RevokeLeaseRequest(BaseModel):
+    lease_id: str = ''
+    fencing_token: int = 0
+    reason: str = ''
 
 
 def source_path(req, root):
@@ -54,10 +68,12 @@ def source_path(req, root):
 
 class Queue:
 
-    def __init__(self, root, artifact_root, engine):
+    def __init__(self, root, artifact_root, engine, fence_guard: LeaseFenceGuard | None = None):
         (self.root, self.artifact_root, self.engine) = (Path(root).resolve(), Path(artifact_root).resolve(), engine)
         (self.request_type, self.service) = (InterpolationRequest, 'interpolate')
         self.root.mkdir(parents=True, exist_ok=True)
+        self.fence_guard = fence_guard or LeaseFenceGuard(state_path=self.root / 'gpu_guard_state.json')
+        self.identity = read_runtime_identity()
         self.lock = threading.RLock()
         self.stop = threading.Event()
         self._active_task_id = None
@@ -125,9 +141,12 @@ class Queue:
                 'SELECT state,result,error,created,started,finished,worker_settled FROM tasks WHERE id=?',
                 (task_id,),
             ).fetchone()
+            active_count = 1 if self._active_task_id is not None else 0
         if not row:
             raise HTTPException(404, {'code': 'task_not_found'})
-        return {
+        settled = bool(row[6])
+        is_terminal = row[0] in ('succeeded', 'failed', 'cancelled')
+        payload = {
             'video_task_id': task_id,
             'status': row[0],
             'result': json.loads(row[1]) if row[1] else None,
@@ -135,29 +154,125 @@ class Queue:
             'created_at': row[3],
             'started_at': row[4],
             'finished_at': row[5],
-            'worker_settled': bool(row[6]),
+            'worker_settled': settled,
         }
+        try:
+            proof = self.fence_guard.build_warm_reclaim_proof(
+                task_id=task_id,
+                active_tasks=active_count,
+                settled=bool(settled and is_terminal),
+                identity=self.identity,
+            )
+        except FencePersistenceError as exc:
+            raise HTTPException(503, {'code': str(exc)}) from None
+        if proof is not None:
+            payload['reclaim_proof'] = proof
+        return payload
 
-    def submit(self, req):
+    def submit(self, req, headers=None):
         canonical = req.model_dump_json()
         digest = hashlib.sha256(canonical.encode()).hexdigest()
+        stage_digest = hashlib.sha256(req.model_dump_json(exclude={'idempotency_key'}).encode()).hexdigest()
+        try:
+            _, replay_task_id = self.fence_guard.extract_and_validate(
+                headers or {},
+                task_id=req.idempotency_key,
+                request_digest=stage_digest,
+                identity=self.identity,
+            )
+        except FencePersistenceError as exc:
+            raise HTTPException(503, {'code': str(exc)}) from None
+        except PermissionError as exc:
+            raise HTTPException(403, {'code': str(exc)}) from None
+        except StaleFenceError as exc:
+            raise HTTPException(409, {'code': str(exc)}) from None
+        except ValueError as exc:
+            raise HTTPException(409, {'code': str(exc)}) from None
+
+        if replay_task_id is not None:
+            with self.lock:
+                replay_row = self.db.execute('SELECT id FROM tasks WHERE id=?', (replay_task_id,)).fetchone()
+            if replay_row is not None and replay_task_id != req.idempotency_key:
+                return self.get(replay_task_id)
+            if replay_row is None and self.fence_guard.is_task_revoked_or_sealed(replay_task_id):
+                raise HTTPException(409, {'code': 'stale_or_revoked_fencing_token'})
+
         with self.lock:
             row = self.db.execute('SELECT digest FROM tasks WHERE id=?', (req.idempotency_key,)).fetchone()
             if row:
                 if row[0] != digest:
                     raise HTTPException(409, {'code': 'idempotency_conflict'})
                 return self.get(req.idempotency_key)
-            source_path(req, self.artifact_root)
-            waiting = self.db.execute("SELECT count(*) FROM tasks WHERE state IN ('queued','running')").fetchone()[0]
-            if waiting >= 8:
-                raise HTTPException(429, {'code': 'queue_full'})
-            self.db.execute(
-                'INSERT INTO tasks (id, request, digest, state, result, error, created, started, finished, worker_settled) '
-                'VALUES (?,?,?,?,?,?,?,?,?,?)',
-                (req.idempotency_key, canonical, digest, 'queued', None, None, time.time(), None, None, 1),
-            )
-            self.db.commit()
+            try:
+                source_path(req, self.artifact_root)
+                waiting = self.db.execute("SELECT count(*) FROM tasks WHERE state IN ('queued','running')").fetchone()[0]
+                if waiting >= 8:
+                    raise HTTPException(429, {'code': 'queue_full'})
+                self.db.execute(
+                    'INSERT INTO tasks (id, request, digest, state, result, error, created, started, finished, worker_settled) '
+                    'VALUES (?,?,?,?,?,?,?,?,?,?)',
+                    (req.idempotency_key, canonical, digest, 'queued', None, None, time.time(), None, None, 1),
+                )
+                self.db.commit()
+            except BaseException:
+                try:
+                    self.fence_guard.seal_task(req.idempotency_key)
+                except FencePersistenceError:
+                    pass
+                raise
             return self.get(req.idempotency_key)
+
+    def revoke_lease(self, lease_id: str, fencing_token: int) -> dict[str, object]:
+        try:
+            affected = self.fence_guard.revoke_lease(lease_id, fencing_token)
+        except FencePersistenceError as exc:
+            raise HTTPException(503, {'code': str(exc)}) from None
+        for tid in affected:
+            try:
+                self.cancel(tid)
+            except HTTPException:
+                pass
+        try:
+            with self.lock:
+                active_count = len(self.active_task_ids())
+                proof = self.fence_guard.reclaim_and_seal(
+                    lease_id=lease_id,
+                    fencing_token=fencing_token,
+                    active_tasks=active_count,
+                    settled=(active_count == 0),
+                    identity=self.identity,
+                ) or {}
+        except FencePersistenceError as exc:
+            raise HTTPException(503, {'code': str(exc)}) from None
+        is_settled = bool(proof.get('reclaimed'))
+        return {**proof, 'revoked': True, 'settled': is_settled}
+
+    def reclaim_lease(self, lease_id: str, fencing_token: int) -> dict[str, object]:
+        try:
+            with self.lock:
+                active_count = len(self.active_task_ids())
+                proof = self.fence_guard.reclaim_and_seal(
+                    lease_id=lease_id,
+                    fencing_token=fencing_token,
+                    active_tasks=active_count,
+                    settled=True,
+                    identity=self.identity,
+                )
+        except FencePersistenceError as exc:
+            raise HTTPException(503, {'code': str(exc)}) from None
+        if proof is None:
+            raise HTTPException(400, {'code': 'missing_lease_or_token'})
+        if not proof.get('reclaimed'):
+            raise HTTPException(
+                409,
+                {
+                    'code': 'worker_not_settled',
+                    'settled': False,
+                    'active_tasks': int(proof.get('active_tasks', 1)),
+                    'reclaim_proof': proof,
+                },
+            )
+        return {'ok': True, 'settled': True, 'active_tasks': 0, 'reclaim_proof': proof}
 
     def cancel(self, task_id):
         if not TASK_PATTERN.fullmatch(task_id):
@@ -177,6 +292,7 @@ class Queue:
                     (now, task_id),
                 )
                 self.db.commit()
+                self.fence_guard.seal_task(task_id)
                 return self.get(task_id)
             if state == 'cancelled':
                 if self._active_task_id == task_id and self._active_settled_event is not None:
@@ -219,6 +335,26 @@ class Queue:
             if not row:
                 return False
             (task_id, raw) = row
+            try:
+                self.fence_guard.verify_before_inference(task_id)
+            except StaleFenceError:
+                self.db.execute(
+                    "UPDATE tasks SET state='cancelled', result=NULL, error=NULL, finished=?, worker_settled=1 WHERE id=?",
+                    (time.time(), task_id),
+                )
+                self.db.commit()
+                try:
+                    self.fence_guard.seal_task(task_id)
+                except FencePersistenceError:
+                    pass
+                return True
+            except FencePersistenceError:
+                self.db.execute(
+                    "UPDATE tasks SET state='failed', result=NULL, error='fence_state_corrupted', finished=?, worker_settled=1 WHERE id=?",
+                    (time.time(), task_id),
+                )
+                self.db.commit()
+                return True
             started_at = time.time()
             cancel_event = threading.Event()
             settled_event = threading.Event()
@@ -254,8 +390,8 @@ class Queue:
                 register_proc=self._register_proc,
             )
             result['gpu_memory'] = memory
-        except TaskCancelledError:
-            pass
+        except (TaskCancelledError, StaleFenceError):
+            cancel_event.set()
         except Exception as exc:
             if not cancel_event.is_set():
                 code = 'invalid_media' if isinstance(exc, MediaError) else 'inference_failed'
@@ -306,6 +442,10 @@ class Queue:
                 self._active_cancel_event = None
                 self._active_settled_event = None
                 self._active_proc = None
+                try:
+                    self.fence_guard.seal_task(task_id)
+                except FencePersistenceError:
+                    logging.exception('%s_fence_seal_failed %s', self.service, task_id)
                 settled_event.set()
         return True
 
@@ -354,11 +494,30 @@ def create_app(engine_factory):
             'model': queue.engine.metadata,
             'gpu_worker_active': bool(active_ids),
             'active_task_ids': active_ids,
+            'runtime_identity': queue.identity,
         }
 
     @app.post('/v1/interpolate', status_code=202)
-    def generate_interpolation(req: InterpolationRequest):
-        return app.state.queue.submit(req)
+    def generate_interpolation(req: InterpolationRequest, request: Request):
+        return app.state.queue.submit(req, headers=request.headers)
+
+    @app.post('/internal/v1/gpu-residency/revoke-lease')
+    def revoke_lease(body: RevokeLeaseRequest, request: Request):
+        if not verify_internal_bearer(request.headers.get('Authorization', '')):
+            raise HTTPException(401, {'code': 'unauthorized'})
+        queue = getattr(app.state, 'queue', None)
+        if queue is None:
+            raise HTTPException(503, {'code': 'not_ready'})
+        return queue.revoke_lease(body.lease_id, body.fencing_token)
+
+    @app.post('/internal/v1/gpu-guard/reclaim')
+    def reclaim_lease(body: RevokeLeaseRequest, request: Request):
+        if not verify_internal_bearer(request.headers.get('Authorization', '')):
+            raise HTTPException(401, {'code': 'unauthorized'})
+        queue = getattr(app.state, 'queue', None)
+        if queue is None:
+            raise HTTPException(503, {'code': 'not_ready'})
+        return queue.reclaim_lease(body.lease_id, body.fencing_token)
 
     @app.get(f'/v1/{service}/{{task_id}}')
     def status(task_id: str):

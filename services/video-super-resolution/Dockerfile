@@ -2,7 +2,7 @@
 FROM docker.io/pytorch/pytorch:2.3.0-cuda12.1-cudnn8-devel
 LABEL org.opencontainers.image.source="https://github.com/verdantflarehub/verdantflare-app-video"
 LABEL org.opencontainers.image.title="VerdantFlare video-super-resolution"
-LABEL org.opencontainers.image.version="0.1.4"
+LABEL org.opencontainers.image.version="0.1.5"
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg git && rm -rf /var/lib/apt/lists/*
 # Conditioning tensors are supplied in the external model bundle, not the image.
 RUN git clone --filter=blob:none --no-checkout https://github.com/ByteDance-Seed/SeedVR.git /opt/seedvr \

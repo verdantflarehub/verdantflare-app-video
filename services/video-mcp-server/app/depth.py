@@ -4,17 +4,31 @@ import json
 import os
 import httpx
 from .artifacts import require_project_id
+from .channel_errors import MESSAGES
 from .executor import ExecutionError, serialized, task_serialized
+from .gpu_lease import LeaseBusy
 from .tasks import TaskConflict
 
 
 class DepthExecutor:
     def __init__(self, executor):
         self.executor = executor
-        self.artifacts, self.tasks, self.client = executor.artifacts, executor.tasks, executor.client
+        self.artifacts, self.tasks = executor.artifacts, executor.tasks
+        self._client_override = None
         self._lock = executor._lock
         self.url = os.environ.get('VIDEO_DEPTH_RUNTIME_URL', 'http://video-depth-anything:8000').rstrip('/')
         self.runtime_version = os.environ.get('VIDEO_DEPTH_RUNTIME_VERSION', 'video-depth-anything-v0.2.4')
+
+    @property
+    def client(self):
+        return self._client_override if self._client_override is not None else self.executor.client
+
+    @client.setter
+    def client(self, value) -> None:
+        self._client_override = value
+
+    def _runtime_target(self, record=None):
+        return self.url, {}, self.runtime_version
 
     @serialized
     def generate(self, *, project_id, idempotency_key, source_artifact_id,
@@ -41,19 +55,75 @@ class DepthExecutor:
             error={'code': 'submission_unconfirmed', 'message': 'Submission is pending confirmation'})
         return self._submit(record)
 
+    def _fail_record(self, record, error):
+        pstate = {
+            k: v
+            for k, v in (record.provider_state or {}).items()
+            if k not in {'waiting_reason', 'gpu_dispatched'}
+        }
+        pstate['worker_settled'] = True
+        updated = self.tasks.update(record, status='failed', error=error, provider_state=pstate)
+        self.executor.stage_slot.release(updated.video_task_id, force=True)
+        return self.executor.maybe_release_scheduler_lease(updated)
+
     def _submit(self, record):
         payload = {k: v for k, v in record.request.items() if k != 'service'}
         payload['idempotency_key'] = record.video_task_id
+        acquired = False
+        grant_headers = {}
         try:
-            response = self.client.post(f'{self.url}/v1/depth', json=payload, timeout=30)
+            local_gating = bool(self.executor.gpu.enabled or self.executor.stage_slot.enabled)
+            if self.executor.scheduler.enabled:
+                try:
+                    sched_ok, record, grant_headers = self.executor.acquire_scheduler_grant(
+                        record,
+                        'depth',
+                        runtime_url=self.url,
+                        bind_immediately=not local_gating,
+                    )
+                except LeaseBusy:
+                    return self._fail_record(
+                        record,
+                        {'code': 'gpu_busy', 'message': MESSAGES['gpu_busy'], 'retryable': True},
+                    )
+                if not sched_ok:
+                    return record
+
+            if local_gating:
+                try:
+                    acquired = self.executor.acquire_local_gpu(record.video_task_id, 'depth', record=record)
+                except LeaseBusy:
+                    return self._fail_record(
+                        record,
+                        {'code': 'gpu_busy', 'message': MESSAGES['gpu_busy'], 'retryable': True},
+                    )
+                if not acquired:
+                    record = self.executor.rollback_unstarted_scheduler_grant(record)
+                    return self.executor.defer_local_gpu_queue(record)
+
+            if self.executor.scheduler.enabled:
+                record, grant_headers = self.executor.ensure_scheduler_target_bound(
+                    record,
+                    runtime_url=self.url,
+                )
+
+            if record.provider_state or self.executor.gpu.enabled or self.executor.stage_slot.enabled or self.executor.scheduler.enabled:
+                pstate = {k: v for k, v in (record.provider_state or {}).items() if k != 'waiting_reason'}
+                pstate['gpu_dispatched'] = True
+                record = self.tasks.update(record, provider_state=pstate)
+
+            response = self.client.post(f'{self.url}/v1/depth', json=payload, headers=grant_headers or None, timeout=30)
             if response.status_code in {400, 404, 409, 422, 429}:
-                return self.tasks.update(record, status='failed', error={
+                return self._fail_record(record, {
                     'code': 'depth_request_rejected', 'message': 'Depth runtime rejected the source, parameters or queue capacity'})
             response.raise_for_status()
             return self._update(record, response.json())
         except (httpx.HTTPError, ValueError, KeyError):
             return self.tasks.update(record, error={'code': 'submission_unconfirmed',
                 'message': 'Query this task ID to recover the persisted request'})
+        finally:
+            if acquired:
+                self.executor.release_or_reconcile_local_gpu(record.video_task_id)
 
     def _update(self, record, data):
         status = data['status']
@@ -65,13 +135,25 @@ class DepthExecutor:
             if code not in {'interrupted', 'invalid_media', 'source_integrity_failed', 'inference_failed'}:
                 code = 'depth_failed'
             error = {'code': code, 'message': 'Depth conversion failed'}
-        return self.tasks.update(record, status=status, error=error)
+        pstate = dict(record.provider_state or {})
+        for key in ('started_at', 'finished_at', 'worker_settled', 'reclaim_proof'):
+            if key in data:
+                pstate[key] = data[key]
+        if status in {'succeeded', 'failed'} and (pstate or self.executor.stage_slot.enabled or self.executor.scheduler.enabled):
+            pstate.setdefault('worker_settled', True)
+        updated = self.tasks.update(record, status=status, error=error, provider_state=pstate or None)
+        if self.executor.stage_slot.is_task_settled(updated):
+            self.executor.stage_slot.release(updated.video_task_id)
+            updated = self.executor.maybe_release_scheduler_lease(updated)
+        return updated
 
     @task_serialized
     def status(self, video_task_id):
         record = self.tasks.get(video_task_id)
         if record.service != 'depth':
             raise ValueError('task is not a depth task')
+        if record.status == 'queued' and (record.provider_state or {}).get('gpu_dispatched') is False:
+            return self._submit(record)
         if record.status in {'succeeded', 'failed'}:
             return record
         try:
@@ -134,9 +216,18 @@ class DepthExecutor:
         return self.tasks.update(record, media=media)
 
     def public_status(self, record):
-        return {'video_task_id': record.video_task_id, 'depth_task_id': record.video_task_id,
-                'status': record.status, 'created_at': record.created_at, 'updated_at': record.updated_at,
-                'error': record.error}
+        value = {'video_task_id': record.video_task_id, 'depth_task_id': record.video_task_id,
+                 'status': record.status, 'created_at': record.created_at, 'updated_at': record.updated_at,
+                 'error': record.error}
+        pstate = record.provider_state or {}
+        if any(pstate.get(k) is not None for k in ('waiting_reason', 'queue_position', 'blocking_reason')):
+            value['gpu_queue'] = {
+                'waiting_reason': pstate.get('waiting_reason'),
+                'queue_position': pstate.get('queue_position'),
+                'blocking_reason': pstate.get('blocking_reason'),
+                'blocking_holder_id': pstate.get('blocking_holder_id') or None,
+            }
+        return value
 
     def public_result(self, record, preview=False):
         artifact_id = record.media['preview_artifact_id'] if preview else record.artifact_id

@@ -8,6 +8,8 @@ while held and back to 0 after the idle window. H3 stays resident.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import random
 import sqlite3
@@ -23,11 +25,26 @@ LEASES = {
     "music3": "gpu-task-music3",
     "h3": "gpu-task-h3",
     "indextts2": "gpu-task-indextts2",
+    "moss-image": "gpu-task-moss-image",
 }
 CONFLICTS = {
-    "music3": ("h3", "indextts2"),
+    "music3": ("h3", "indextts2", "moss-image"),
     "h3": ("music3",),
     "indextts2": ("music3",),
+    "moss-image": ("music3",),
+}
+
+SCHEDULER_CONSUMER_SPECS: dict[str, dict[str, object]] = {
+    "h3": {"consumer_kind": "h3", "stage_id": "generation", "reclaim_mode": "epoch_unload"},
+    "h3-vdn": {"consumer_kind": "h3", "stage_id": "generation", "reclaim_mode": "epoch_unload"},
+    "h3-sol": {"consumer_kind": "h3", "stage_id": "generation", "reclaim_mode": "epoch_unload"},
+    "h3-fasth3": {"consumer_kind": "h3", "stage_id": "generation", "reclaim_mode": "epoch_unload"},
+    "h3-singularity": {"consumer_kind": "h3", "stage_id": "generation", "reclaim_mode": "epoch_unload"},
+    "regenerate_2k": {"consumer_kind": "video.regenerate_2k", "stage_id": "regenerate_2k", "reclaim_mode": "epoch_unload"},
+    "h3-latent-upscale": {"consumer_kind": "video.regenerate_2k", "stage_id": "regenerate_2k", "reclaim_mode": "epoch_unload"},
+    "interpolate": {"consumer_kind": "rife", "stage_id": "postprocess_rife", "reclaim_mode": "warm_idle_settled"},
+    "sr": {"consumer_kind": "sr", "stage_id": "sr", "reclaim_mode": "warm_idle_settled"},
+    "depth": {"consumer_kind": "depth", "stage_id": "depth", "reclaim_mode": "warm_idle_settled"},
 }
 
 
@@ -563,3 +580,564 @@ class LocalGpuStageSlot:
                 "UPDATE local_gpu_stage_slot SET holder_task_id = '', service = '', updated_at = ? WHERE slot_id = ?",
                 (time.time(), self.SLOT_ID),
             )
+
+
+SCHEDULER_GRANTED_STATES = frozenset({"leased", "running", "granted"})
+
+
+def is_lease_granted(lease_doc: dict | None) -> bool:
+    return isinstance(lease_doc, dict) and str(lease_doc.get("state") or "") in SCHEDULER_GRANTED_STATES
+
+
+class SchedulerError(RuntimeError):
+    def __init__(self, code: str, message: str = "", status_code: int = 500) -> None:
+        self.code = code
+        self.message = message
+        self.status_code = status_code
+        super().__init__(message or code)
+
+
+def _fsync_directory(dir_path: Path) -> None:
+    if os.name == "nt":
+        return
+    dfd = os.open(str(dir_path), os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+
+
+class SchedulerLeaseClient:
+    """Station Runtime :5056 GPU scheduler lease client (acquire, heartbeat, stage handoff, downgrade, release)."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str = "",
+        token: str = "",
+        holder_app_id: str = "video-mcp",
+        enabled: bool = False,
+        ttl_seconds: int = 90,
+        client: httpx.Client | None = None,
+        pending_releases_path: str | Path | None = None,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.token = token
+        self.holder_app_id = holder_app_id
+        self.enabled = bool(enabled and self.base_url)
+        self.ttl_seconds = ttl_seconds
+        self._client = client
+        self._journal_lock = threading.RLock()
+        raw_journal = (
+            str(pending_releases_path).strip()
+            if pending_releases_path is not None
+            else os.environ.get("STATION_GPU_PENDING_RELEASES_PATH", "").strip()
+        )
+        self._pending_releases_path: Path | None = Path(raw_journal) if raw_journal else None
+        self._pending_releases: dict[str, dict[str, object]] = {}
+        self._load_pending_releases_locked()
+
+    @classmethod
+    def from_environment(
+        cls,
+        *,
+        holder_app_id: str = "video-mcp",
+        pending_releases_path: str | Path | None = None,
+    ) -> "SchedulerLeaseClient":
+        url = os.environ.get("STATION_GPU_SCHEDULER_URL", "").strip()
+        token = os.environ.get("STATION_GPU_SCHEDULER_TOKEN", "").strip()
+        env_journal = os.environ.get("STATION_GPU_PENDING_RELEASES_PATH", "").strip()
+        resolved_journal = env_journal or pending_releases_path
+        return cls(
+            base_url=url,
+            token=token,
+            holder_app_id=os.environ.get("STATION_GPU_HOLDER_APP_ID", holder_app_id).strip() or holder_app_id,
+            enabled=bool(url and token),
+            ttl_seconds=int(os.environ.get("GPU_LEASE_SECONDS", "90")),
+            pending_releases_path=resolved_journal,
+        )
+
+    def configure_journal(self, path: str | Path | None) -> None:
+        if path is None:
+            return
+        with self._journal_lock:
+            if self._pending_releases_path is not None:
+                return
+            self._pending_releases_path = Path(path)
+            existing_mem = dict(self._pending_releases)
+            self._load_pending_releases_locked()
+            if existing_mem:
+                self._pending_releases.update(existing_mem)
+                self._persist_pending_releases_locked()
+
+    def _load_pending_releases_locked(self) -> None:
+        if self._pending_releases_path is None or not os.path.lexists(self._pending_releases_path):
+            return
+        if os.path.islink(self._pending_releases_path) or not self._pending_releases_path.is_file():
+            raise SchedulerError("JOURNAL_CORRUPTED", "pending releases journal is not a regular file")
+        try:
+            payload = json.loads(self._pending_releases_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise SchedulerError("JOURNAL_CORRUPTED", f"failed reading pending releases journal: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise SchedulerError("JOURNAL_CORRUPTED", "pending releases journal root must be an object")
+        loaded: dict[str, dict[str, object]] = {}
+        for k, v in payload.items():
+            if not isinstance(k, str) or not k.strip() or not isinstance(v, dict):
+                raise SchedulerError("JOURNAL_CORRUPTED", "invalid pending release journal entry")
+            loaded[k.strip()] = dict(v)
+        self._pending_releases = loaded
+
+    def _persist_pending_releases_locked(self) -> None:
+        if self._pending_releases_path is None:
+            return
+        self._pending_releases_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self._pending_releases_path.with_name(
+            f"{self._pending_releases_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        data = json.dumps(self._pending_releases, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        try:
+            fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                view = memoryview(data)
+                while view:
+                    written = os.write(fd, view)
+                    if written <= 0:
+                        raise OSError("short_write_zero_bytes")
+                    view = view[written:]
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.replace(str(tmp_path), str(self._pending_releases_path))
+            _fsync_directory(self._pending_releases_path.parent)
+        except OSError as exc:
+            try:
+                if os.path.lexists(tmp_path):
+                    os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise SchedulerError("JOURNAL_PERSIST_FAILED", str(exc), status_code=503) from exc
+
+    @staticmethod
+    def _is_confirmed_release_receipt(lease_id: str, data: object) -> bool:
+        if not isinstance(data, dict):
+            return False
+        if str(data.get("lease_id") or "").strip() != lease_id:
+            return False
+        return str(data.get("state") or "").strip().lower() in {"released", "expired"}
+
+    @staticmethod
+    def _is_concrete_identity_value(value: object) -> bool:
+        if not isinstance(value, str):
+            return False
+        s = value.strip().lower()
+        if not s or s in {"unknown", "none", "null", "n/a"}:
+            return False
+        return not (s.startswith("unknown-") or s.startswith("unknown_") or s.startswith("local-"))
+
+    def _request(self, method: str, path: str, *, json_body: dict | None = None) -> tuple[int, dict]:
+        headers = {"Authorization": f"Bearer {self.token}"}
+        try:
+            if self._client is not None:
+                resp = self._client.request(method, self.base_url + path, headers=headers, json=json_body)
+            else:
+                with httpx.Client(timeout=15.0, trust_env=False) as client:
+                    resp = client.request(method, self.base_url + path, headers=headers, json=json_body)
+        except SchedulerError:
+            raise
+        except Exception as exc:
+            raise SchedulerError("TRANSPORT_ERROR", str(exc), status_code=503) from exc
+        try:
+            data = resp.json() if resp.content else {}
+        except ValueError:
+            data = {}
+        if resp.status_code >= 400:
+            code = ""
+            msg = ""
+            if isinstance(data, dict):
+                if isinstance(data.get("error_code"), str) and data["error_code"]:
+                    code = data["error_code"]
+                if isinstance(data.get("message"), str) and data["message"]:
+                    msg = data["message"]
+                err = data.get("error")
+                if isinstance(err, dict):
+                    if not code and isinstance(err.get("code"), str):
+                        code = err["code"]
+                    if not msg and isinstance(err.get("message"), str):
+                        msg = err["message"]
+            raise SchedulerError(
+                code or f"HTTP_{resp.status_code}",
+                msg or resp.text,
+                status_code=resp.status_code,
+            )
+        return resp.status_code, data if isinstance(data, dict) else {}
+
+    def get_pending_release(self, lease_id: str) -> dict[str, object] | None:
+        with self._journal_lock:
+            entry = self._pending_releases.get(lease_id)
+            return dict(entry) if isinstance(entry, dict) else None
+
+    def flush_pending_releases(self, *, include_quarantined: bool = False) -> int:
+        if not self.enabled:
+            return 0
+        with self._journal_lock:
+            if not self._pending_releases:
+                return 0
+            snapshot = [
+                (lid, dict(b))
+                for lid, b in self._pending_releases.items()
+                if include_quarantined or not bool(b.get("_quarantined_400"))
+            ]
+        if not snapshot:
+            return 0
+        flushed = 0
+        for lease_id, body in snapshot:
+            retry_body = {
+                k: v
+                for k, v in body.items()
+                if k != "expected_version" and not str(k).startswith("_")
+            }
+            try:
+                _, data = self._request(
+                    "POST",
+                    f"/internal/v1/gpu-scheduler/leases/{lease_id}/release",
+                    json_body=retry_body,
+                )
+                if self._is_confirmed_release_receipt(lease_id, data):
+                    with self._journal_lock:
+                        self._pending_releases.pop(lease_id, None)
+                        self._persist_pending_releases_locked()
+                    flushed += 1
+            except SchedulerError as err:
+                if err.status_code == 400:
+                    logging.error(
+                        "video_gpu_release_quarantined_400 lease_id=%s code=%s message=%s",
+                        lease_id,
+                        err.code,
+                        err.message,
+                    )
+                    with self._journal_lock:
+                        cur = self._pending_releases.get(lease_id)
+                        if isinstance(cur, dict):
+                            upd = dict(cur)
+                            upd["_quarantined_400"] = True
+                            upd["_last_error"] = f"{err.code}:{err.message}"
+                            self._pending_releases[lease_id] = upd
+                            self._persist_pending_releases_locked()
+                continue
+            except Exception:
+                continue
+        return flushed
+
+    def acquire(
+        self,
+        task_id: str,
+        service: str,
+        *,
+        attempt_id: str,
+        stage_id: str | None = None,
+        runtime_identity: dict | None = None,
+        bind_identity: bool = True,
+        k8s_slots_required: int = 0,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        self.flush_pending_releases()
+        spec = SCHEDULER_CONSUMER_SPECS.get(service, SCHEDULER_CONSUMER_SPECS["h3"])
+        resolved_stage = stage_id or str(spec["stage_id"])
+        ident = runtime_identity or {}
+        body: dict[str, object] = {
+            "idempotency_key": idempotency_key or f"acq:{task_id}:{attempt_id}:{resolved_stage}",
+            "holder_app_id": self.holder_app_id,
+            "consumer_kind": str(spec["consumer_kind"]),
+            "task_id": task_id,
+            "attempt_id": attempt_id,
+            "stage_id": resolved_stage,
+            "ttl_seconds": self.ttl_seconds,
+        }
+        if k8s_slots_required > 0:
+            body["k8s_slots_required"] = int(k8s_slots_required)
+        if bind_identity:
+            for key in ("pod_uid", "container_id", "boot_id"):
+                val = ident.get(key)
+                if self._is_concrete_identity_value(val):
+                    body[key] = str(val).strip()
+        visible = ident.get("visible_gpu_uuids")
+        if isinstance(visible, list) and visible:
+            body["candidate_gpu_uuids"] = [str(u) for u in visible if str(u)]
+        _, data = self._request("POST", "/internal/v1/gpu-scheduler/leases/acquire", json_body=body)
+        return data
+
+    def bind_target(
+        self,
+        lease_id: str,
+        *,
+        fencing_token: int,
+        target_identity: dict,
+        expected_version: int = 0,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        pod_uid = str(target_identity.get("pod_uid") or "").strip()
+        container_id = str(target_identity.get("container_id") or "").strip()
+        boot_id = str(target_identity.get("boot_id") or "").strip()
+        visible = target_identity.get("visible_gpu_uuids")
+        actual_gpus = [str(u) for u in visible if str(u)] if isinstance(visible, list) else []
+        body: dict[str, object] = {
+            "idempotency_key": idempotency_key or f"bind:{lease_id}:{fencing_token}:{pod_uid}",
+            "fencing_token": int(fencing_token),
+            "pod_uid": pod_uid,
+            "container_id": container_id,
+            "boot_id": boot_id,
+            "actual_gpu_uuids": actual_gpus,
+            "ttl_seconds": self.ttl_seconds,
+        }
+        if expected_version > 0:
+            body["expected_version"] = int(expected_version)
+        _, data = self._request("POST", f"/internal/v1/gpu-scheduler/leases/{lease_id}/bind-target", json_body=body)
+        return data
+
+    def get_lease(self, lease_id: str) -> dict:
+        _, data = self._request("GET", f"/internal/v1/gpu-scheduler/leases/{lease_id}")
+        return data
+
+    def heartbeat(
+        self,
+        lease_id: str,
+        *,
+        fencing_token: int,
+        expected_version: int = 0,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        body: dict[str, object] = {
+            "idempotency_key": idempotency_key or f"hb:{lease_id}:{fencing_token}:{int(time.time() // 15)}",
+            "fencing_token": int(fencing_token),
+            "ttl_seconds": self.ttl_seconds,
+        }
+        if expected_version > 0:
+            body["expected_version"] = int(expected_version)
+        _, data = self._request("POST", f"/internal/v1/gpu-scheduler/leases/{lease_id}/heartbeat", json_body=body)
+        return data
+
+    def stage_handoff(
+        self,
+        lease_id: str,
+        *,
+        fencing_token: int,
+        new_stage_id: str,
+        reclaim_mode: str,
+        reclaim_proof: dict,
+        current_identity: dict | None = None,
+        next_identity: dict | None = None,
+        gpu_epoch: int = 0,
+        expected_version: int = 0,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        cur = current_identity or {}
+        nxt = next_identity or {}
+        body: dict[str, object] = {
+            "idempotency_key": idempotency_key or f"handoff:{lease_id}:{new_stage_id}:{fencing_token}",
+            "fencing_token": int(fencing_token),
+            "ttl_seconds": self.ttl_seconds,
+            "new_stage_id": new_stage_id,
+            "worker_settled": True,
+            "reclaim_mode": reclaim_mode,
+            "reclaim_proof": reclaim_proof,
+        }
+        if expected_version > 0:
+            body["expected_version"] = int(expected_version)
+        if gpu_epoch > 0:
+            body["gpu_epoch"] = int(gpu_epoch)
+        if isinstance(cur.get("supervisor_pid"), int) and cur["supervisor_pid"] > 0:
+            body["supervisor_pid"] = int(cur["supervisor_pid"])
+        if isinstance(cur.get("supervisor_starttime_ticks"), int) and cur["supervisor_starttime_ticks"] > 0:
+            body["supervisor_starttime_ticks"] = int(cur["supervisor_starttime_ticks"])
+        for key in ("pod_uid", "container_id", "boot_id"):
+            val = cur.get(key)
+            if isinstance(val, str) and val and not val.startswith("unknown-"):
+                body[key] = val
+        for src_key, dst_key in (
+            ("pod_uid", "next_pod_uid"),
+            ("container_id", "next_container_id"),
+            ("boot_id", "next_boot_id"),
+        ):
+            val = nxt.get(src_key)
+            if isinstance(val, str) and val and not val.startswith("unknown-"):
+                body[dst_key] = val
+        _, data = self._request("POST", f"/internal/v1/gpu-scheduler/leases/{lease_id}/heartbeat", json_body=body)
+        return data
+
+    def downgrade(
+        self,
+        lease_id: str,
+        *,
+        fencing_token: int,
+        downgrade_to_mib: int = 4096,
+        new_stage_id: str = "postprocess_rife",
+        reclaim_mode: str = "epoch_unload",
+        reclaim_proof: dict,
+        current_identity: dict | None = None,
+        next_identity: dict | None = None,
+        gpu_epoch: int = 0,
+        expected_version: int = 0,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        cur = current_identity or {}
+        nxt = next_identity or {}
+        body: dict[str, object] = {
+            "idempotency_key": idempotency_key or f"downgrade:{lease_id}:{new_stage_id}:{fencing_token}",
+            "fencing_token": int(fencing_token),
+            "ttl_seconds": self.ttl_seconds,
+            "downgrade_to_mib": int(downgrade_to_mib),
+            "new_stage_id": new_stage_id,
+            "worker_settled": True,
+            "reclaim_mode": reclaim_mode,
+            "reclaim_proof": reclaim_proof,
+        }
+        if expected_version > 0:
+            body["expected_version"] = int(expected_version)
+        if gpu_epoch > 0:
+            body["gpu_epoch"] = int(gpu_epoch)
+        if isinstance(cur.get("supervisor_pid"), int) and cur["supervisor_pid"] > 0:
+            body["supervisor_pid"] = int(cur["supervisor_pid"])
+        if isinstance(cur.get("supervisor_starttime_ticks"), int) and cur["supervisor_starttime_ticks"] > 0:
+            body["supervisor_starttime_ticks"] = int(cur["supervisor_starttime_ticks"])
+        for key in ("pod_uid", "container_id", "boot_id"):
+            val = cur.get(key)
+            if isinstance(val, str) and val and not val.startswith("unknown-"):
+                body[key] = val
+        for src_key, dst_key in (
+            ("pod_uid", "next_pod_uid"),
+            ("container_id", "next_container_id"),
+            ("boot_id", "next_boot_id"),
+        ):
+            val = nxt.get(src_key)
+            if isinstance(val, str) and val and not val.startswith("unknown-"):
+                body[dst_key] = val
+        try:
+            _, data = self._request("POST", f"/internal/v1/gpu-scheduler/leases/{lease_id}/downgrade", json_body=body)
+            return data
+        except SchedulerError as exc:
+            if exc.status_code == 409 and exc.code == "LOCK_DOWNGRADE_DISABLED_BEFORE_CUTOVER":
+                fallback = self.stage_handoff(
+                    lease_id,
+                    fencing_token=fencing_token,
+                    new_stage_id=new_stage_id,
+                    reclaim_mode=reclaim_mode,
+                    reclaim_proof=reclaim_proof,
+                    current_identity=current_identity,
+                    next_identity=next_identity,
+                    gpu_epoch=gpu_epoch,
+                    expected_version=expected_version,
+                    idempotency_key=f"handoff-fallback:{lease_id}:{new_stage_id}:{fencing_token}",
+                )
+                fallback["downgrade_skipped_before_cutover"] = True
+                return fallback
+            raise
+
+    def release(
+        self,
+        lease_id: str,
+        *,
+        fencing_token: int,
+        worker_settled: bool = True,
+        reclaim_mode: str = "",
+        reclaim_proof: dict | None = None,
+        current_identity: dict | None = None,
+        gpu_epoch: int = 0,
+        expected_version: int = 0,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        cur = current_identity or {}
+        body: dict[str, object] = {
+            "idempotency_key": idempotency_key or f"rel:{lease_id}:{fencing_token}",
+            "fencing_token": int(fencing_token),
+            "worker_settled": bool(worker_settled),
+        }
+        if expected_version > 0:
+            body["expected_version"] = int(expected_version)
+        if reclaim_mode:
+            body["reclaim_mode"] = reclaim_mode
+        if reclaim_proof is not None:
+            body["reclaim_proof"] = reclaim_proof
+        if gpu_epoch > 0:
+            body["gpu_epoch"] = int(gpu_epoch)
+        if isinstance(cur.get("supervisor_pid"), int) and cur["supervisor_pid"] > 0:
+            body["supervisor_pid"] = int(cur["supervisor_pid"])
+        if isinstance(cur.get("supervisor_starttime_ticks"), int) and cur["supervisor_starttime_ticks"] > 0:
+            body["supervisor_starttime_ticks"] = int(cur["supervisor_starttime_ticks"])
+        for key in ("pod_uid", "container_id", "boot_id"):
+            val = cur.get(key)
+            if self._is_concrete_identity_value(val):
+                body[key] = str(val).strip()
+        retry_body = {k: v for k, v in body.items() if k != "expected_version"}
+        with self._journal_lock:
+            self._pending_releases[lease_id] = retry_body
+            self._persist_pending_releases_locked()
+        try:
+            _, data = self._request("POST", f"/internal/v1/gpu-scheduler/leases/{lease_id}/release", json_body=body)
+        except SchedulerError as err:
+            if err.status_code == 400:
+                logging.error(
+                    "video_gpu_release_quarantined_400 lease_id=%s code=%s message=%s",
+                    lease_id,
+                    err.code,
+                    err.message,
+                )
+                with self._journal_lock:
+                    cur = self._pending_releases.get(lease_id)
+                    if isinstance(cur, dict):
+                        upd = dict(cur)
+                        upd["_quarantined_400"] = True
+                        upd["_last_error"] = f"{err.code}:{err.message}"
+                        self._pending_releases[lease_id] = upd
+                        self._persist_pending_releases_locked()
+            raise
+        if not self._is_confirmed_release_receipt(lease_id, data):
+            raise SchedulerError(
+                "LEASE_NOT_RELEASED",
+                f"lease {lease_id} release receipt unconfirmed (lease_id={data.get('lease_id')!r}, state={data.get('state')!r})",
+                status_code=409,
+            )
+        with self._journal_lock:
+            self._pending_releases.pop(lease_id, None)
+            self._persist_pending_releases_locked()
+        return data
+
+    @classmethod
+    def build_grant_headers(
+        cls,
+        lease_doc: dict | None,
+        *,
+        parent_task_id: str = "",
+        stage_id: str = "",
+        target_identity: dict | None = None,
+    ) -> dict[str, str]:
+        if not isinstance(lease_doc, dict) or not lease_doc.get("lease_id"):
+            return {}
+        ident = target_identity or {}
+        headers: dict[str, str] = {
+            "X-VF-GPU-Lease-ID": str(lease_doc["lease_id"]),
+            "X-VF-GPU-Fencing-Token": str(lease_doc.get("fencing_token") or 0),
+            "X-VF-GPU-Attempt-ID": str(lease_doc.get("attempt_id") or "att-1"),
+            "X-VF-GPU-Stage-ID": str(stage_id or lease_doc.get("stage_id") or "default"),
+        }
+        if parent_task_id:
+            headers["X-VF-GPU-Parent-Task-ID"] = parent_task_id
+        pod_uid = str(ident.get("pod_uid") or lease_doc.get("pod_uid") or "").strip()
+        container_id = str(ident.get("container_id") or lease_doc.get("container_id") or "").strip()
+        boot_id = str(ident.get("boot_id") or lease_doc.get("boot_id") or "").strip()
+        if isinstance(lease_doc.get("gpu_uuids"), list) and lease_doc["gpu_uuids"]:
+            gpu_uuid = ",".join(str(u) for u in lease_doc["gpu_uuids"] if str(u))
+        else:
+            gpu_uuid = str(lease_doc.get("gpu_uuid") or "").strip()
+        expires_at = str(lease_doc.get("expires_at") or "").strip()
+        if cls._is_concrete_identity_value(pod_uid):
+            headers["X-VF-GPU-Pod-UID"] = pod_uid
+        if cls._is_concrete_identity_value(container_id):
+            headers["X-VF-GPU-Container-ID"] = container_id
+        if cls._is_concrete_identity_value(boot_id):
+            headers["X-VF-GPU-Boot-ID"] = boot_id
+        if gpu_uuid:
+            headers["X-VF-GPU-UUID"] = gpu_uuid
+        if expires_at:
+            headers["X-VF-GPU-Expires-At"] = expires_at
+        return headers

@@ -82,7 +82,7 @@ class ProcessingExecutor:
         else:
             name = 'video-super-resolution' if service == 'sr' else 'video-frame-interpolation'
             prefix = 'VIDEO_SR' if service == 'sr' else 'VIDEO_INTERPOLATION'
-            default_version = f'{name}-v0.1.4' if service == 'sr' else f'{name}-v0.2.6'
+            default_version = f'{name}-v0.1.5' if service == 'sr' else f'{name}-v0.2.7'
             self.url = os.environ.get(f'{prefix}_RUNTIME_URL', f'http://{name}:8000').rstrip('/')
             self.runtime_version = os.environ.get(f'{prefix}_RUNTIME_VERSION', default_version)
 
@@ -98,7 +98,13 @@ class ProcessingExecutor:
         if self.service != 'regenerate_2k':
             endpoint = (record.runtime_endpoint if record and record.runtime_endpoint else self.url).rstrip('/')
             version = (record.runtime_version if record and record.runtime_version else self.runtime_version)
-            return endpoint, {}, version
+            prefix = 'VIDEO_SR' if self.service == 'sr' else 'VIDEO_INTERPOLATION'
+            tok = (
+                os.environ.get(f'{prefix}_RUNTIME_TOKEN', '').strip()
+                or os.environ.get('VIDEO_RUNTIME_TOKEN', '').strip()
+            )
+            hdrs = {'Authorization': f'Bearer {tok}'} if tok else {}
+            return endpoint, hdrs, version
         token = os.environ.get('VIDEO_REGENERATE_2K_RUNTIME_TOKEN', '').strip()
         url = (
             record.runtime_endpoint
@@ -403,6 +409,7 @@ class ProcessingExecutor:
         project_id: str,
         idempotency_key: str,
         source_artifact_id: str,
+        _inherited_lease: dict | None = None,
         **parameters,
     ) -> TaskRecord:
         with self._lock:
@@ -483,8 +490,12 @@ class ProcessingExecutor:
                         runtime_version=runtime_version,
                         runtime_route='h3-regenerate-2k' if self.service == 'regenerate_2k' else None,
                     )
-                    initial_pstate = {'source_frames': int(inspected['frames'])} if isinstance(inspected, dict) and type(inspected.get('frames')) is int else None
-                    if initial_pstate is not None:
+                    initial_pstate: dict[str, object] = {}
+                    if isinstance(inspected, dict) and type(inspected.get('frames')) is int:
+                        initial_pstate['source_frames'] = int(inspected['frames'])
+                    if isinstance(_inherited_lease, dict):
+                        initial_pstate['_inherited_lease'] = dict(_inherited_lease)
+                    if initial_pstate:
                         record = self.tasks.update(record, provider_state=initial_pstate)
                     initial_delivery = self.executor.delivery.initial(record) if postprocess is not None else None
                     record = self.tasks.update(
@@ -542,6 +553,7 @@ class ProcessingExecutor:
             }
         updated = self.tasks.update(record, **updates)
         self.executor.stage_slot.release(updated.video_task_id, force=True)
+        updated = self.executor.maybe_release_scheduler_lease(updated)
         return updated
 
     def _submit(self, record: TaskRecord, *, already_marked_submitting: bool = False) -> TaskRecord:
@@ -557,10 +569,36 @@ class ProcessingExecutor:
         }
         payload['idempotency_key'] = record.video_task_id
         acquired = False
+        grant_headers: dict[str, str] = {}
         try:
-            if self.service in {'interpolate', 'regenerate_2k'} and (
-                self.executor.gpu.enabled or self.executor.stage_slot.enabled
-            ):
+            local_gating = bool(
+                self.service in {'sr', 'interpolate', 'regenerate_2k'}
+                and (self.executor.gpu.enabled or self.executor.stage_slot.enabled)
+            )
+            if self.executor.scheduler.enabled:
+                inherited = (record.provider_state or {}).get('_inherited_lease')
+                try:
+                    sched_ok, record, grant_headers = self.executor.acquire_scheduler_grant(
+                        record,
+                        self.service,
+                        runtime_url=url,
+                        runtime_headers=headers,
+                        inherited_lease=inherited if isinstance(inherited, dict) else None,
+                        bind_immediately=not local_gating,
+                    )
+                except LeaseBusy:
+                    return self._fail_record(
+                        record,
+                        {
+                            'code': 'gpu_busy',
+                            'message': MESSAGES['gpu_busy'],
+                            'retryable': True,
+                        },
+                    )
+                if not sched_ok:
+                    return record
+
+            if local_gating:
                 try:
                     acquired = self.executor.acquire_local_gpu(
                         record.video_task_id,
@@ -577,7 +615,15 @@ class ProcessingExecutor:
                         },
                     )
                 if not acquired:
+                    record = self.executor.rollback_unstarted_scheduler_grant(record)
                     return self.executor.defer_local_gpu_queue(record)
+
+            if self.executor.scheduler.enabled:
+                record, grant_headers = self.executor.ensure_scheduler_target_bound(
+                    record,
+                    runtime_url=url,
+                    runtime_headers=headers,
+                )
 
             dispatched_pstate = {
                 k: v for k, v in (record.provider_state or {}).items() if k != 'waiting_reason'
@@ -589,7 +635,7 @@ class ProcessingExecutor:
                 response = self.client.post(
                     f'{url}/v1/{self.endpoint_path}',
                     json=payload,
-                    headers=headers,
+                    headers={**headers, **grant_headers},
                     timeout=30,
                 )
                 if response.status_code in {400, 404, 409, 422, 429} or (
@@ -651,7 +697,7 @@ class ProcessingExecutor:
                 error = {'code': 'cancelled', 'message': 'Video processing task was cancelled'}
 
         provider_state = dict(record.provider_state or {})
-        for key in ('started_at', 'finished_at', 'worker_settled'):
+        for key in ('started_at', 'finished_at', 'worker_settled', 'gpu_epoch', 'reclaim_proof'):
             if key in data:
                 provider_state[key] = data[key]
         if status in {'succeeded', 'failed', 'cancelled'} and 'worker_settled' not in data:
@@ -685,6 +731,7 @@ class ProcessingExecutor:
         )
         if self.executor.stage_slot.is_task_settled(updated):
             self.executor.stage_slot.release(updated.video_task_id)
+            updated = self.executor.maybe_release_scheduler_lease(updated)
         return updated
 
     def cancel(self, video_task_id: str, *, timeout_error: dict[str, object] | None = None) -> TaskRecord:
@@ -716,6 +763,9 @@ class ProcessingExecutor:
                     worker_settled = bool(body.get('worker_settled', False))
                     started_at = body.get('started_at', started_at)
                     finished_at = body.get('finished_at', finished_at)
+                    for extra_key in ('gpu_epoch', 'reclaim_proof'):
+                        if extra_key in body:
+                            prev_state[extra_key] = body[extra_key]
                     if (
                         worker_settled
                         or body.get('cancel_requested') is True
@@ -738,6 +788,9 @@ class ProcessingExecutor:
                         worker_settled = bool(body.get('worker_settled', True))
                         started_at = body.get('started_at', started_at)
                         finished_at = body.get('finished_at', finished_at)
+                        for extra_key in ('gpu_epoch', 'reclaim_proof'):
+                            if extra_key in body:
+                                prev_state[extra_key] = body[extra_key]
                 elif response.status_code == 404:
                     worker_settled = True
                     cancel_delivered = True
@@ -780,6 +833,7 @@ class ProcessingExecutor:
         )
         if worker_settled:
             self.executor.stage_slot.release(updated.video_task_id)
+            updated = self.executor.maybe_release_scheduler_lease(updated)
         return updated
 
     @task_serialized
@@ -819,16 +873,18 @@ class ProcessingExecutor:
                         **(record.provider_state or {}),
                         'worker_settled': bool(body.get('worker_settled', False)),
                     }
-                    for key in ('started_at', 'finished_at'):
+                    for key in ('started_at', 'finished_at', 'gpu_epoch', 'reclaim_proof'):
                         if key in body:
                             provider_state[key] = body[key]
                     record = self.tasks.update(record, provider_state=provider_state)
                     if provider_state.get('worker_settled') is True:
                         self.executor.stage_slot.release(record.video_task_id)
+                        record = self.executor.maybe_release_scheduler_lease(record)
                 elif poll.status_code == 404:
                     provider_state = {**(record.provider_state or {}), 'worker_settled': True}
                     record = self.tasks.update(record, provider_state=provider_state)
                     self.executor.stage_slot.release(record.video_task_id)
+                    record = self.executor.maybe_release_scheduler_lease(record)
             except (httpx.HTTPError, ValueError, TypeError):
                 pass
             return record
@@ -1189,6 +1245,14 @@ class ProcessingExecutor:
             'updated_at': record.updated_at,
             'error': record.error,
         }
+        pstate = record.provider_state or {}
+        if any(pstate.get(k) is not None for k in ('waiting_reason', 'queue_position', 'blocking_reason')):
+            value['gpu_queue'] = {
+                'waiting_reason': pstate.get('waiting_reason'),
+                'queue_position': pstate.get('queue_position'),
+                'blocking_reason': pstate.get('blocking_reason'),
+                'blocking_holder_id': pstate.get('blocking_holder_id') or None,
+            }
         if self.service == 'regenerate_2k':
             value['delivery'] = record.delivery
             value['source_artifact_id'] = record.request.get('source_artifact_id')

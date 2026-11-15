@@ -1,3 +1,3 @@
 """Singularity MiniMax H3 Ref2VA runtime."""
 
-__version__ = "0.1.40"
+__version__ = "0.1.41"

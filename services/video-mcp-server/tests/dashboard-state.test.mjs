@@ -488,3 +488,109 @@ test('stage timing breakdown, standalone regenerate_2k duration/size fallback, a
 });
 
 
+test('P2 GPU queue rank/reason and unified 本地 channel badge without raw engine ID leakage', async () => {
+  const app = setup();
+  const detailScript = readFileSync(new URL('../frontend/task-detail.js', import.meta.url), 'utf8');
+  app.run(detailScript);
+
+  // 1. All self-hosted processing and generation services render unified 本地 channel badge + logo without raw engine IDs.
+  for (const svc of ['sr', 'interpolate', 'depth', 'h3-latent-upscale', 'h3-singularity', 'regenerate_2k']) {
+    const isGen = svc === 'h3-singularity' || svc === 'regenerate_2k';
+    const cardIdentity = app.run(`taskIdentity(${JSON.stringify({
+      service: svc,
+      route: svc,
+      presentation: {
+        is_generation: isGen,
+        channel_id: 'local',
+        model_label: isGen ? 'MiniMax H3' : null,
+        channel_label: '本地',
+        channel_icon: 'local',
+      },
+    })})`);
+    assert.match(cardIdentity, /本地/);
+    assert.match(cardIdentity, /channel-logo/);
+    assert.doesNotMatch(cardIdentity, /\b(sr|interpolate|depth|h3-latent-upscale|h3-singularity|rife)\b/i);
+
+    const tableIdentity = app.run(`taskTableIdentity(${JSON.stringify({
+      service: svc,
+      route: svc,
+      presentation: {
+        is_generation: isGen,
+        channel_id: 'local',
+        model_label: isGen ? 'MiniMax H3' : null,
+        channel_label: '本地',
+        channel_icon: 'local',
+      },
+    })})`);
+    assert.match(tableIdentity, /本地/);
+    assert.doesNotMatch(tableIdentity, /\b(sr|interpolate|depth|h3-latent-upscale|h3-singularity|rife)\b/i);
+  }
+
+  // 2. Queued and DrainingPeer status labels + sanitized blocking reasons.
+  const queuedTask = {
+    video_task_id: 'video_task_q2',
+    project_id: 'demo',
+    idempotency_key: 'kq2',
+    service: 'h3-fasth3',
+    route: 'h3-fasth3',
+    status: 'queued',
+    created_at: '2026-11-15T05:00:00Z',
+    presentation: { is_generation: true, channel_id: 'local', model_label: 'MiniMax H3', channel_label: '本地', channel_icon: 'local' },
+    gpu_queue: {
+      lease_state: 'queued',
+      waiting_reason: 'gpu_scheduler_queue',
+      queue_position: 2,
+      blocking_reason: 'insufficient_vram',
+      blocking_holder_id: 'blender/inst-01',
+    },
+  };
+  const drainingTask = {
+    video_task_id: 'video_task_d1',
+    project_id: 'demo',
+    idempotency_key: 'kd1',
+    service: 'sr',
+    route: 'sr',
+    status: 'queued',
+    created_at: '2026-11-15T05:01:00Z',
+    presentation: { is_generation: false, channel_id: 'local', model_label: null, channel_label: '本地', channel_icon: 'local' },
+    gpu_queue: {
+      lease_state: 'draining',
+      waiting_reason: 'draining_peer',
+      queue_position: 1,
+      blocking_reason: 'draining_evictable_peer',
+      blocking_holder_id: 'comfyui/default',
+    },
+  };
+  assert.equal(app.run(`taskStatusLabel(${JSON.stringify(queuedTask)})`), '排队中 · #2');
+  assert.equal(app.run(`gpuQueueReasonText(${JSON.stringify(queuedTask)})`), '可用显存不足（等待在途任务释放）（当前占用：Blender 常驻实例）');
+  assert.equal(app.run(`taskStatusLabel(${JSON.stringify(drainingTask)})`), '清场衔接中 · #1');
+  assert.equal(app.run(`gpuQueueReasonText(${JSON.stringify(drainingTask)})`), '等待空闲热缓存清场释放（当前占用：ComfyUI 常驻实例）');
+
+  // 3. Task detail renders queue rank/reason and hides raw route/service in 执行后端.
+  await app.run(`(async () => {
+    authorized = true;
+    revision = 11;
+    document.createDocumentFragment = () => ({ append() {} });
+    document.createTextNode = text => ({ text });
+    const origGet = document.getElementById;
+    document.getElementById = id => id.startsWith('reference-') ? null : origGet(id);
+    $("videoBreadcrumb").querySelector = () => null;
+    $("imagePreview").close = () => {};
+    $("imagePreviewImage").removeAttribute = () => {};
+    $("taskParameters").querySelector = () => ({ append() {} });
+    renderReferences = () => {};
+    loadTaskResult = async () => {};
+    api = async () => (${JSON.stringify(drainingTask)});
+    await refreshTaskDetail('video_task_d1', 11);
+  })()`);
+  const detailIdentity = app.nodes.get('detailIdentityBar').innerHTML;
+  const stageTiming = app.nodes.get('detailStageTiming').innerHTML;
+  const params = app.nodes.get('taskParameters').innerHTML;
+  assert.match(detailIdentity, /视频超分[\s\S]*本地/);
+  assert.doesNotMatch(detailIdentity, /\bsr\b/i);
+  assert.match(stageTiming, /清场衔接中 · #1/);
+  assert.match(stageTiming, /等待空闲热缓存清场释放（当前占用：ComfyUI 常驻实例）/);
+  assert.match(params, /<dt>执行后端<\/dt><dd>本地<\/dd>/);
+  assert.match(params, /<dt>排队顺位<\/dt><dd>清场衔接中 · #1<\/dd>/);
+  assert.doesNotMatch(params, /comfyui\/default|\bsr\b/i);
+});

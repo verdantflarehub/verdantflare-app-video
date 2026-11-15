@@ -21,23 +21,98 @@ const labels = {
   failed: "失败",
   cancelled: "已取消",
 };
-const taskStatusLabel = (task) => task.service === "higgsfield" && task.status === "running" && (task.runtime_stage === "collecting" || task.timing?.generation_completed_at) ? "视频已生成" : labels[task.status] || task.status;
+const gpuQueueBlockingLabels = {
+  human_protected: "视口编辑免杀保护中",
+  draining_evictable_peer: "等待空闲热缓存清场释放",
+  draining_peer: "等待空闲热缓存清场释放",
+  card_committed_saturation: "物理卡承诺预算已满",
+  insufficient_vram: "可用显存不足（等待在途任务释放）",
+  head_of_line_reservation: "队首独占预约屏障等待中",
+  telemetry_stale_fail_closed: "节点遥测过期（安全关闭新准入）",
+  node_agent_unhealthy: "节点 GPU 代理未就绪（安全阻断）",
+  quarantined_holder_blocking: "前序异常进程隔离冻结中",
+  quota_slot_held_by_protected: "GPU 副本配额被受保护实例占用",
+  k8s_slot_exhausted: "GPU 副本配额已满",
+  stage_slot_busy: "本地执行槽位繁忙",
+  scheduler_unavailable: "GPU 调度服务暂不可达",
+};
+const gpuQueueIsDraining = (gq) =>
+  Boolean(
+    gq &&
+      (gq.lease_state === "draining" ||
+        gq.waiting_reason === "draining_peer" ||
+        gq.blocking_reason === "draining_evictable_peer"),
+  );
+const gpuQueueRankText = (gq) => {
+  const pos = Number(gq?.queue_position);
+  return Number.isInteger(pos) && pos > 0 ? `#${pos}` : "";
+};
+const sanitizeBlockingHolder = (holder) => {
+  if (!holder || typeof holder !== "string") return "";
+  const trimmed = holder.trim();
+  if (!trimmed) return "";
+  const appPrefix = trimmed.split("/")[0];
+  const appNames = {
+    blender: "Blender 常驻实例",
+    comfyui: "ComfyUI 常驻实例",
+    "video-mcp": "本地视频任务",
+    "music-mcp": "本地音乐任务",
+    "speech-mcp": "本地语音任务",
+    "image-mcp": "本地图像任务",
+  };
+  return appNames[appPrefix] || "前序 GPU 实例";
+};
+const gpuQueueReasonText = (task) => {
+  const gq = task?.gpu_queue;
+  if (!gq || task?.status !== "queued") return "";
+  const reasonKey =
+    gq.blocking_reason && gq.blocking_reason !== "none"
+      ? gq.blocking_reason
+      : gq.waiting_reason || "";
+  const baseLabel =
+    gpuQueueBlockingLabels[reasonKey] ||
+    (gpuQueueIsDraining(gq) ? "等待空闲热缓存清场释放" : "等待可用 GPU 显存准入");
+  const holderLabel = sanitizeBlockingHolder(gq.blocking_holder_id);
+  return holderLabel ? `${baseLabel}（当前占用：${holderLabel}）` : baseLabel;
+};
+const taskStatusLabel = (task) => {
+  if (
+    task.service === "higgsfield" &&
+    task.status === "running" &&
+    (task.runtime_stage === "collecting" || task.timing?.generation_completed_at)
+  ) {
+    return "视频已生成";
+  }
+  if (task.status === "queued" && task.gpu_queue) {
+    const stage = gpuQueueIsDraining(task.gpu_queue) ? "清场衔接中" : "排队中";
+    const rank = gpuQueueRankText(task.gpu_queue);
+    return rank ? `${stage} · ${rank}` : stage;
+  }
+  return labels[task.status] || task.status;
+};
 const generationTimeHint = "按服务端确认 Higgsfield 完成的时间计算；官方 CLI 未提供精确完成时间。";
 // Display metadata is shared by the list and detail API; raw IDs stay in task records.
 const generationServices = new Set(["h3", "h3-sol", "h3-vdn", "h3-fasth3", "h3-singularity", "regenerate_2k", "fal", "grok", "google", "higgsfield"]);
+const localProcessingServices = new Set(["h3-latent-upscale", "sr", "interpolate", "depth"]);
 const serviceDisplayNames = {
   "h3-latent-upscale": "H3 Latent Upscaler", sr: "Video Super Resolution",
   interpolate: "Frame Interpolation", regenerate_2k: "H3 Regenerate 2K", depth: "Depth Anything",
 };
 const taskModel = (task) => generationServices.has(task.service) ? task.presentation?.model_label || "未记录模型" : "";
-const taskRoute = (task) => generationServices.has(task.service) ? task.presentation?.channel_label || "未记录渠道" : "";
+const taskRoute = (task) =>
+  task.presentation?.channel_label ||
+  (localProcessingServices.has(task.service)
+    ? "本地"
+    : generationServices.has(task.service)
+      ? "未记录渠道"
+      : "");
 const higgsfieldLogo = "<svg width=\"14\" height=\"14\" class=\"channel-logo\" aria-hidden=\"true\" focusable=\"false\" viewBox=\"0 0 1355 1355\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\n<rect width=\"1355\" height=\"1355\" rx=\"363\" fill=\"#D1FE17\"/>\n<path d=\"M1088.73 670.726L1087.95 662.156C1080.52 579.906 1026.99 425.16 878.52 425.16C768.341 425.16 685.111 533.914 611.658 629.796C553.046 706.582 502.264 772.452 446.385 772.452C431.533 770.898 412.391 763.49 400.676 746.73C390.125 731.522 387.392 712.035 392.858 688.649C401.448 651.619 450.686 617.315 502.644 580.677C531.161 561.19 560.472 540.529 580.79 520.651C639.402 464.134 669.094 423.205 669.094 357.336C669.094 291.467 632.76 258.716 602.283 244.682C541.331 216.625 451.862 232.994 394.818 282.114C386.227 289.913 377.625 297.31 369.807 304.328C312.371 355.392 273.696 390.086 185 363.571V470.369C302.605 522.216 401.46 423.205 438.97 377.605C467.878 347.592 498.355 330.049 521.024 330.049H522.2C532.359 330.441 540.95 334.34 547.211 341.357C557.37 353.056 561.279 366.699 559.319 381.896C555.018 413.864 521.808 451.273 460.856 492.203C389.352 540.149 269.799 620.444 260.413 721.399C253.379 793.905 290.889 866.4 349.501 894.458C486.247 959.165 569.477 847.684 657.77 729.969C725.365 639.149 789.443 553.01 878.531 553.01C958.625 553.01 988.318 619.271 988.318 660.982V669.173L980.5 670.726C786.318 705.029 680.429 886.67 680.429 970.473C680.429 1054.28 751.541 1126 839.061 1126C941.433 1126 1068.02 1038.69 1088.34 793.123L1089.12 784.162H1170V670.737H1088.73V670.726ZM982.841 796.62C967.216 943.566 891.804 1012.17 846.095 1012.17C825.385 1012.17 796.477 995.021 796.477 963.064C796.477 927.208 850.003 818.454 970.341 786.106L984.409 782.597L982.841 796.632V796.62Z\" fill=\"black\"/>\n</svg>";
 const localChannelLogo = '<svg class="channel-logo" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg>';
 const falChannelLogo = '<svg class="channel-logo" width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><rect width="24" height="24" rx="6" fill="#6C3AED"/><path d="M8.5 7H15.5M8.5 12H13.5M8.5 7V17" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="15.5" cy="15.5" r="1.8" fill="#4CE39A"/></svg>';
 const channelLogo = (task) => {
   const icon = task.presentation?.channel_icon;
   if (icon === "higgsfield") return higgsfieldLogo;
-  if (icon === "local") return localChannelLogo;
+  if (icon === "local" || localProcessingServices.has(task.service)) return localChannelLogo;
   if (icon === "fal" || task.presentation?.channel_label === "fal.ai" || task.route === "fal" || task.service === "fal") return falChannelLogo;
   return "";
 };
@@ -67,7 +142,8 @@ const taskIdentity = (task) => {
   if (generationServices.has(task.service)) {
     return `<div class="task-identity generation-identity" title="${escapeHTML(taskModel(task))} × ${escapeHTML(taskRoute(task))}"><strong class="identity-model">${escapeHTML(taskModel(task))}</strong><span class="identity-separator" aria-hidden="true">×</span><strong class="identity-channel">${channelLogo(task)}${escapeHTML(taskRoute(task))}</strong></div>`;
   }
-  return `<div class="task-identity"><div><span>操作：</span><strong>${escapeHTML(taskOperation(task))}</strong></div><div><span>服务：</span><strong>${escapeHTML(taskService(task) || task.service || "未指定")}</strong></div></div>`;
+  const route = taskRoute(task) || "本地";
+  return `<div class="task-identity generation-identity" title="${escapeHTML(taskOperation(task))} × ${escapeHTML(route)}"><strong class="identity-model">${escapeHTML(taskOperation(task))}</strong><span class="identity-separator" aria-hidden="true">×</span><strong class="identity-channel">${channelLogo(task)}${escapeHTML(route)}</strong></div>`;
 };
 const taskPrompt = (task) =>
   generationServices.has(task.service)
@@ -153,7 +229,7 @@ const taskTags = (task) => {
 const taskTableIdentity = (task) =>
   generationServices.has(task.service)
     ? `${escapeHTML(taskModel(task))} × ${escapeHTML(taskRoute(task))}<div class="model-tags">${generationBadge(task)}</div>`
-    : `${escapeHTML(taskOperation(task))}<br>${escapeHTML(taskService(task) || task.service || "未指定服务")}`;
+    : `${escapeHTML(taskOperation(task))} × ${escapeHTML(taskRoute(task) || "本地")}`;
 let token = "",
   authorized = false,
   page = 1,
@@ -655,7 +731,11 @@ function render(data) {
     ? "此页没有任务，请返回上一页。"
     : "暂无符合条件的任务。可调整筛选，或新建运镜任务。";
   const badge = (t) =>
-    `<span class="badge-status ${t.status === "succeeded" ? "completed" : escapeHTML(t.status)}">${t.runtime_stage === "submission_unknown" ? "提交待确认" : t.runtime_stage === "collect_retry" ? "回收重试中" : escapeHTML(taskStatusLabel(t))}</span>`;
+    `<span class="badge-status ${t.status === "succeeded" ? "completed" : t.status === "queued" && gpuQueueIsDraining(t.gpu_queue) ? "queued draining" : escapeHTML(t.status)}">${t.runtime_stage === "submission_unknown" ? "提交待确认" : t.runtime_stage === "collect_retry" ? "回收重试中" : escapeHTML(taskStatusLabel(t))}</span>`;
+  const queueReasonMarkup = (t, cls) => {
+    const reason = gpuQueueReasonText(t);
+    return reason ? `<p class="${cls}">阻塞原因：${escapeHTML(reason)}</p>` : "";
+  };
   const nsfwBadge = (t) =>
     t.content_rating === "nsfw"
       ? `<span class="badge-tag badge-nsfw" data-rating="nsfw">18+</span>`
@@ -670,14 +750,14 @@ function render(data) {
   const galleryHTML = loadedTasks
     .map(
       (t) =>
-        `<article class="model-card${openMenuTaskId === t.video_task_id ? " menu-open" : ""}" tabindex="0" role="button" data-task="${escapeHTML(t.video_task_id)}" aria-label="查看 ${escapeHTML(taskDisplayName(t))}"><div class="card-thumb-wrap">${thumbPlaceholderHTML(t)}${taskIdentity(t)}<div class="card-badges">${nsfwBadge(t)}${badge(t)}</div><div class="card-times"><span title="开始时间">${date(t.created_at)}</span><span title="${t.service === "higgsfield" ? generationTimeHint : "排队 / 运行"}">${elapsed(t)}</span></div></div><div class="card-body"><div><div class="card-title-row"><span title="${escapeHTML(taskDisplayName(t))}">${escapeHTML(taskDisplayName(t))}</span></div><p class="card-prompt">${escapeHTML(taskPrompt(t))}</p></div><div class="card-footer"><div class="model-tags">${taskTags(t)}</div>${cardActionMenu(t)}</div></div></article>`,
+        `<article class="model-card${openMenuTaskId === t.video_task_id ? " menu-open" : ""}" tabindex="0" role="button" data-task="${escapeHTML(t.video_task_id)}" aria-label="查看 ${escapeHTML(taskDisplayName(t))}"><div class="card-thumb-wrap">${thumbPlaceholderHTML(t)}${taskIdentity(t)}<div class="card-badges">${nsfwBadge(t)}${badge(t)}</div><div class="card-times"><span title="开始时间">${date(t.created_at)}</span><span title="${t.service === "higgsfield" ? generationTimeHint : "排队 / 运行"}">${elapsed(t)}</span></div></div><div class="card-body"><div><div class="card-title-row"><span title="${escapeHTML(taskDisplayName(t))}">${escapeHTML(taskDisplayName(t))}</span></div><p class="card-prompt">${escapeHTML(taskPrompt(t))}</p>${queueReasonMarkup(t, "card-queue-reason")}</div><div class="card-footer"><div class="model-tags">${taskTags(t)}</div>${cardActionMenu(t)}</div></div></article>`,
     )
     .join("");
   reconcileGallery(galleryHTML, loadedTasks);
   const tableHTML = loadedTasks
     .map(
       (t) =>
-        `<tr data-task="${escapeHTML(t.video_task_id)}"><td title="${escapeHTML(taskDisplayName(t))}">${escapeHTML(taskDisplayName(t))}</td><td>${taskTableIdentity(t)}</td><td>${escapeHTML((t.prompt || "").slice(0, 100))}</td><td>${escapeHTML(taskDurationAspect(t))}</td><td>${elapsed(t)}</td><td>${nsfwBadge(t)}${badge(t)}</td><td>${cardActionMenu(t)}</td></tr>`,
+        `<tr data-task="${escapeHTML(t.video_task_id)}"><td title="${escapeHTML(taskDisplayName(t))}">${escapeHTML(taskDisplayName(t))}</td><td>${taskTableIdentity(t)}</td><td>${escapeHTML((t.prompt || "").slice(0, 100))}</td><td>${escapeHTML(taskDurationAspect(t))}</td><td>${elapsed(t)}</td><td>${nsfwBadge(t)}${badge(t)}${queueReasonMarkup(t, "table-queue-reason")}</td><td>${cardActionMenu(t)}</td></tr>`,
     )
     .join("");
   if ($("taskRows").innerHTML !== tableHTML)

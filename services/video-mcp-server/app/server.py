@@ -641,7 +641,8 @@ def video_preflight(project_id: str, prompt: str = "",
                     source_artifact_id: str | None = None,
                     profile: str | None = None,
                     grid_mode: str | None = None,
-                    seed: int | None = None) -> types.CallToolResult:
+                    seed: int | None = None,
+                    workflow_params: dict[str, object] | None = None) -> types.CallToolResult:
     """Validate exact media and parameters and read the selected channel's real pricing and admission."""
     if source_artifact_id is not None or route == "regenerate_2k":
         if source_artifact_id is None:
@@ -656,15 +657,34 @@ def video_preflight(project_id: str, prompt: str = "",
             postprocess=postprocess,
         ))
     references = {} if references is None else references
-    selected = route or executor.runtime_route
+    selected = (
+        "comfyui"
+        if (route in {None, "local"} and isinstance(model, str) and model.strip().startswith("comfyui:"))
+        else (route or executor.runtime_route)
+    )
     from .singularity import check_audio_guidance, runtime_supports_timeline, check_image_guidance, runtime_supports_first_frame
     check_audio_guidance(audio_guidance, executor._service_for_route(selected))
     check_image_guidance(image_guidance, executor._service_for_route(selected))
     norm_post = normalize_postprocess(postprocess, selected)
+    if selected != "comfyui" and workflow_params is not None:
+        raise ValueError("unsupported_parameter")
     if selected not in {'fal', 'grok', 'google'} and (channel_account_id is not None or budget_limit is not None):
         raise ValueError('channel_budget_not_supported')
     if selected != 'higgsfield' and price_ceiling is not None:
         raise ValueError('channel_budget_not_supported')
+    if selected == "comfyui":
+        return _result(executor.comfyui.preflight(
+            project_id=require_project_id(project_id),
+            prompt=prompt,
+            model=model,
+            duration_seconds=duration_seconds,
+            aspect_ratio=aspect_ratio,
+            references=references,
+            mode=mode,
+            resolution=resolution,
+            quality_profile=quality_profile,
+            workflow_params=workflow_params,
+        ))
     if selected == "higgsfield":
         executor.higgsfield.authorize(project_id)
         request, digest = executor.higgsfield.normalize(project_id=require_project_id(project_id),
@@ -789,14 +809,16 @@ def video_create(prompt: str,
                  quality_profile: str | None = None, mode: str | None = None,
                   resolution: str | None = None, postprocess: dict | None = None, title: object = None,
                   channel_account_id: str | None = None, budget_limit: str | None = None,
-                  price_ceiling: float | None = None, audio_guidance: str | None = None, image_guidance: str | None = None) -> types.CallToolResult:
+                  price_ceiling: float | None = None, audio_guidance: str | None = None, image_guidance: str | None = None,
+                  workflow_params: dict[str, object] | None = None) -> types.CallToolResult:
     """Create an asynchronous video generation task."""
     record, naming = titles.create(executor, title=title, project_id=project_id, idempotency_key=idempotency_key, model=model,
                                prompt=prompt, duration_seconds=duration_seconds,
                                aspect_ratio=aspect_ratio, references=references or {}, route=route,
                                quality_profile=quality_profile, mode=mode, resolution=resolution, postprocess=postprocess,
                                channel_account_id=channel_account_id, budget_limit=budget_limit, price_ceiling=price_ceiling,
-                               audio_guidance=audio_guidance, image_guidance=image_guidance)
+                               audio_guidance=audio_guidance, image_guidance=image_guidance,
+                               workflow_params=workflow_params)
     return _result({**naming, "task_id": record.video_task_id, "video_task_id": record.video_task_id,
                     "status": record.status, "created_at": record.created_at, "error": record.error, "delivery": record.delivery,
                     "resolved_output": record.request.get("resolved_output"),
@@ -811,7 +833,8 @@ def video_generate(project_id: str, idempotency_key: str, model: str, prompt: st
                    quality_profile: str | None = None, mode: str | None = None,
                   resolution: str | None = None, postprocess: dict | None = None, title: object = None,
                   channel_account_id: str | None = None, budget_limit: str | None = None,
-                  price_ceiling: float | None = None, audio_guidance: str | None = None, image_guidance: str | None = None) -> types.CallToolResult:
+                  price_ceiling: float | None = None, audio_guidance: str | None = None, image_guidance: str | None = None,
+                  workflow_params: dict[str, object] | None = None) -> types.CallToolResult:
     """Generate with a business model and an explicitly selected runtime route.
 
     `route` selects a configured channel such as h3-sol, h3-vdn, or fal.
@@ -824,9 +847,37 @@ def video_generate(project_id: str, idempotency_key: str, model: str, prompt: st
                                aspect_ratio=aspect_ratio, references=references, route=route,
                                quality_profile=quality_profile, mode=mode, resolution=resolution, postprocess=postprocess,
                                channel_account_id=channel_account_id, budget_limit=budget_limit, price_ceiling=price_ceiling,
-                               audio_guidance=audio_guidance, image_guidance=image_guidance)
+                               audio_guidance=audio_guidance, image_guidance=image_guidance,
+                               workflow_params=workflow_params)
     return _result({**naming, "task_id": record.video_task_id, "video_task_id": record.video_task_id,
                     "status": record.status, "created_at": record.created_at, "error": record.error, "delivery": record.delivery})
+
+
+@mcp.tool(name="video.cancel")
+@tool_errors
+def video_cancel(video_task_id: str = "", task_id: str = "") -> types.CallToolResult:
+    """Cancel an in-flight asynchronous video generation task."""
+    tid = video_task_id or task_id
+    if not tid:
+        return _result({"error": "task_id is required"})
+    t_store = _active_tasks()
+    existing = t_store.get(tid)
+    if _is_task_nsfw(existing):
+        raise TaskNotFound(f"NOT_FOUND: {tid}")
+    if existing.service == "higgsfield":
+        executor.higgsfield.authorize_record(existing)
+    if existing.service == "fal":
+        executor.fal.authorize_record(existing)
+    record = executor.cancel_generation(existing) if t_store is executor.tasks else existing
+    return _result({
+        **titles.project(t_store, record),
+        "task_id": record.video_task_id,
+        "video_task_id": record.video_task_id,
+        "status": record.status,
+        "service": record.service,
+        "runtime_route": record.runtime_route,
+        "error": record.error,
+    })
 
 
 @mcp.tool(name="video.status")
@@ -1054,7 +1105,7 @@ def video_title_update(video_task_id: str, title: str, expected_title_revision: 
         return types.CallToolResult(isError=True, content=[types.TextContent(type='text', text='title_conflict: read the latest task before editing')])
 
 
-for _name in ('video.title_update', 'video.list', 'video.rate_content'):
+for _name in ('video.title_update', 'video.list', 'video.rate_content', 'video.cancel'):
     _registered_tool = mcp._tool_manager.get_tool(_name)
     VIDEO_TOOLS_SCHEMA.append({'name': _name, 'description': _registered_tool.description,
                                'inputSchema': _registered_tool.parameters})

@@ -20,6 +20,15 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from .contract import check_weights_health, validate_reference, validate_request
 from .errors import RuntimeErrorCode
+from .fence import (
+    EpochLeaseFenceGuard,
+    FencePersistenceError,
+    StaleFenceError,
+    cleanup_task_shm,
+    enable_child_subreaper,
+    read_runtime_identity,
+    reap_adopted_children,
+)
 from .queue import Queue, QueueError
 
 
@@ -173,6 +182,7 @@ def _terminate_and_reap_process_group(
     if not reaped_leader and proc.poll() is not None:
         proc.wait()
         reaped_leader = True
+    reap_adopted_children()
     return bool(reaped_leader and not _process_group_alive(pgid))
 
 
@@ -209,6 +219,8 @@ def create_app(
         raise ValueError("FASTH3_RUNTIME_TOKEN is required")
 
     supervisor_mode = engine_factory is None
+    fence_guard = EpochLeaseFenceGuard(state_path=queue.root / "gpu_guard_state.json")
+    identity = read_runtime_identity()
     lock = threading.RLock()
     stop = threading.Event()
     cancel_requested = threading.Event()
@@ -242,12 +254,16 @@ def create_app(
             if reap_stalled:
                 info["ready"] = False
                 info["reap_stalled"] = True
+            info["gpu_epoch"] = fence_guard.current_epoch
+            info["runtime_identity"] = identity
             return info
         if not state["ready"]:
             raise RuntimeErrorCode(str(state["error"] or "not_ready"))
         base_health = dict(state["engine"].health())
         base_health.setdefault("gpu_worker_active", gpu_active)
         base_health.setdefault("active_task_ids", active_ids)
+        base_health["gpu_epoch"] = fence_guard.current_epoch
+        base_health["runtime_identity"] = identity
         return base_health
 
     def is_ready_for_new_submission() -> bool:
@@ -264,27 +280,52 @@ def create_app(
                 if task is None:
                     continue
                 task_id = task["id"]
+                stale_cancelled = False
+                fence_corrupted = False
                 with lock:
                     if stop.is_set() or queue.is_cancel_requested(task_id):
                         proc = None
                     else:
-                        cmd = (
-                            worker_cmd_builder(task_id, queue.root)
-                            if worker_cmd_builder is not None
-                            else [sys.executable, "-m", "h3_fasth3.worker", task_id]
-                        )
-                        env = os.environ.copy()
-                        env["FASTH3_TASK_ROOT"] = str(queue.root)
-                        cancel_requested.clear()
-                        cancel_completed.clear()
-                        proc = _spawn_worker_process(cmd, env)
-                        state["active_task_id"] = task_id
-                        state["active_proc"] = proc
-                        state["reap_stalled_task_id"] = None
+                        try:
+                            epoch = fence_guard.allocate_worker_epoch(task_id)
+                        except StaleFenceError:
+                            proc = None
+                            stale_cancelled = True
+                        except FencePersistenceError:
+                            proc = None
+                            fence_corrupted = True
+                        else:
+                            cmd = (
+                                worker_cmd_builder(task_id, queue.root)
+                                if worker_cmd_builder is not None
+                                else [sys.executable, "-m", "h3_fasth3.worker", task_id]
+                            )
+                            env = os.environ.copy()
+                            env["FASTH3_TASK_ROOT"] = str(queue.root)
+                            env["VF_GPU_EPOCH"] = str(epoch)
+                            env["VF_SHM_PREFIX"] = f"/dev/shm/vf_{task_id}_"
+                            cancel_requested.clear()
+                            cancel_completed.clear()
+                            proc = _spawn_worker_process(cmd, env)
+                            state["active_task_id"] = task_id
+                            state["active_proc"] = proc
+                            state["reap_stalled_task_id"] = None
 
                 if proc is None:
-                    if queue.is_cancel_requested(task_id):
+                    try:
+                        fence_guard.seal_task_epoch(task_id)
+                    except FencePersistenceError:
+                        pass
+                    cleanup_task_shm(task_id)
+                    if stale_cancelled or queue.is_cancel_requested(task_id):
                         queue.mark_settled(task_id, status="cancelled", stage="cancelled")
+                    elif fence_corrupted:
+                        queue.mark_settled(
+                            task_id,
+                            status="failed",
+                            stage="fence_state_corrupted",
+                            error="fence_state_corrupted",
+                        )
                     else:
                         queue.mark_settled(
                             task_id,
@@ -374,11 +415,17 @@ def create_app(
                     break
 
                 rc = proc.wait()
+                reap_adopted_children()
+                cleanup_task_shm(task_id)
                 with lock:
                     state["active_proc"] = None
                     state["active_task_id"] = None
                     state["cancelling_task_id"] = None
                     state["reap_stalled_task_id"] = None
+                    try:
+                        fence_guard.seal_task_epoch(task_id)
+                    except FencePersistenceError:
+                        pass
 
                 if was_cancelled:
                     queue.mark_settled(task_id, status="cancelled", stage="cancelled")
@@ -416,6 +463,7 @@ def create_app(
     async def lifespan(app):
         nonlocal thread
         if supervisor_mode:
+            enable_child_subreaper()
             target_fn = supervisor_loop
         else:
             from ._inproc_compat import run_inproc_engine_worker
@@ -445,7 +493,12 @@ def create_app(
     async def auth(request: Request, call_next):
         if request.url.path not in {"/health", "/live"}:
             supplied = request.headers.get("Authorization", "")
-            if not hmac.compare_digest(supplied.encode(), ("Bearer " + token).encode()):
+            allowed = [f"Bearer {token}"]
+            if request.url.path in {"/internal/v1/gpu-residency/revoke-lease", "/internal/v1/gpu-guard/reclaim"}:
+                sched_tok = os.environ.get("STATION_GPU_SCHEDULER_TOKEN", "").strip()
+                if sched_tok:
+                    allowed.append(f"Bearer {sched_tok}")
+            if not any(hmac.compare_digest(supplied.encode(), expected.encode()) for expected in allowed):
                 return JSONResponse({"error": "unauthorized"}, status_code=401)
         return await call_next(request)
 
@@ -467,16 +520,75 @@ def create_app(
         except RuntimeErrorCode as exc:
             raise HTTPException(503, detail={"code": exc.code}) from None
 
+    def _enrich_task(record: dict) -> dict:
+        enriched = dict(record)
+        tid = str(enriched.get("id", ""))
+        try:
+            ep = fence_guard.task_epoch(tid)
+            if ep is not None:
+                enriched["gpu_epoch"] = ep
+            with lock:
+                active_count = 1 if (state["active_task_id"] is not None or state["reap_stalled_task_id"] is not None) else 0
+                is_terminal = str(enriched.get("status") or "") in {"completed", "succeeded", "failed", "cancelled"}
+                proof = fence_guard.build_epoch_reclaim_proof(
+                    task_id=tid,
+                    active_tasks=active_count,
+                    settled=bool(is_terminal and enriched.get("worker_settled", False)),
+                    identity=identity,
+                )
+        except FencePersistenceError as exc:
+            raise HTTPException(503, {"code": str(exc)}) from None
+        if proof is not None:
+            enriched["reclaim_proof"] = proof
+        return enriched
+
     @app.post("/v1/videos")
     async def submit(request: Request):
         try:
             payload = await _read_bounded_json(request)
             validate_request(payload, _reference_base_url())
-            previous = queue.find_idempotency(payload["idempotency_key"])
-            if not is_ready_for_new_submission() and previous is None:
-                raise HTTPException(503, "not_ready")
-            accepted = queue.submit(payload)
+            canonical_digest = hashlib.sha256(
+                json.dumps(payload, sort_keys=True, ensure_ascii=False, allow_nan=False).encode()
+            ).hexdigest()
+            try:
+                _, replay_key = fence_guard.extract_and_validate(
+                    request.headers,
+                    key_id=payload["idempotency_key"],
+                    request_digest=canonical_digest,
+                    identity=identity,
+                )
+            except FencePersistenceError as exc:
+                raise HTTPException(503, {"code": str(exc)}) from None
+            except PermissionError as exc:
+                raise HTTPException(403, {"code": str(exc)}) from None
+            except StaleFenceError as exc:
+                raise HTTPException(409, {"code": str(exc)}) from None
+            except ValueError as exc:
+                raise HTTPException(409, {"code": str(exc)}) from None
+
+            if replay_key is not None:
+                replayed = queue.find_idempotency(replay_key)
+                if replayed is not None and replay_key != payload["idempotency_key"]:
+                    return {"id": replayed["id"], "object": "video", "status": replayed["status"]}
+                if replayed is None and fence_guard.is_key_revoked_or_sealed(replay_key):
+                    raise HTTPException(409, {"code": "stale_or_revoked_fencing_token"})
+
+            try:
+                previous = queue.find_idempotency(payload["idempotency_key"])
+                if not is_ready_for_new_submission() and previous is None:
+                    raise HTTPException(503, "not_ready")
+                accepted = queue.submit(payload)
+                fence_guard.bind_task_id(payload["idempotency_key"], accepted["id"])
+            except BaseException:
+                if replay_key is None:
+                    try:
+                        fence_guard.seal_task_epoch(payload["idempotency_key"])
+                    except FencePersistenceError:
+                        pass
+                raise
             return {"id": accepted["id"], "object": "video", "status": accepted["status"]}
+        except FencePersistenceError as exc:
+            raise HTTPException(503, {"code": str(exc)}) from None
         except HTTPException:
             raise
         except QueueError as exc:
@@ -498,12 +610,12 @@ def create_app(
             raise HTTPException(422, "invalid_idempotency_key") from None
         if result is None:
             raise HTTPException(404, "not_found")
-        return result
+        return _enrich_task(result)
 
     @app.get("/v1/videos/{task_id}")
     def status(task_id: str):
         try:
-            return queue.get(task_id)
+            return _enrich_task(queue.get(task_id))
         except (KeyError, QueueError):
             raise HTTPException(404, "not_found") from None
 
@@ -532,13 +644,15 @@ def create_app(
         except KeyError:
             raise HTTPException(404, {"code": "task_not_found"}) from None
 
-        if outcome == "cancelled_queued" or (
-            outcome == "already_cancelled" and snapshot["worker_settled"]
-        ):
-            return snapshot
+        if outcome == "cancelled_queued":
+            fence_guard.seal_task_epoch(task_id)
+            return _enrich_task(snapshot)
+        if outcome == "already_cancelled" and snapshot["worker_settled"]:
+            return _enrich_task(snapshot)
 
         if not supervisor_mode:
-            return queue.mark_settled(task_id, status="cancelled", stage="cancelled")
+            fence_guard.seal_task_epoch(task_id)
+            return _enrich_task(queue.mark_settled(task_id, status="cancelled", stage="cancelled"))
 
         with lock:
             if state["active_task_id"] == task_id and outcome != "already_cancelled":
@@ -558,7 +672,80 @@ def create_app(
                 break
             cancel_completed.wait(timeout=0.05)
 
-        return queue.get(task_id)
+        return _enrich_task(queue.get(task_id))
+
+    @app.post("/internal/v1/gpu-residency/revoke-lease")
+    async def revoke_lease(request: Request):
+        payload = await _read_bounded_json(request)
+        lease_id = str(payload.get("lease_id", "")).strip()
+        try:
+            fencing_token = int(payload.get("fencing_token", 0))
+        except (TypeError, ValueError):
+            raise HTTPException(422, "invalid_fencing_token") from None
+        try:
+            affected = fence_guard.revoke_lease(lease_id, fencing_token)
+        except FencePersistenceError as exc:
+            raise HTTPException(503, {"code": str(exc)}) from None
+        for tid in affected:
+            if tid.startswith("fasth3_"):
+                try:
+                    cancel_video(tid)
+                except HTTPException:
+                    pass
+        try:
+            with lock:
+                active_count = 1 if (state["active_task_id"] is not None or state["reap_stalled_task_id"] is not None) else 0
+                proof = fence_guard.reclaim_and_seal(
+                    lease_id=lease_id,
+                    fencing_token=fencing_token,
+                    active_tasks=active_count,
+                    settled=(active_count == 0),
+                    identity=identity,
+                ) or {}
+        except FencePersistenceError as exc:
+            raise HTTPException(503, {"code": str(exc)}) from None
+        is_settled = bool(proof.get("reclaimed"))
+        return {**proof, "revoked": True, "settled": is_settled}
+
+    @app.post("/internal/v1/gpu-guard/reclaim")
+    async def reclaim_lease(request: Request):
+        payload = await _read_bounded_json(request)
+        lease_id = str(payload.get("lease_id", "")).strip()
+        try:
+            fencing_token = int(payload.get("fencing_token", 0))
+        except (TypeError, ValueError):
+            raise HTTPException(422, {"code": "invalid_fencing_token"}) from None
+        try:
+            with lock:
+                active_count = 1 if (state["active_task_id"] is not None or state["reap_stalled_task_id"] is not None) else 0
+                proof = fence_guard.reclaim_and_seal(
+                    lease_id=lease_id,
+                    fencing_token=fencing_token,
+                    active_tasks=active_count,
+                    settled=True,
+                    identity=identity,
+                )
+        except FencePersistenceError as exc:
+            raise HTTPException(503, {"code": str(exc)}) from None
+        if proof is None:
+            raise HTTPException(400, {"code": "missing_lease_or_token"})
+        if not proof.get("reclaimed"):
+            raise HTTPException(
+                409,
+                {
+                    "code": "worker_not_settled",
+                    "settled": False,
+                    "active_tasks": int(proof.get("active_tasks", 1)),
+                    "reclaim_proof": proof,
+                },
+            )
+        return {
+            "ok": True,
+            "settled": True,
+            "active_tasks": 0,
+            "gpu_epoch": int(proof.get("sealed_gpu_epoch", 0)),
+            "reclaim_proof": proof,
+        }
 
     return app
 

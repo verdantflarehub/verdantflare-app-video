@@ -214,6 +214,56 @@ def project(executor):
                 source['models'].append(model)
         if source['models'] or directory['state'] == 'available' or installed[channel][0]:
             channels.append(source)
+    comfy_adapter = getattr(executor, 'comfyui', None)
+    comfy_items = comfy_adapter.discover_models() if comfy_adapter is not None and hasattr(comfy_adapter, 'discover_models') else []
+    if comfy_items:
+        local_source = next((ch for ch in channels if ch.get('id') == 'local'), None)
+        if local_source is None:
+            local_source = {
+                'id': 'local',
+                'display_name': '本地',
+                'sort_order': 0,
+                'version': 'comfyui-dynamic-v1',
+                'models': [],
+            }
+            channels.insert(0, local_source)
+        execution.setdefault('local', {})
+        execution.setdefault('comfyui', {})
+        existing_ids = {m.get('id') for m in local_source.get('models', [])}
+        for item in comfy_items:
+            entry_id = item['entry_id']
+            if entry_id in existing_ids:
+                continue
+            existing_ids.add(entry_id)
+            cap_id = f"video.comfyui.{item['endpoint_slug']}.{item['version']}"
+            local_source['models'].append({
+                'id': entry_id,
+                'model_id': item['model_id'],
+                'upstream_model_id': item['model_id'],
+                'display_name': item['display_name'],
+                'entry_kind': 'model',
+                'business_type': 'video_generation',
+                'identity_review': 'pending',
+                'source_badge': '本地',
+                'description': f"ComfyUI 已发布工作流 ({item['endpoint_slug']}@{item['version']})",
+                'declaration_source': 'comfyui_published_api',
+                'parameter_schema': item['parameter_schema'],
+                'execution_status': 'enabled',
+                'capability_id': cap_id,
+                'supplier_profiles': [],
+                'team_profiles': [],
+                'billing_modes': [],
+            })
+            exec_doc = {
+                'state': 'enabled',
+                'route': 'comfyui',
+                'model': item['model_id'],
+                'can_submit': True,
+                'capability_id': cap_id,
+                'source_badge': '本地',
+            }
+            execution['local'][entry_id] = dict(exec_doc)
+            execution['comfyui'][entry_id] = dict(exec_doc)
     groups, conflicts = group_entries(channels)
     digest = hashlib.sha256(json.dumps([channels, directories, execution], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     return {**catalog, 'state': 'ready' if groups else 'empty', 'snapshot_id': digest,

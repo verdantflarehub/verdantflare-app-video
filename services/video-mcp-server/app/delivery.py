@@ -14,6 +14,7 @@ import httpx
 
 from .channel_errors import MESSAGES
 from .executor import ExecutionError, _cancel_backoff_ready
+from .gpu_lease import SCHEDULER_CONSUMER_SPECS, SchedulerError, is_lease_granted
 from .regenerate import (
     REGENERATE_2K_GRID_MODES,
     REGENERATE_2K_PROFILES,
@@ -340,6 +341,152 @@ class Delivery:
             },
         }
 
+    def _sync_stage_proof_to_owner(self, owner, stage_record):
+        owner_pstate = dict(owner.provider_state or {})
+        stage_pstate = stage_record.provider_state or {}
+        owner_pstate['_gpu_active_service'] = stage_record.service
+        if isinstance(stage_pstate.get('reclaim_proof'), dict):
+            owner_pstate['reclaim_proof'] = stage_pstate['reclaim_proof']
+        if 'gpu_epoch' in stage_pstate:
+            owner_pstate['gpu_epoch'] = stage_pstate['gpu_epoch']
+        if isinstance(stage_pstate.get('_gpu_target_identity'), dict) and stage_pstate['_gpu_target_identity']:
+            owner_pstate['_gpu_target_identity'] = stage_pstate['_gpu_target_identity']
+        return self.tasks.update(owner, provider_state=owner_pstate)
+
+    def _transition_scheduler_lease(
+        self,
+        parent,
+        *,
+        source_stage_record,
+        next_stage_id: str,
+        next_adapter,
+        downgrade_to_mib: int | None = None,
+    ):
+        if not self.executor.scheduler.enabled:
+            return parent, None
+        if (
+            source_stage_record is not None
+            and source_stage_record.video_task_id != parent.video_task_id
+            and (source_stage_record.provider_state or {}).get('_gpu_lease_owned') is True
+            and not (source_stage_record.provider_state or {}).get('_gpu_lease_released')
+        ):
+            lease_owner = source_stage_record
+        else:
+            lease_owner = parent
+
+        owner_pstate = dict(lease_owner.provider_state or {})
+        lease_doc = owner_pstate.get('_gpu_lease')
+        if not is_lease_granted(lease_doc) or owner_pstate.get('_gpu_lease_released'):
+            return parent, None
+
+        if source_stage_record is not None:
+            lease_owner = self._sync_stage_proof_to_owner(lease_owner, source_stage_record)
+            if lease_owner.video_task_id == parent.video_task_id:
+                parent = lease_owner
+            owner_pstate = dict(lease_owner.provider_state or {})
+            lease_doc = owner_pstate.get('_gpu_lease')
+
+        next_url, next_headers, _ = next_adapter._runtime_target()
+        next_ident = self.executor.probe_runtime_identity(next_url, next_headers)
+        lease_gpu = str(lease_doc.get('gpu_uuid') or '')
+        if not lease_gpu and isinstance(lease_doc.get('gpu_uuids'), list) and lease_doc['gpu_uuids']:
+            lease_gpu = str(lease_doc['gpu_uuids'][0] or '')
+        visible = next_ident.get('visible_gpu_uuids') if isinstance(next_ident.get('visible_gpu_uuids'), list) else []
+        cross_card = bool(lease_gpu and visible and lease_gpu not in visible)
+        if cross_card:
+            released_owner = self.executor.maybe_release_scheduler_lease(lease_owner, force_release_owned=True)
+            if released_owner.video_task_id == parent.video_task_id:
+                parent = released_owner
+            return parent, None
+
+        src_service = source_stage_record.service if source_stage_record is not None else lease_owner.service
+        src_spec = SCHEDULER_CONSUMER_SPECS.get(src_service, SCHEDULER_CONSUMER_SPECS['h3'])
+        reclaim_mode = str(src_spec['reclaim_mode'])
+        reclaim_proof = owner_pstate.get('reclaim_proof') if isinstance(owner_pstate.get('reclaim_proof'), dict) else None
+        cur_ident = owner_pstate.get('_gpu_target_identity') if isinstance(owner_pstate.get('_gpu_target_identity'), dict) else None
+        gpu_epoch = int(owner_pstate.get('gpu_epoch') or 0)
+        cur_peak = int(lease_doc.get('peak_budget_mib') or lease_doc.get('reserved_vram_mib') or 0)
+        lease_id = str(lease_doc.get('lease_id') or '')
+        token = int(lease_doc.get('fencing_token') or 0)
+
+        if not self.executor._is_authoritative_reclaim_proof(
+            reclaim_proof,
+            reclaim_mode=reclaim_mode,
+            lease_id=lease_id,
+            fencing_token=token,
+        ):
+            fetched_proof, fetched_epoch = self.executor.fetch_receiver_reclaim_proof(
+                src_service,
+                source_stage_record if source_stage_record is not None else lease_owner,
+                lease_doc,
+            )
+            if fetched_proof is None:
+                raise ExecutionError('GPU stage reclaim proof unavailable; stage transition blocked')
+            reclaim_proof = fetched_proof
+            if fetched_epoch is not None and fetched_epoch > 0:
+                gpu_epoch = fetched_epoch
+
+        if gpu_epoch <= 0 and isinstance(reclaim_proof.get('sealed_gpu_epoch'), int):
+            gpu_epoch = int(reclaim_proof['sealed_gpu_epoch'])
+
+        try:
+            if downgrade_to_mib is not None and (cur_peak == 0 or cur_peak > downgrade_to_mib):
+                updated_lease = self.executor.scheduler.downgrade(
+                    lease_id,
+                    fencing_token=token,
+                    downgrade_to_mib=downgrade_to_mib,
+                    new_stage_id=next_stage_id,
+                    reclaim_mode=reclaim_mode,
+                    reclaim_proof=reclaim_proof,
+                    current_identity=cur_ident,
+                    next_identity=next_ident,
+                    gpu_epoch=gpu_epoch,
+                    expected_version=int(lease_doc.get('version') or 0),
+                )
+            else:
+                updated_lease = self.executor.scheduler.stage_handoff(
+                    lease_id,
+                    fencing_token=token,
+                    new_stage_id=next_stage_id,
+                    reclaim_mode=reclaim_mode,
+                    reclaim_proof=reclaim_proof,
+                    current_identity=cur_ident,
+                    next_identity=next_ident,
+                    gpu_epoch=gpu_epoch,
+                    expected_version=int(lease_doc.get('version') or 0),
+                )
+        except SchedulerError as exc:
+            raise ExecutionError(f'GPU scheduler stage transition failed ({exc.code})') from exc
+
+        owner_pstate['_gpu_lease'] = updated_lease
+        owner_pstate['_gpu_active_service'] = next_adapter.service
+        owner_pstate['_gpu_target_identity'] = next_ident
+        owner_pstate.pop('reclaim_proof', None)
+        owner_pstate.pop('gpu_epoch', None)
+        lease_owner = self.tasks.update(lease_owner, provider_state=owner_pstate)
+        if lease_owner.video_task_id == parent.video_task_id:
+            parent = lease_owner
+        return parent, updated_lease
+
+    def _finalize_scheduler_lease(self, parent, p2_record=None, p3_record=None):
+        if not self.executor.scheduler.enabled:
+            return parent
+        for child in (p3_record, p2_record):
+            if (
+                child is not None
+                and child.video_task_id != parent.video_task_id
+                and (child.provider_state or {}).get('_gpu_lease_owned') is True
+                and not (child.provider_state or {}).get('_gpu_lease_released')
+            ):
+                self.executor.maybe_release_scheduler_lease(child, force_release_owned=True)
+        parent_pstate = parent.provider_state or {}
+        if is_lease_granted(parent_pstate.get('_gpu_lease')) and not parent_pstate.get('_gpu_lease_released'):
+            final_stage = p3_record or p2_record or parent
+            if final_stage.video_task_id != parent.video_task_id:
+                parent = self._sync_stage_proof_to_owner(parent, final_stage)
+            parent = self.executor.maybe_release_scheduler_lease(parent, force_release_owned=True)
+        return parent
+
     def save(self, record, **updates):
         value = {**(record.delivery or self.initial(record)), **updates}
         if value['status'] in ('succeeded', 'failed') and not value.get('completed_at'):
@@ -348,7 +495,13 @@ class Delivery:
                 completed_at=now.isoformat(),
                 total_seconds=max(0, (now - datetime.fromisoformat(record.created_at)).total_seconds()),
             )
-        return self.tasks.update(record, delivery=value)
+        saved = self.tasks.update(record, delivery=value)
+        if value['status'] in ('succeeded', 'failed') and self.executor.scheduler.enabled:
+            p2_id = value.get('regenerate_2k_task_id')
+            p2_rec = self._safe_task(p2_id) if p2_id and p2_id != saved.video_task_id else None
+            p3_rec = self._safe_task(value.get('interpolation_task_id'))
+            saved = self._finalize_scheduler_lease(saved, p2_rec, p3_rec)
+        return saved
 
     def _safe_task(self, task_id: str | None):
         if not task_id:
@@ -606,10 +759,18 @@ class Delivery:
             )
             p2_id = parent.delivery.get('regenerate_2k_task_id')
             if not p2_id:
+                parent, inherited_p2 = self._transition_scheduler_lease(
+                    parent,
+                    source_stage_record=parent,
+                    next_stage_id='regenerate_2k',
+                    next_adapter=regen_adapter,
+                    downgrade_to_mib=None,
+                )
                 p2_child = regen_adapter.generate(
                     project_id=parent.project_id,
                     idempotency_key=f'delivery:{task_id}:open_h3_2k_ic:{grid_mode}',
                     source_artifact_id=m1_id,
+                    _inherited_lease=inherited_p2,
                     profile='open_h3_2k_ic',
                     grid_mode=grid_mode,
                     prompt=parent.request.get('prompt', ''),
@@ -684,10 +845,19 @@ class Delivery:
             if not child_id:
                 # Atomic process lock + stable runtime idempotency recover the gap
                 # between a child POST response and persisting the parent link.
+                prev_stage_rec = p2_record if (has_p2 and not standalone_p2) else parent
+                parent, inherited_p3 = self._transition_scheduler_lease(
+                    parent,
+                    source_stage_record=prev_stage_rec,
+                    next_stage_id='postprocess_rife',
+                    next_adapter=adapter,
+                    downgrade_to_mib=4096,
+                )
                 child = adapter.generate(
                     project_id=parent.project_id,
                     idempotency_key=interp_key,
                     source_artifact_id=interp_source_id,
+                    _inherited_lease=inherited_p3,
                     backend='rife',
                     target_fps_num=48,
                     target_fps_den=1,

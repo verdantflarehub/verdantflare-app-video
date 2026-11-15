@@ -1,6 +1,6 @@
 [project]
 name = "verdantflare-video-frame-interpolation"
-version = "0.2.6"
+version = "0.2.7"
 description = "VerdantFlare video-frame-interpolation service"
 requires-python = ">=3.10"
 dependencies = [
