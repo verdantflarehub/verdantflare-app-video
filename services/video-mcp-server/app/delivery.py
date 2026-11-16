@@ -26,6 +26,11 @@ from .regenerate import (
 CALLER = ContextVar('video_verified_caller', default=None)
 OPTION = {'interpolate': {'profile': 'rife_2x'}}
 
+
+class TerminalStageTransitionError(ExecutionError):
+    """4xx scheduler rejection on stage handoff/downgrade; fail delivery and release lease immediately."""
+
+
 P1_STAGE_TIMEOUT_SECONDS = 900.0
 P2_WINDOW_TIMEOUT_SECONDS = 900.0
 P3_STAGE_TIMEOUT_SECONDS = 300.0
@@ -564,6 +569,12 @@ class Delivery:
                 idempotency_key=idem,
             )
 
+        def _raise_for_sched_error(err: SchedulerError) -> None:
+            msg = f'GPU scheduler stage transition failed ({err.code})'
+            if 400 <= int(err.status_code or 0) < 500:
+                raise TerminalStageTransitionError(msg) from err
+            raise ExecutionError(msg) from err
+
         try:
             updated_lease = _invoke_transition(int(lease_doc.get('version') or 0))
         except SchedulerError as exc:
@@ -574,13 +585,11 @@ class Delivery:
                     try:
                         updated_lease = _invoke_transition(ver, key_suffix=f':v{ver}')
                     except SchedulerError as retry_exc:
-                        raise ExecutionError(
-                            f'GPU scheduler stage transition failed ({retry_exc.code})'
-                        ) from retry_exc
+                        _raise_for_sched_error(retry_exc)
                 else:
-                    raise ExecutionError(f'GPU scheduler stage transition failed ({exc.code})') from exc
+                    _raise_for_sched_error(exc)
             else:
-                raise ExecutionError(f'GPU scheduler stage transition failed ({exc.code})') from exc
+                _raise_for_sched_error(exc)
 
         owner_pstate['_gpu_lease'] = updated_lease
         owner_pstate['_gpu_active_service'] = next_adapter.service
@@ -856,9 +865,10 @@ class Delivery:
                 error=parent.error,
                 timing=timing,
             )
-        if parent.status != 'succeeded':
+        if parent.status != 'succeeded' or (parent.provider_state or {}).get('worker_settled') is False:
             parent = self._renew_pipeline_lease(parent)
-            return self.save(parent, status=parent.status, stage=first_stage, timing=timing)
+            eff_status = 'running' if parent.status == 'succeeded' else parent.status
+            return self.save(parent, status=eff_status, stage=first_stage, timing=timing)
 
         # Result retrieval is idempotent and preserves the original Artifact.
         parent = self.executor.result(task_id)
@@ -892,7 +902,7 @@ class Delivery:
                         next_adapter=regen_adapter,
                         downgrade_to_mib=None,
                     )
-                except ExecutionError as exc:
+                except TerminalStageTransitionError as exc:
                     parent = self._sync_verified_version_before_fail(parent, parent)
                     return self.save(
                         parent,
@@ -906,6 +916,9 @@ class Delivery:
                         },
                         timing=timing,
                     )
+                except ExecutionError:
+                    parent = self._renew_pipeline_lease(parent)
+                    raise
                 p2_child = regen_adapter.generate(
                     project_id=parent.project_id,
                     idempotency_key=f'delivery:{task_id}:open_h3_2k_ic:{grid_mode}',
@@ -940,7 +953,7 @@ class Delivery:
                     error=p2_record.error,
                     timing=timing,
                 )
-            if p2_record.status != 'succeeded':
+            if p2_record.status != 'succeeded' or (p2_record.provider_state or {}).get('worker_settled') is False:
                 parent = self._renew_pipeline_lease(parent)
                 return self.save(parent, status='running', stage='regenerate_2k', timing=timing)
 
@@ -995,7 +1008,7 @@ class Delivery:
                         next_adapter=adapter,
                         downgrade_to_mib=4096,
                     )
-                except ExecutionError as exc:
+                except TerminalStageTransitionError as exc:
                     parent = self._sync_verified_version_before_fail(parent, prev_stage_rec)
                     return self.save(
                         parent,
@@ -1009,6 +1022,9 @@ class Delivery:
                         },
                         timing=timing,
                     )
+                except ExecutionError:
+                    parent = self._renew_pipeline_lease(parent)
+                    raise
                 child = adapter.generate(
                     project_id=parent.project_id,
                     idempotency_key=interp_key,
@@ -1043,7 +1059,7 @@ class Delivery:
                     error=child.error,
                     timing=timing,
                 )
-            if child.status == 'succeeded':
+            if child.status == 'succeeded' and (child.provider_state or {}).get('worker_settled') is not False:
                 child = adapter.result(child_id)
                 result = adapter.public_result(child)
                 timing, _, _ = self._compute_timing(parent, p2_record, child, current_stage='completed')

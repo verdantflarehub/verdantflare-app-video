@@ -1738,6 +1738,15 @@ class VideoExecutor:
                                 and not pstate.get("_gpu_lease_released")
                                 and pstate.get("_gpu_lease_owned") is not False
                             ):
+                                if rec.status in {"succeeded", "failed", "cancelled"} and pstate.get("worker_settled") is False:
+                                    try:
+                                        rec = self.status(rec.video_task_id)
+                                        pstate = rec.provider_state or {}
+                                        lease_doc = pstate.get("_gpu_lease")
+                                        if not is_lease_granted(lease_doc) or pstate.get("_gpu_lease_released"):
+                                            continue
+                                    except Exception:
+                                        pass
                                 if self.stage_slot.is_task_settled(rec):
                                     self.maybe_release_scheduler_lease(rec)
                                 else:

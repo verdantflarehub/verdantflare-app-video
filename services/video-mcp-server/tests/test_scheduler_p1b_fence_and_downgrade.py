@@ -1079,6 +1079,47 @@ class SchedulerP1bFenceAndDowngradeTest(unittest.TestCase):
         self.assertEqual(sched.leases[lid_c]["state"], "released")
         self.assertTrue((failed_c.provider_state or {}).get("_gpu_lease_released"))
 
+    def test_p2_unsettled_on_first_succeeded_poll_waits_for_worker_settled_before_downgrade(self) -> None:
+        executor, sched, observed = self._make_executor(cutover_downgrade_enabled=True, rife_gpu="GPU-0000")
+        tok = CALLER.set({"user_id": "u1", "organization_id": "org1"})
+        self.addCleanup(CALLER.reset, tok)
+
+        rec = executor.processing["regenerate_2k"].generate(
+            project_id="proj_sched",
+            idempotency_key="p2-unsettled-first-poll",
+            source_artifact_id=self.source_art.artifact_id,
+            grid_mode="budget_1440p",
+            postprocess={"interpolate": {"profile": "rife_2x"}},
+        )
+        lid = observed["regenerate_2k"]["x-vf-gpu-lease-id"]
+
+        # Simulate P2 first returning status='succeeded' with worker_settled=False & token_sealed=False (epoch_unload in progress)
+        orig_status = executor.processing["regenerate_2k"].status
+        polls = {"n": 0}
+
+        def staged_p2_status(tid: str):
+            polls["n"] += 1
+            r = orig_status(tid)
+            if polls["n"] == 1:
+                ps = dict(r.provider_state or {})
+                ps["worker_settled"] = False
+                ps["reclaim_proof"] = {**(ps.get("reclaim_proof") or {}), "reclaimed": False, "token_sealed": False}
+                return self.tasks.update(r, provider_state=ps)
+            return r
+
+        executor.processing["regenerate_2k"].status = staged_p2_status  # type: ignore[method-assign]
+
+        # Tick #1 MUST keep delivery 'running' (NOT fail!) and renew lease while P2 finishes unloading weights
+        tick1 = executor.delivery.tick(rec.video_task_id)
+        self.assertEqual(tick1.delivery["status"], "running")
+        self.assertIn(sched.leases[lid]["state"], {"leased", "running"})
+
+        # Tick #2 sees worker_settled=True, downgrades 29696 -> 4096 MiB, runs P3, and releases cleanly!
+        tick2 = executor.delivery.tick(rec.video_task_id)
+        self.assertEqual(tick2.delivery["status"], "succeeded")
+        self.assertEqual(tick2.delivery["stage"], "completed")
+        self.assertEqual(sched.leases[lid]["state"], "released")
+
 
 if __name__ == "__main__":
     unittest.main()
