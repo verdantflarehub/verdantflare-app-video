@@ -353,6 +353,103 @@ class Delivery:
             owner_pstate['_gpu_target_identity'] = stage_pstate['_gpu_target_identity']
         return self.tasks.update(owner, provider_state=owner_pstate)
 
+    def _verify_live_lease_for_owner(self, lease_owner, lease_doc: dict) -> dict | None:
+        """H1 strict CAS reconciliation: accept server version ONLY if owner, task, fence, and active state match."""
+        lease_id = str(lease_doc.get('lease_id') or '').strip()
+        token = int(lease_doc.get('fencing_token') or 0)
+        cur_ver = int(lease_doc.get('version') or 0)
+        if not lease_id or token <= 0:
+            return None
+        try:
+            live = self.executor.scheduler.get_lease(lease_id)
+        except Exception:
+            return None
+        if not isinstance(live, dict):
+            return None
+        if str(live.get('lease_id') or '').strip() != lease_id:
+            return None
+        if str(live.get('holder_app_id') or '').strip() != self.executor.scheduler.holder_app_id:
+            return None
+        if str(live.get('holder_task_id') or '').strip() != lease_owner.video_task_id:
+            return None
+        if int(live.get('fencing_token') or 0) != token:
+            return None
+        if str(live.get('state') or '').strip().lower() not in {'leased', 'running'}:
+            return None
+        live_ver = int(live.get('version') or 0)
+        if live_ver <= cur_ver:
+            return None
+        self.executor.scheduler._record_lease_decision(live)
+        return live
+
+    def _renew_pipeline_lease(self, parent):
+        """Renew active multi-stage pipeline lease periodically and persist monotonic version."""
+        if not self.executor.scheduler.enabled:
+            return parent
+        pstate = dict(parent.provider_state or {})
+        lease_doc = pstate.get('_gpu_lease')
+        if (
+            not is_lease_granted(lease_doc)
+            or pstate.get('_gpu_lease_released')
+            or pstate.get('_gpu_lease_owned') is False
+        ):
+            return parent
+        now_ep = time.time()
+        last_hb = pstate.get('_last_pipeline_hb_epoch')
+        if isinstance(last_hb, (int, float)) and (now_ep - float(last_hb)) < 20.0:
+            return parent
+        lease_id = str(lease_doc.get('lease_id') or '').strip()
+        token = int(lease_doc.get('fencing_token') or 0)
+        if not lease_id or token <= 0:
+            return parent
+        cur_ver = int(lease_doc.get('version') or 0)
+        hb_key = f'pipe-hb:{lease_id}:{token}:{int(now_ep // 20)}'
+        try:
+            updated = self.executor.scheduler.heartbeat(
+                lease_id,
+                fencing_token=token,
+                expected_version=cur_ver,
+                idempotency_key=hb_key,
+            )
+        except SchedulerError as exc:
+            if exc.status_code == 409 and exc.code == 'LEASE_VERSION_CONFLICT':
+                verified = self._verify_live_lease_for_owner(parent, lease_doc)
+                if verified is None:
+                    return parent
+                try:
+                    updated = self.executor.scheduler.heartbeat(
+                        lease_id,
+                        fencing_token=token,
+                        expected_version=int(verified['version']),
+                        idempotency_key=f'{hb_key}:v{int(verified["version"])}',
+                    )
+                except Exception:
+                    return parent
+            else:
+                return parent
+        except Exception:
+            return parent
+        if isinstance(updated, dict) and updated.get('lease_id') == lease_id:
+            pstate['_gpu_lease'] = updated
+            pstate['_last_pipeline_hb_epoch'] = now_ep
+            parent = self.tasks.update(parent, provider_state=pstate)
+        return parent
+
+    def _sync_verified_version_before_fail(self, parent, source_stage_record=None):
+        """Ensure parent/_gpu_lease holds verified latest version before _finalize_scheduler_lease releases it."""
+        if not self.executor.scheduler.enabled:
+            return parent
+        if source_stage_record is not None and source_stage_record.video_task_id != parent.video_task_id:
+            parent = self._sync_stage_proof_to_owner(parent, source_stage_record)
+        pstate = dict(parent.provider_state or {})
+        lease_doc = pstate.get('_gpu_lease')
+        if isinstance(lease_doc, dict) and not pstate.get('_gpu_lease_released'):
+            verified = self._verify_live_lease_for_owner(parent, lease_doc)
+            if verified is not None:
+                pstate['_gpu_lease'] = verified
+                parent = self.tasks.update(parent, provider_state=pstate)
+        return parent
+
     def _transition_scheduler_lease(
         self,
         parent,
@@ -429,9 +526,14 @@ class Delivery:
         if gpu_epoch <= 0 and isinstance(reclaim_proof.get('sealed_gpu_epoch'), int):
             gpu_epoch = int(reclaim_proof['sealed_gpu_epoch'])
 
-        try:
+        def _invoke_transition(exp_ver: int, key_suffix: str = ''):
             if downgrade_to_mib is not None and (cur_peak == 0 or cur_peak > downgrade_to_mib):
-                updated_lease = self.executor.scheduler.downgrade(
+                idem = (
+                    f'downgrade:{lease_id}:{next_stage_id}:{token}{key_suffix}'
+                    if key_suffix
+                    else None
+                )
+                return self.executor.scheduler.downgrade(
                     lease_id,
                     fencing_token=token,
                     downgrade_to_mib=downgrade_to_mib,
@@ -441,22 +543,44 @@ class Delivery:
                     current_identity=cur_ident,
                     next_identity=next_ident,
                     gpu_epoch=gpu_epoch,
-                    expected_version=int(lease_doc.get('version') or 0),
+                    expected_version=exp_ver,
+                    idempotency_key=idem,
                 )
-            else:
-                updated_lease = self.executor.scheduler.stage_handoff(
-                    lease_id,
-                    fencing_token=token,
-                    new_stage_id=next_stage_id,
-                    reclaim_mode=reclaim_mode,
-                    reclaim_proof=reclaim_proof,
-                    current_identity=cur_ident,
-                    next_identity=next_ident,
-                    gpu_epoch=gpu_epoch,
-                    expected_version=int(lease_doc.get('version') or 0),
-                )
+            idem = (
+                f'handoff:{lease_id}:{next_stage_id}:{token}{key_suffix}'
+                if key_suffix
+                else None
+            )
+            return self.executor.scheduler.stage_handoff(
+                lease_id,
+                fencing_token=token,
+                new_stage_id=next_stage_id,
+                reclaim_mode=reclaim_mode,
+                reclaim_proof=reclaim_proof,
+                current_identity=cur_ident,
+                next_identity=next_ident,
+                gpu_epoch=gpu_epoch,
+                expected_version=exp_ver,
+                idempotency_key=idem,
+            )
+
+        try:
+            updated_lease = _invoke_transition(int(lease_doc.get('version') or 0))
         except SchedulerError as exc:
-            raise ExecutionError(f'GPU scheduler stage transition failed ({exc.code})') from exc
+            if exc.status_code == 409 and exc.code == 'LEASE_VERSION_CONFLICT':
+                verified = self._verify_live_lease_for_owner(lease_owner, lease_doc)
+                if verified is not None:
+                    ver = int(verified['version'])
+                    try:
+                        updated_lease = _invoke_transition(ver, key_suffix=f':v{ver}')
+                    except SchedulerError as retry_exc:
+                        raise ExecutionError(
+                            f'GPU scheduler stage transition failed ({retry_exc.code})'
+                        ) from retry_exc
+                else:
+                    raise ExecutionError(f'GPU scheduler stage transition failed ({exc.code})') from exc
+            else:
+                raise ExecutionError(f'GPU scheduler stage transition failed ({exc.code})') from exc
 
         owner_pstate['_gpu_lease'] = updated_lease
         owner_pstate['_gpu_active_service'] = next_adapter.service
@@ -733,6 +857,7 @@ class Delivery:
                 timing=timing,
             )
         if parent.status != 'succeeded':
+            parent = self._renew_pipeline_lease(parent)
             return self.save(parent, status=parent.status, stage=first_stage, timing=timing)
 
         # Result retrieval is idempotent and preserves the original Artifact.
@@ -759,13 +884,28 @@ class Delivery:
             )
             p2_id = parent.delivery.get('regenerate_2k_task_id')
             if not p2_id:
-                parent, inherited_p2 = self._transition_scheduler_lease(
-                    parent,
-                    source_stage_record=parent,
-                    next_stage_id='regenerate_2k',
-                    next_adapter=regen_adapter,
-                    downgrade_to_mib=None,
-                )
+                try:
+                    parent, inherited_p2 = self._transition_scheduler_lease(
+                        parent,
+                        source_stage_record=parent,
+                        next_stage_id='regenerate_2k',
+                        next_adapter=regen_adapter,
+                        downgrade_to_mib=None,
+                    )
+                except ExecutionError as exc:
+                    parent = self._sync_verified_version_before_fail(parent, parent)
+                    return self.save(
+                        parent,
+                        status='failed',
+                        stage='regenerate_2k',
+                        final_artifact_id=None,
+                        error={
+                            'code': 'gpu_stage_transition_failed',
+                            'message': str(exc),
+                            'retryable': False,
+                        },
+                        timing=timing,
+                    )
                 p2_child = regen_adapter.generate(
                     project_id=parent.project_id,
                     idempotency_key=f'delivery:{task_id}:open_h3_2k_ic:{grid_mode}',
@@ -801,6 +941,7 @@ class Delivery:
                     timing=timing,
                 )
             if p2_record.status != 'succeeded':
+                parent = self._renew_pipeline_lease(parent)
                 return self.save(parent, status='running', stage='regenerate_2k', timing=timing)
 
             p2_record = regen_adapter.result(p2_id)
@@ -846,13 +987,28 @@ class Delivery:
                 # Atomic process lock + stable runtime idempotency recover the gap
                 # between a child POST response and persisting the parent link.
                 prev_stage_rec = p2_record if (has_p2 and not standalone_p2) else parent
-                parent, inherited_p3 = self._transition_scheduler_lease(
-                    parent,
-                    source_stage_record=prev_stage_rec,
-                    next_stage_id='postprocess_rife',
-                    next_adapter=adapter,
-                    downgrade_to_mib=4096,
-                )
+                try:
+                    parent, inherited_p3 = self._transition_scheduler_lease(
+                        parent,
+                        source_stage_record=prev_stage_rec,
+                        next_stage_id='postprocess_rife',
+                        next_adapter=adapter,
+                        downgrade_to_mib=4096,
+                    )
+                except ExecutionError as exc:
+                    parent = self._sync_verified_version_before_fail(parent, prev_stage_rec)
+                    return self.save(
+                        parent,
+                        status='failed',
+                        stage='interpolation',
+                        final_artifact_id=None,
+                        error={
+                            'code': 'gpu_stage_transition_failed',
+                            'message': str(exc),
+                            'retryable': False,
+                        },
+                        timing=timing,
+                    )
                 child = adapter.generate(
                     project_id=parent.project_id,
                     idempotency_key=interp_key,
@@ -901,6 +1057,7 @@ class Delivery:
                     error=None,
                     timing=timing,
                 )
+            parent = self._renew_pipeline_lease(parent)
         return parent
 
     def sync(self):

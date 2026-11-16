@@ -628,6 +628,8 @@ class SchedulerLeaseClient:
         self.ttl_seconds = ttl_seconds
         self._client = client
         self._journal_lock = threading.RLock()
+        self._version_lock = threading.RLock()
+        self._observed_versions: dict[tuple[str, int], int] = {}
         raw_journal = (
             str(pending_releases_path).strip()
             if pending_releases_path is not None
@@ -804,6 +806,7 @@ class SchedulerLeaseClient:
                     json_body=retry_body,
                 )
                 if self._is_confirmed_release_receipt(lease_id, data):
+                    self._record_lease_decision(data)
                     with self._journal_lock:
                         self._pending_releases.pop(lease_id, None)
                         self._persist_pending_releases_locked()
@@ -865,7 +868,35 @@ class SchedulerLeaseClient:
         if isinstance(visible, list) and visible:
             body["candidate_gpu_uuids"] = [str(u) for u in visible if str(u)]
         _, data = self._request("POST", "/internal/v1/gpu-scheduler/leases/acquire", json_body=body)
+        return self._record_lease_decision(data)
+
+    def _record_lease_decision(self, data: dict) -> dict:
+        if not isinstance(data, dict) or not data.get("lease_id"):
+            return data
+        lid = str(data["lease_id"]).strip()
+        tok = int(data.get("fencing_token") or 0)
+        ver = int(data.get("version") or 0)
+        state = str(data.get("state") or "").strip().lower()
+        with self._version_lock:
+            if state in {"released", "expired"}:
+                stale_keys = [k for k in self._observed_versions if k[0] == lid]
+                for k in stale_keys:
+                    self._observed_versions.pop(k, None)
+            elif lid and tok > 0 and ver > 0:
+                prev = self._observed_versions.get((lid, tok), 0)
+                if ver > prev:
+                    self._observed_versions[(lid, tok)] = ver
         return data
+
+    def resolve_expected_version(self, lease_id: str, fencing_token: int, supplied_version: int) -> int:
+        lid = str(lease_id or "").strip()
+        tok = int(fencing_token or 0)
+        sup = int(supplied_version or 0)
+        if not lid or tok <= 0:
+            return sup
+        with self._version_lock:
+            obs = self._observed_versions.get((lid, tok), 0)
+        return max(sup, obs)
 
     def bind_target(
         self,
@@ -890,10 +921,11 @@ class SchedulerLeaseClient:
             "actual_gpu_uuids": actual_gpus,
             "ttl_seconds": self.ttl_seconds,
         }
-        if expected_version > 0:
-            body["expected_version"] = int(expected_version)
+        eff_version = self.resolve_expected_version(lease_id, int(fencing_token), int(expected_version))
+        if eff_version > 0:
+            body["expected_version"] = eff_version
         _, data = self._request("POST", f"/internal/v1/gpu-scheduler/leases/{lease_id}/bind-target", json_body=body)
-        return data
+        return self._record_lease_decision(data)
 
     def get_lease(self, lease_id: str) -> dict:
         _, data = self._request("GET", f"/internal/v1/gpu-scheduler/leases/{lease_id}")
@@ -912,10 +944,11 @@ class SchedulerLeaseClient:
             "fencing_token": int(fencing_token),
             "ttl_seconds": self.ttl_seconds,
         }
-        if expected_version > 0:
-            body["expected_version"] = int(expected_version)
+        eff_version = self.resolve_expected_version(lease_id, int(fencing_token), int(expected_version))
+        if eff_version > 0:
+            body["expected_version"] = eff_version
         _, data = self._request("POST", f"/internal/v1/gpu-scheduler/leases/{lease_id}/heartbeat", json_body=body)
-        return data
+        return self._record_lease_decision(data)
 
     def stage_handoff(
         self,
@@ -942,8 +975,9 @@ class SchedulerLeaseClient:
             "reclaim_mode": reclaim_mode,
             "reclaim_proof": reclaim_proof,
         }
-        if expected_version > 0:
-            body["expected_version"] = int(expected_version)
+        eff_version = self.resolve_expected_version(lease_id, int(fencing_token), int(expected_version))
+        if eff_version > 0:
+            body["expected_version"] = eff_version
         if gpu_epoch > 0:
             body["gpu_epoch"] = int(gpu_epoch)
         if isinstance(cur.get("supervisor_pid"), int) and cur["supervisor_pid"] > 0:
@@ -963,7 +997,7 @@ class SchedulerLeaseClient:
             if isinstance(val, str) and val and not val.startswith("unknown-"):
                 body[dst_key] = val
         _, data = self._request("POST", f"/internal/v1/gpu-scheduler/leases/{lease_id}/heartbeat", json_body=body)
-        return data
+        return self._record_lease_decision(data)
 
     def downgrade(
         self,
@@ -992,8 +1026,9 @@ class SchedulerLeaseClient:
             "reclaim_mode": reclaim_mode,
             "reclaim_proof": reclaim_proof,
         }
-        if expected_version > 0:
-            body["expected_version"] = int(expected_version)
+        eff_version = self.resolve_expected_version(lease_id, int(fencing_token), int(expected_version))
+        if eff_version > 0:
+            body["expected_version"] = eff_version
         if gpu_epoch > 0:
             body["gpu_epoch"] = int(gpu_epoch)
         if isinstance(cur.get("supervisor_pid"), int) and cur["supervisor_pid"] > 0:
@@ -1014,9 +1049,14 @@ class SchedulerLeaseClient:
                 body[dst_key] = val
         try:
             _, data = self._request("POST", f"/internal/v1/gpu-scheduler/leases/{lease_id}/downgrade", json_body=body)
-            return data
+            return self._record_lease_decision(data)
         except SchedulerError as exc:
             if exc.status_code == 409 and exc.code == "LOCK_DOWNGRADE_DISABLED_BEFORE_CUTOVER":
+                fallback_idem = (
+                    f"handoff-fallback:{idempotency_key}"
+                    if idempotency_key
+                    else f"handoff-fallback:{lease_id}:{new_stage_id}:{fencing_token}"
+                )
                 fallback = self.stage_handoff(
                     lease_id,
                     fencing_token=fencing_token,
@@ -1026,8 +1066,8 @@ class SchedulerLeaseClient:
                     current_identity=current_identity,
                     next_identity=next_identity,
                     gpu_epoch=gpu_epoch,
-                    expected_version=expected_version,
-                    idempotency_key=f"handoff-fallback:{lease_id}:{new_stage_id}:{fencing_token}",
+                    expected_version=eff_version,
+                    idempotency_key=fallback_idem,
                 )
                 fallback["downgrade_skipped_before_cutover"] = True
                 return fallback
@@ -1052,8 +1092,9 @@ class SchedulerLeaseClient:
             "fencing_token": int(fencing_token),
             "worker_settled": bool(worker_settled),
         }
-        if expected_version > 0:
-            body["expected_version"] = int(expected_version)
+        eff_version = self.resolve_expected_version(lease_id, int(fencing_token), int(expected_version))
+        if eff_version > 0:
+            body["expected_version"] = eff_version
         if reclaim_mode:
             body["reclaim_mode"] = reclaim_mode
         if reclaim_proof is not None:
@@ -1100,7 +1141,7 @@ class SchedulerLeaseClient:
         with self._journal_lock:
             self._pending_releases.pop(lease_id, None)
             self._persist_pending_releases_locked()
-        return data
+        return self._record_lease_decision(data)
 
     @classmethod
     def build_grant_headers(

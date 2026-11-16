@@ -91,6 +91,22 @@ class FakeSchedulerTransport:
             doc = dict(self.leases[lid])
             if action == "get":
                 return httpx.Response(200, json=doc)
+            if action == "release" and doc.get("state") in {"released", "expired"}:
+                return httpx.Response(200, json=doc)
+            exp_ver = int(body.get("expected_version") or 0)
+            if exp_ver > 0 and exp_ver != int(doc["version"]):
+                return httpx.Response(
+                    409,
+                    json={
+                        "error_code": "LEASE_VERSION_CONFLICT",
+                        "message": f"expected version {exp_ver}, actual {doc['version']}",
+                    },
+                )
+            if int(body.get("fencing_token") or 0) != int(doc["fencing_token"]):
+                return httpx.Response(
+                    409,
+                    json={"error_code": "FENCING_TOKEN_STALE", "message": "fencing token mismatch"},
+                )
             if action == "bind-target":
                 doc["pod_uid"] = body["pod_uid"]
                 doc["container_id"] = body["container_id"]
@@ -873,6 +889,195 @@ class SchedulerP1bFenceAndDowngradeTest(unittest.TestCase):
             pending_releases_path=journal_path,
         )
         self.assertEqual(c3._pending_releases, {})
+
+    def test_h1_multi_heartbeat_version_bump_then_p1_p2_p3_handoff_and_downgrade(self) -> None:
+        executor, sched, observed = self._make_executor(cutover_downgrade_enabled=True, rife_gpu="GPU-0000")
+        tok = CALLER.set({"user_id": "u1", "organization_id": "org1"})
+        self.addCleanup(CALLER.reset, tok)
+
+        parent = self.tasks.create(
+            project_id="proj_sched",
+            idempotency_key="p1-h1-full-chain",
+            input_digest="sha256:" + "8" * 64,
+            request={
+                "project_id": "proj_sched",
+                "route": "h3-fasth3",
+                "prompt": "Cinema courtyard",
+                "postprocess": {
+                    "regenerate_2k": {"profile": "open_h3_2k_ic", "grid_mode": "budget_1440p"},
+                    "interpolate": {"profile": "rife_2x"},
+                },
+            },
+            runtime_task_id="rt-h3-p1",
+            status="running",
+            provider_state={
+                "worker_settled": False,
+                "gpu_dispatched": True,
+                "_gpu_target_identity": {
+                    "pod_uid": "pod-h3",
+                    "container_id": "cid-h3",
+                    "boot_id": "boot-node-1",
+                    "supervisor_pid": 1100,
+                    "supervisor_starttime_ticks": 81000,
+                    "visible_gpu_uuids": ["GPU-0000"],
+                },
+            },
+        )
+        ok, parent, hdrs = executor.acquire_scheduler_grant(
+            parent,
+            "h3-fasth3",
+            runtime_url="http://regen2k:8000",
+            runtime_headers={"Authorization": "Bearer regen2k-token"},
+        )
+        self.assertTrue(ok)
+        lease_id = hdrs["X-VF-GPU-Lease-ID"]
+        token = int(hdrs["X-VF-GPU-Fencing-Token"])
+        self.assertEqual(sched.leases[lease_id]["version"], 1)
+
+        # Simulate two background reconcile_gpu() heartbeats during P1 (version 1 -> 2 -> 3)
+        pstate = dict(parent.provider_state or {})
+        pstate["worker_settled"] = False
+        parent = self.tasks.update(parent, status="running", provider_state=pstate)
+        executor.reconcile_gpu()
+        executor.reconcile_gpu()
+        self.assertEqual(sched.leases[lease_id]["version"], 3)
+        parent = self.tasks.get(parent.video_task_id)
+        self.assertEqual(parent.provider_state["_gpu_lease"]["version"], 3)
+
+        # P1 finishes with authoritative epoch_unload reclaim_proof
+        pstate = dict(parent.provider_state or {})
+        pstate.update(
+            {
+                "worker_settled": True,
+                "gpu_epoch": 2,
+                "reclaim_proof": {
+                    "reclaimed": True,
+                    "proof_source": "receiver_guard",
+                    "token_sealed": True,
+                    "sealed_gpu_epoch": 2,
+                    "supervisor_pid": 2100,
+                    "supervisor_starttime_ticks": 91000,
+                    "sealed_pod_uid": "pod-regen2k",
+                    "sealed_container_id": "cid-regen2k",
+                    "sealed_boot_id": "boot-node-1",
+                    "revoked_lease_id": lease_id,
+                    "consumed_fencing_token": token,
+                },
+            }
+        )
+        parent = self.tasks.update(
+            parent,
+            status="succeeded",
+            artifact_id=self.source_art.artifact_id,
+            media={"width": 832, "height": 480, "fps": 24, "frames": 124, "audio": True},
+            provider_state=pstate,
+            delivery=executor.delivery.initial(parent),
+        )
+        executor.status = lambda tid: self.tasks.get(tid)  # type: ignore[method-assign]
+        executor.result = lambda tid: self.tasks.get(tid)  # type: ignore[method-assign]
+
+        # Tick runs P1 -> P2 stage_handoff (expected_version=3 -> 4), P2 -> P3 downgrade (expected_version=4 -> 5), and release (version=6)
+        done = executor.delivery.tick(parent.video_task_id)
+        self.assertEqual(done.delivery["status"], "succeeded")
+        self.assertEqual(done.delivery["stage"], "completed")
+        self.assertEqual(sched.leases[lease_id]["state"], "released")
+        self.assertEqual(sched.leases[lease_id]["version"], 6)
+
+        handoff_calls = [
+            c for c in sched.calls
+            if c[1].endswith("/heartbeat") and c[2].get("new_stage_id") == "regenerate_2k"
+        ]
+        self.assertEqual(len(handoff_calls), 1)
+        self.assertEqual(handoff_calls[0][2]["expected_version"], 3)
+
+        downgrade_calls = [c for c in sched.calls if c[1].endswith("/downgrade")]
+        self.assertEqual(len(downgrade_calls), 1)
+        self.assertEqual(downgrade_calls[0][2]["expected_version"], 4)
+        self.assertEqual(downgrade_calls[0][2]["downgrade_to_mib"], 4096)
+
+    def test_h1_cas_reconcile_strict_owner_fence_check_and_immediate_release_on_handoff_failure(self) -> None:
+        from app.executor import ExecutionError
+
+        executor, sched, observed = self._make_executor(cutover_downgrade_enabled=True, rife_gpu="GPU-0000")
+        tok = CALLER.set({"user_id": "u1", "organization_id": "org1"})
+        self.addCleanup(CALLER.reset, tok)
+
+        # Part A: Restarted client (cleared _observed_versions) with matching owner/task/fence reconciles once
+        rec_a = executor.processing["regenerate_2k"].generate(
+            project_id="proj_sched",
+            idempotency_key="h1-restart-same-owner",
+            source_artifact_id=self.source_art.artifact_id,
+            grid_mode="budget_1440p",
+            postprocess={"interpolate": {"profile": "rife_2x"}},
+        )
+        lid_a = observed["regenerate_2k"]["x-vf-gpu-lease-id"]
+        sched.leases[lid_a]["version"] = 4
+        executor.scheduler._observed_versions.clear()
+
+        done_a = executor.delivery.tick(rec_a.video_task_id)
+        self.assertEqual(done_a.delivery["status"], "succeeded")
+        self.assertEqual(sched.leases[lid_a]["state"], "released")
+        dg_a = [c for c in sched.calls if c[1] == f"/internal/v1/gpu-scheduler/leases/{lid_a}/downgrade"]
+        self.assertEqual(len(dg_a), 2)
+        self.assertEqual(dg_a[0][2]["expected_version"], 1)
+        self.assertEqual(dg_a[1][2]["expected_version"], 4)
+        self.assertTrue(str(dg_a[1][2]["idempotency_key"]).endswith(":v4"))
+
+        # Part B: Mismatched holder_task_id on server MUST NOT reconcile version, and tick MUST fail delivery & release lease when owner matches a terminal error!
+        rec_b = executor.processing["regenerate_2k"].generate(
+            project_id="proj_sched",
+            idempotency_key="h1-foreign-owner-reject",
+            source_artifact_id=self.source_art.artifact_id,
+            grid_mode="budget_1440p",
+            postprocess={"interpolate": {"profile": "rife_2x"}},
+        )
+        lid_b = observed["regenerate_2k"]["x-vf-gpu-lease-id"]
+        sched.leases[lid_b]["version"] = 5
+        sched.leases[lid_b]["holder_task_id"] = "foreign_video_task"
+        executor.scheduler._observed_versions.clear()
+
+        with self.assertRaises(ExecutionError):
+            p2_done = executor.processing["regenerate_2k"].result(rec_b.video_task_id)
+            executor.delivery._transition_scheduler_lease(
+                p2_done,
+                source_stage_record=p2_done,
+                next_stage_id="postprocess_rife",
+                next_adapter=executor.processing["interpolate"],
+                downgrade_to_mib=4096,
+            )
+        dg_b = [c for c in sched.calls if c[1] == f"/internal/v1/gpu-scheduler/leases/{lid_b}/downgrade"]
+        # Rejected without blind retry!
+        self.assertEqual(len(dg_b), 1)
+
+        # Part C: Terminal downgrade rejection on valid owner immediately fails delivery and releases the GPU lease (<1s, no 90s dangling lease)
+        rec_c = executor.processing["regenerate_2k"].generate(
+            project_id="proj_sched",
+            idempotency_key="h1-fail-releases-immediately",
+            source_artifact_id=self.source_art.artifact_id,
+            grid_mode="budget_1440p",
+            postprocess={"interpolate": {"profile": "rife_2x"}},
+        )
+        lid_c = observed["regenerate_2k"]["x-vf-gpu-lease-id"]
+        orig_handle = sched.handle
+
+        def reject_c_downgrade(request: httpx.Request) -> httpx.Response:
+            if request.url.path == f"/internal/v1/gpu-scheduler/leases/{lid_c}/downgrade":
+                return httpx.Response(
+                    409,
+                    json={"error_code": "INVALID_STAGE_TRANSITION", "message": "synthetic rejection"},
+                )
+            return orig_handle(request)
+
+        sched.handle = reject_c_downgrade  # type: ignore[method-assign]
+        # Re-bind MockTransport to updated handler
+        executor.scheduler._client = httpx.Client(transport=httpx.MockTransport(reject_c_downgrade))
+        self.addCleanup(executor.scheduler._client.close)
+
+        failed_c = executor.delivery.tick(rec_c.video_task_id)
+        self.assertEqual(failed_c.delivery["status"], "failed")
+        self.assertEqual(failed_c.delivery["error"]["code"], "gpu_stage_transition_failed")
+        self.assertEqual(sched.leases[lid_c]["state"], "released")
+        self.assertTrue((failed_c.provider_state or {}).get("_gpu_lease_released"))
 
 
 if __name__ == "__main__":

@@ -1742,11 +1742,24 @@ class VideoExecutor:
                                     self.maybe_release_scheduler_lease(rec)
                                 else:
                                     try:
-                                        self.scheduler.heartbeat(
+                                        hb_doc = self.scheduler.heartbeat(
                                             str(lease_doc["lease_id"]),
                                             fencing_token=int(lease_doc.get("fencing_token") or 0),
                                             expected_version=int(lease_doc.get("version") or 0),
                                         )
+                                        if isinstance(hb_doc, dict) and hb_doc.get("lease_id") == lease_doc.get("lease_id"):
+                                            with self.tasks.task_lock(rec.video_task_id, purpose="write"):
+                                                fresh = self.tasks.get(rec.video_task_id)
+                                                fresh_ps = dict(fresh.provider_state or {})
+                                                cur_lease = fresh_ps.get("_gpu_lease")
+                                                if (
+                                                    isinstance(cur_lease, dict)
+                                                    and cur_lease.get("lease_id") == hb_doc.get("lease_id")
+                                                    and not fresh_ps.get("_gpu_lease_released")
+                                                    and int(hb_doc.get("version") or 0) >= int(cur_lease.get("version") or 0)
+                                                ):
+                                                    fresh_ps["_gpu_lease"] = hb_doc
+                                                    self.tasks.update(fresh, provider_state=fresh_ps)
                                     except Exception:
                                         pass
                 except OSError:
