@@ -150,7 +150,7 @@ class TaskStore:
                request: dict[str, object], runtime_task_id: str | None, status: str,
                error: dict[str, object] | None = None, authority: dict[str, str] | None = None,
                runtime_endpoint: str | None = None, runtime_version: str | None = None,
-               runtime_route: str | None = None) -> TaskRecord:
+               runtime_route: str | None = None, provider_state: dict[str, object] | None = None) -> TaskRecord:
         existing = self.find_idempotency(project_id, idempotency_key)
         if existing:
             if existing.input_digest != input_digest:
@@ -172,7 +172,7 @@ class TaskStore:
         record = TaskRecord(video_task_id=task_id, service=service, project_id=project_id,
                             idempotency_key=idempotency_key, input_digest=input_digest,
                             request=request, runtime_task_id=task_id if runtime_task_id is None else runtime_task_id,
-                            status=status, error=error,
+                            status=status, error=error, provider_state=provider_state,
                             authority=authority, runtime_endpoint=runtime_endpoint,
                             runtime_version=runtime_version, runtime_route=runtime_route,
                             created_at=now, updated_at=now)

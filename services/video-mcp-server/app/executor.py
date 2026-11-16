@@ -1361,7 +1361,8 @@ class VideoExecutor:
                     reserved = self.tasks.create(project_id=project_id, idempotency_key=idempotency_key,
                                                  input_digest=digest, request=request, runtime_task_id="", status="queued",
                                                  authority=authority, runtime_endpoint=runtime_url,
-                                                 runtime_version=runtime_version, runtime_route=runtime_route)
+                                                 runtime_version=runtime_version, runtime_route=runtime_route,
+                                                 provider_state={"gpu_dispatched": False})
                     reserved = self.tasks.update(reserved, service=service, runtime_version=runtime_version, runtime_route=runtime_route,
                                                  runtime_endpoint=runtime_url, authority=authority,
                                                  delivery=self.delivery.initial(reserved) if postprocess is not None else None)
@@ -1497,6 +1498,8 @@ class VideoExecutor:
         runtime_url = record.runtime_endpoint or runtime_url
 
         acquired = False
+        post_attempted = False
+        preparation_stage = "scheduler_admission"
         try:
             grant_headers: dict[str, str] = {}
             local_gating = bool(self.gpu.enabled or self.stage_slot.enabled)
@@ -1514,6 +1517,7 @@ class VideoExecutor:
                 if not sched_ok:
                     return record
 
+            preparation_stage = "local_gpu_admission"
             if service in LOCAL_H3_SERVICES and local_gating:
                 try:
                     acquired = self.acquire_local_gpu(record.video_task_id, service, record=record)
@@ -1523,6 +1527,7 @@ class VideoExecutor:
                     record = self.rollback_unstarted_scheduler_grant(record)
                     return self.defer_local_gpu_queue(record)
 
+            preparation_stage = "target_binding"
             if self.scheduler.enabled and service in LOCAL_H3_SERVICES:
                 record, grant_headers = self.ensure_scheduler_target_bound(
                     record,
@@ -1530,6 +1535,7 @@ class VideoExecutor:
                     runtime_headers=runtime_headers,
                 )
 
+            preparation_stage = "runtime_readiness"
             if service in {"h3-vdn", *MODERN_H3_SERVICES}:
                 try:
                     if prefetched_health is not None:
@@ -1577,6 +1583,7 @@ class VideoExecutor:
                         "H3 readiness check failed; generation was not submitted",
                     )
 
+            preparation_stage = "payload"
             if payload is None:
                 payload = self._build_local_generation_payload(record)
 
@@ -1588,6 +1595,7 @@ class VideoExecutor:
 
             try:
                 post_headers = {**runtime_headers, **grant_headers}
+                post_attempted = True
                 response = self.client.post(f"{runtime_url}/v1/videos", json=payload, headers=post_headers)
                 response.raise_for_status()
                 runtime_task_id = response.json()["id"]
@@ -1628,6 +1636,21 @@ class VideoExecutor:
                         "message": "Runtime submission could not be confirmed; do not resubmit automatically",
                     },
                 )
+        except Exception:
+            if post_attempted:
+                # Once POST starts, even an unexpected client/response error
+                # cannot prove the runtime did not accept the request.
+                return self.tasks.update(record, status="queued", error={
+                    "code": "submission_unconfirmed",
+                    "message": "Runtime submission could not be confirmed; retain the original task and key",
+                })
+            # No runtime POST was attempted in this dispatch. Record this fact
+            # before cleanup so a preparation error cannot leave an orphan queue.
+            return _fail_pre_submit(
+                "submission_preparation_failed",
+                f"Local generation preparation failed at {preparation_stage} before runtime submission",
+                retryable=True,
+            )
         finally:
             with self._state_guard:
                 self._submitting_tasks.discard(record.video_task_id)
@@ -2034,7 +2057,10 @@ class VideoExecutor:
                     else:
                     # A delayed submission can still arrive; absence is not
                     # permission to change keys or dispatch another GPU job.
-                        return self.tasks.update(record, status="queued")
+                        return self.tasks.update(record, status="queued", error={
+                            "code": "submission_unconfirmed",
+                            "message": "Runtime has no confirmed task for this key; submission outcome requires reconciliation",
+                        })
                 response.raise_for_status()
                 recovered = response.json()
                 identity = recovered.get("id")
