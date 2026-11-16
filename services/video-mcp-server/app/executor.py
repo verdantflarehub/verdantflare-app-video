@@ -358,6 +358,52 @@ class VideoExecutor:
         except Exception:
             return None, None
 
+    def _expired_scheduler_admission(self, record: TaskRecord, lease: dict) -> TaskRecord:
+        """Stop admission without assuming an expired lease proves worker exit."""
+        pstate = dict(record.provider_state or {})
+        unstarted = (
+            pstate.get("gpu_dispatched") is False
+            and not record.runtime_task_id
+            and not record.dispatched_at
+            and pstate.get("worker_settled") is not False
+            and pstate.get("_gpu_lease_owned") is not False
+            and not any(
+                SchedulerLeaseClient._is_concrete_identity_value(lease.get(key))
+                for key in ("pod_uid", "container_id", "boot_id")
+            )
+            and (record.error or {}).get("code") not in {
+                "submission_unconfirmed", "gpu_admission_reconciliation_required",
+            }
+        )
+        pstate["_gpu_lease"] = dict(lease)
+        pstate["lease_state"] = "expired"
+        pstate["blocking_reason"] = lease.get("blocking_reason") or "lease_expired"
+        pstate.pop("queue_position", None)
+        pstate.pop("waiting_reason", None)
+        error = {
+            "code": "gpu_admission_expired" if unstarted else "gpu_admission_reconciliation_required",
+            "message": (
+                "GPU admission lease expired before dispatch; retry explicitly after capacity is available"
+                if unstarted else
+                "GPU admission lease expired; reconcile the original task before retrying"
+            ),
+            "retryable": unstarted,
+            "stage": "gpu_admission",
+            "reason": pstate["blocking_reason"],
+        }
+        updates = {"provider_state": pstate, "error": error}
+        if unstarted:
+            pstate["worker_settled"] = True
+            updates["status"] = "failed"
+            if record.delivery is not None:
+                updates["delivery"] = {
+                    **record.delivery, "status": "failed", "stage": "generation",
+                    "error": error, "completed_at": datetime.now(UTC).isoformat(),
+                }
+        # Do not release, renew, or recreate a terminal lease here. In particular,
+        # bound/unknown work must keep its reconciliation and cancellation identity.
+        return self.tasks.update(record, **updates)
+
     def acquire_scheduler_grant(
         self,
         record: TaskRecord,
@@ -373,6 +419,11 @@ class VideoExecutor:
         from .delivery import _to_epoch
 
         pstate = dict(record.provider_state or {})
+        admission_lease = inherited_lease if inherited_lease is not None else pstate.get("_gpu_lease")
+        if isinstance(admission_lease, dict) and admission_lease.get("state") == "expired":
+            if inherited_lease is not None:
+                record = self.tasks.update(record, provider_state={**pstate, "_gpu_lease_owned": False})
+            return False, self._expired_scheduler_admission(record, admission_lease), {}
         target_ident = self.probe_runtime_identity(runtime_url, runtime_headers)
         if inherited_lease is not None:
             pstate["_gpu_lease"] = dict(inherited_lease)
@@ -441,6 +492,10 @@ class VideoExecutor:
         pstate["_gpu_active_service"] = service
         pstate["_gpu_target_identity"] = target_ident
         pstate.pop("_gpu_lease_released", None)
+
+        if dec.get("state") == "expired":
+            record = self.tasks.update(record, provider_state=pstate)
+            return False, self._expired_scheduler_admission(record, dec), {}
 
         if not is_lease_granted(dec):
             lease_state = str(dec.get("state") or "queued")
