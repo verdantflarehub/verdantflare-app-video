@@ -291,8 +291,13 @@ class H3LatentExecutor:
         record = self.tasks.get(task_id)
         if record.service != self.service:
             raise ValueError('not an H3 latent task')
+        if record.status == 'queued' and (record.error or {}).get('code') == 'gpu_admission_reconciliation_required':
+            return self.executor.reconcile_expired_scheduler_admission(record)
         if record.status == 'queued' and (record.provider_state or {}).get('gpu_dispatched') is False:
-            return self.submit(record)
+            record = self.submit(record)
+            if (record.error or {}).get('code') == 'gpu_admission_reconciliation_required':
+                return self.executor.reconcile_expired_scheduler_admission(record)
+            return record
         if record.status in {'succeeded', 'failed'}:
             return record
         try:

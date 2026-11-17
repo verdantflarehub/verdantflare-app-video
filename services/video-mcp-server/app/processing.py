@@ -841,8 +841,13 @@ class ProcessingExecutor:
         record = self.tasks.get(video_task_id)
         if record.service != self.service:
             raise ValueError('task is not a matching processing task')
+        if record.status == 'queued' and (record.error or {}).get('code') == 'gpu_admission_reconciliation_required':
+            return self.executor.reconcile_expired_scheduler_admission(record)
         if record.status == 'queued' and (record.provider_state or {}).get('gpu_dispatched') is False:
-            return self._submit(record)
+            record = self._submit(record)
+            if (record.error or {}).get('code') == 'gpu_admission_reconciliation_required':
+                return self.executor.reconcile_expired_scheduler_admission(record)
+            return record
 
         pstate_init = record.provider_state or {}
         if (

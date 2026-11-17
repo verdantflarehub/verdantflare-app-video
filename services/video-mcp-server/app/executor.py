@@ -247,6 +247,44 @@ class VideoExecutor:
         )
 
     @staticmethod
+    def _bound_lease_identity(lease_doc: dict | None) -> dict[str, str]:
+        if not isinstance(lease_doc, dict):
+            return {}
+        return {
+            key: str(lease_doc.get(key) or "").strip()
+            for key in ("pod_uid", "container_id", "boot_id")
+            if SchedulerLeaseClient._is_concrete_identity_value(lease_doc.get(key))
+        }
+
+    @staticmethod
+    def _norm_pod_uid(value: object) -> str:
+        return str(value or "").strip().lower().replace("_", "-")
+
+    @staticmethod
+    def _norm_container_id(value: object) -> str:
+        clean = str(value or "").strip().lower()
+        for prefix in ("containerd://", "docker://", "cri-o://"):
+            if clean.startswith(prefix):
+                clean = clean[len(prefix):].strip()
+        return clean
+
+    @classmethod
+    def _is_bound_container_replaced(
+        cls,
+        bound_ident: dict[str, str],
+        live_ident: dict[str, object],
+    ) -> bool:
+        if not bound_ident:
+            return False
+        if "pod_uid" in bound_ident and cls._norm_pod_uid(bound_ident["pod_uid"]) != cls._norm_pod_uid(live_ident.get("pod_uid")):
+            return True
+        if "container_id" in bound_ident and cls._norm_container_id(bound_ident["container_id"]) != cls._norm_container_id(live_ident.get("container_id")):
+            return True
+        if "boot_id" in bound_ident and bound_ident["boot_id"].strip() != str(live_ident.get("boot_id") or "").strip():
+            return True
+        return False
+
+    @staticmethod
     def _is_authoritative_reclaim_proof(
         proof: dict | None,
         *,
@@ -367,13 +405,13 @@ class VideoExecutor:
             and not record.dispatched_at
             and pstate.get("worker_settled") is not False
             and pstate.get("_gpu_lease_owned") is not False
-            and not any(
+            and (lease.get("never_granted") is True or not any(
                 SchedulerLeaseClient._is_concrete_identity_value(lease.get(key))
                 for key in ("pod_uid", "container_id", "boot_id")
-            )
-            and (record.error or {}).get("code") not in {
-                "submission_unconfirmed", "gpu_admission_reconciliation_required",
-            }
+            ))
+            and (record.error or {}).get("code") != "submission_unconfirmed"
+            and ((record.error or {}).get("code") != "gpu_admission_reconciliation_required"
+                 or lease.get("never_granted") is True)
         )
         pstate["_gpu_lease"] = dict(lease)
         pstate["lease_state"] = "expired"
@@ -393,16 +431,403 @@ class VideoExecutor:
         }
         updates = {"provider_state": pstate, "error": error}
         if unstarted:
+            now_iso = datetime.now(UTC).isoformat()
             pstate["worker_settled"] = True
+            pstate["admission_reconciliation"] = {
+                "outcome": "never_granted_expired" if lease.get("never_granted") is True else "unstarted_unbound",
+                "container_check": "never_granted" if lease.get("never_granted") is True else "not_bound",
+                "runtime_task_found": False,
+                "reason": pstate["blocking_reason"],
+                "reconciled_at": now_iso,
+            }
             updates["status"] = "failed"
             if record.delivery is not None:
                 updates["delivery"] = {
                     **record.delivery, "status": "failed", "stage": "generation",
-                    "error": error, "completed_at": datetime.now(UTC).isoformat(),
+                    "error": error, "completed_at": now_iso,
                 }
         # Do not release, renew, or recreate a terminal lease here. In particular,
         # bound/unknown work must keep its reconciliation and cancellation identity.
         return self.tasks.update(record, **updates)
+
+    def _seal_expired_lease_on_runtime(
+        self,
+        runtime_url: str,
+        runtime_headers: dict[str, str] | None,
+        *,
+        lease_id: str,
+        fencing_token: int,
+        expected_pod_uid: str,
+        require_worker_idle: bool = False,
+    ) -> tuple[str, dict | None]:
+        req_headers = dict(runtime_headers or {})
+        if "Authorization" not in req_headers and self.scheduler.token:
+            req_headers["Authorization"] = f"Bearer {self.scheduler.token}"
+        try:
+            resp = self.client.post(
+                f"{runtime_url.rstrip('/')}/internal/v1/gpu-guard/reclaim",
+                headers=req_headers,
+                json={"lease_id": lease_id, "fencing_token": int(fencing_token)},
+                timeout=10,
+            )
+            if resp.status_code not in {200, 409}:
+                return "fence_seal_unavailable", None
+            if require_worker_idle and resp.status_code == 409:
+                return "worker_active", None
+            body = resp.json()
+            if not isinstance(body, dict):
+                return "fence_seal_unavailable", None
+            container = body.get("detail") if resp.status_code == 409 and isinstance(body.get("detail"), dict) else body
+            proof = container.get("reclaim_proof") if isinstance(container.get("reclaim_proof"), dict) else container
+            if not isinstance(proof, dict):
+                return "fence_seal_unavailable", None
+            if proof.get("proof_source") != "receiver_guard" or proof.get("token_sealed") is not True:
+                return "fence_seal_unavailable", None
+            if lease_id and str(proof.get("revoked_lease_id") or "").strip() != lease_id:
+                return "fence_seal_unavailable", None
+            consumed = int(proof.get("consumed_fencing_token") or 0)
+            if fencing_token > 0 and consumed < fencing_token:
+                return "fence_seal_unavailable", None
+            if expected_pod_uid and self._norm_pod_uid(proof.get("sealed_pod_uid")) != self._norm_pod_uid(expected_pod_uid):
+                return "fence_seal_unavailable", None
+            return "sealed", dict(proof)
+        except Exception:
+            return "fence_seal_unavailable", None
+
+    def _probe_runtime_task_acceptance(
+        self,
+        record: TaskRecord,
+        runtime_url: str,
+        runtime_headers: dict[str, str],
+    ) -> tuple[str, str, dict | None]:
+        base = runtime_url.rstrip("/")
+        if record.service in MODERN_H3_SERVICES:
+            expected_prefix = "fasth3" if record.service == "h3-fasth3" else "singularity"
+            try:
+                if record.runtime_task_id:
+                    resp = self.client.get(
+                        f"{base}/v1/videos/{record.runtime_task_id}",
+                        headers=runtime_headers,
+                        timeout=10,
+                    )
+                    if resp.status_code == 404:
+                        return "runtime_task_missing", "", None
+                    if resp.status_code != 200:
+                        return "runtime_unreachable", "", None
+                    body = resp.json()
+                    if not isinstance(body, dict):
+                        return "invalid_runtime_response", "", None
+                    return "accepted", record.runtime_task_id, body
+                resp = self.client.get(
+                    f"{base}/v1/videos/by-idempotency/{record.video_task_id}",
+                    headers=runtime_headers,
+                    timeout=10,
+                )
+                if resp.status_code == 404:
+                    return "not_found", "", None
+                if resp.status_code != 200:
+                    return "runtime_unreachable", "", None
+                body = resp.json()
+                identity = body.get("id") if isinstance(body, dict) else None
+                if not isinstance(identity, str) or not re.fullmatch(rf"{expected_prefix}_[0-9a-f]{{32}}", identity):
+                    return "invalid_runtime_response", "", None
+                return "accepted", identity, body
+            except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+                return "runtime_unreachable", "", None
+
+        endpoint_map = {
+            "regenerate_2k": "regenerate-2k",
+            "interpolate": "interpolate",
+            "sr": "sr",
+            "depth": "depth",
+            "h3-latent-upscale": "upscales",
+        }
+        if record.service in endpoint_map:
+            ep = endpoint_map[record.service]
+            try:
+                resp = self.client.get(
+                    f"{base}/v1/{ep}/{record.video_task_id}",
+                    headers=runtime_headers,
+                    timeout=10,
+                )
+                if resp.status_code == 404:
+                    if record.dispatched_at:
+                        return "runtime_task_missing", "", None
+                    return "not_found", "", None
+                if resp.status_code != 200:
+                    return "runtime_unreachable", "", None
+                body = resp.json()
+                if not isinstance(body, dict) or body.get("video_task_id") != record.video_task_id:
+                    return "invalid_runtime_response", "", None
+                return "accepted", record.video_task_id, body
+            except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+                return "runtime_unreachable", "", None
+
+        if record.runtime_task_id:
+            try:
+                resp = self.client.get(
+                    f"{base}/v1/videos/{record.runtime_task_id}",
+                    headers=runtime_headers,
+                    timeout=10,
+                )
+                if resp.status_code == 404:
+                    return "runtime_task_missing", "", None
+                if resp.status_code != 200:
+                    return "runtime_unreachable", "", None
+                body = resp.json()
+                if not isinstance(body, dict):
+                    return "invalid_runtime_response", "", None
+                return "accepted", record.runtime_task_id, body
+            except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+                return "runtime_unreachable", "", None
+
+        pstate = record.provider_state or {}
+        if (
+            pstate.get("gpu_dispatched") is False
+            and not record.dispatched_at
+            and (record.error or {}).get("code") != "submission_unconfirmed"
+        ):
+            return "not_found", "", None
+        return "legacy_runtime_unverifiable", "", None
+
+    def _hold_admission_reconciliation(
+        self,
+        record: TaskRecord,
+        pending_reason: str,
+        *,
+        container_check: str = "unavailable",
+    ) -> TaskRecord:
+        now_iso = datetime.now(UTC).isoformat()
+        pstate = dict(record.provider_state or {})
+        lease = pstate.get("_gpu_lease") if isinstance(pstate.get("_gpu_lease"), dict) else {}
+        reason = str(lease.get("blocking_reason") or pstate.get("blocking_reason") or "lease_expired")
+        pstate["blocking_reason"] = reason
+        pstate["waiting_reason"] = "runtime_reconciliation_pending"
+        pstate.pop("queue_position", None)
+        pstate["admission_reconciliation"] = {
+            "outcome": "reconciliation_pending",
+            "container_check": container_check,
+            "runtime_task_found": None,
+            "reason": reason,
+            "pending_reason": pending_reason,
+            "last_checked_at": now_iso,
+        }
+        error = {
+            "code": "gpu_admission_reconciliation_required",
+            "message": "GPU admission lease expired and runtime execution state remains unconfirmed; retain original task and retry video.status",
+            "retryable": False,
+            "stage": "gpu_admission",
+            "reason": reason,
+            "reconciliation_state": pending_reason,
+        }
+        return self.tasks.update(record, provider_state=pstate, error=error)
+
+    def _recover_accepted_runtime_task(
+        self,
+        record: TaskRecord,
+        runtime_task_id: str,
+        runtime_payload: dict | None,
+    ) -> TaskRecord:
+        now_iso = datetime.now(UTC).isoformat()
+        pstate = dict(record.provider_state or {})
+        lease = pstate.get("_gpu_lease") if isinstance(pstate.get("_gpu_lease"), dict) else {}
+        reason = str(lease.get("blocking_reason") or pstate.get("blocking_reason") or "lease_expired")
+        pstate["gpu_dispatched"] = True
+        pstate.pop("waiting_reason", None)
+        pstate.pop("queue_position", None)
+        pstate["admission_reconciliation"] = {
+            "outcome": "recovered_accepted",
+            "container_check": "runtime_accepted",
+            "runtime_task_found": True,
+            "reason": reason,
+            "reconciled_at": now_iso,
+        }
+        record = self.tasks.update(
+            record,
+            runtime_task_id=runtime_task_id,
+            status="queued" if record.status not in TERMINAL_TASK_STATUS else record.status,
+            error=None,
+            dispatched_at=record.dispatched_at or now_iso,
+            provider_state=pstate,
+        )
+        if isinstance(runtime_payload, dict):
+            if record.service == "h3-latent-upscale":
+                return self.processing["h3-latent-upscale"].update(record, runtime_payload)
+            if record.service in self.processing:
+                return self.processing[record.service]._update(record, runtime_payload)
+            if record.service == "depth":
+                return self.depth._update(record, runtime_payload)
+        return record
+
+    def _settle_unstarted_expired_admission(
+        self,
+        record: TaskRecord,
+        *,
+        outcome: str,
+        container_check: str,
+        seal_proof: dict | None = None,
+    ) -> TaskRecord:
+        now_iso = datetime.now(UTC).isoformat()
+        pstate = dict(record.provider_state or {})
+        lease = pstate.get("_gpu_lease") if isinstance(pstate.get("_gpu_lease"), dict) else {}
+        reason = str(lease.get("blocking_reason") or pstate.get("blocking_reason") or "lease_expired")
+        pstate["lease_state"] = str(lease.get("state") or "expired")
+        pstate["blocking_reason"] = reason
+        pstate["worker_settled"] = True
+        pstate.pop("waiting_reason", None)
+        pstate.pop("queue_position", None)
+        if isinstance(seal_proof, dict):
+            pstate["reclaim_proof"] = dict(seal_proof)
+        pstate["admission_reconciliation"] = {
+            "outcome": outcome,
+            "container_check": container_check,
+            "runtime_task_found": False,
+            "reason": reason,
+            "reconciled_at": now_iso,
+        }
+        error = {
+            "code": "gpu_admission_expired",
+            "message": (
+                "GPU admission lease expired and bound runtime container was replaced before execution; retry explicitly after capacity is available"
+                if outcome == "bound_container_replaced_unstarted"
+                else "GPU admission lease expired before runtime execution; reconciled unstarted and safe to retry explicitly"
+            ),
+            "retryable": True,
+            "stage": "gpu_admission",
+            "reason": reason,
+            "reconciliation_state": outcome,
+        }
+        updates: dict[str, object] = {
+            "status": "failed",
+            "error": error,
+            "provider_state": pstate,
+        }
+        if record.delivery is not None and record.delivery.get("status") not in {"succeeded", "failed"}:
+            default_stage = "regenerate_2k" if record.service == "regenerate_2k" else "generation"
+            updates["delivery"] = {
+                **record.delivery,
+                "status": "failed",
+                "stage": record.delivery.get("stage") or default_stage,
+                "error": error,
+                "completed_at": now_iso,
+            }
+        updated = self.tasks.update(record, **updates)
+        self.stage_slot.release(updated.video_task_id, force=True)
+        return updated
+
+    def reconcile_expired_scheduler_admission(self, record: TaskRecord) -> TaskRecord:
+        """Reconcile an expired/revoked admission lease against Runtime acceptance, container identity, and fence seal."""
+        pstate = dict(record.provider_state or {})
+        lease = pstate.get("_gpu_lease") if isinstance(pstate.get("_gpu_lease"), dict) else {}
+        lease_id = str(lease.get("lease_id") or "").strip()
+        if self.scheduler.enabled and lease_id and lease.get("never_granted") is None:
+            try:
+                refreshed = self.scheduler.get_lease(lease_id)
+                if isinstance(refreshed, dict) and refreshed.get("lease_id") == lease_id:
+                    lease = refreshed
+                    pstate["_gpu_lease"] = dict(refreshed)
+                    record = self.tasks.update(record, provider_state=pstate)
+                    if refreshed.get("never_granted") is True and refreshed.get("state") == "expired":
+                        record = self._expired_scheduler_admission(record, refreshed)
+                        if record.status in TERMINAL_TASK_STATUS:
+                            return record
+            except Exception:
+                pass
+
+        try:
+            runtime_url, runtime_headers = self._resolve_service_runtime_target(record.service, record)
+        except ExecutionError as exc:
+            if str(exc) == "route_unavailable":
+                return self._fail_route_unavailable(record)
+            return self._hold_admission_reconciliation(record, "runtime_target_unavailable")
+        except Exception:
+            return self._hold_admission_reconciliation(record, "runtime_target_unavailable")
+        if not runtime_url:
+            return self._hold_admission_reconciliation(record, "runtime_target_unavailable")
+
+        probe_state, runtime_tid, runtime_payload = self._probe_runtime_task_acceptance(
+            record, runtime_url, runtime_headers
+        )
+        if probe_state == "accepted":
+            return self._recover_accepted_runtime_task(record, runtime_tid, runtime_payload)
+        if probe_state != "not_found":
+            return self._hold_admission_reconciliation(record, probe_state)
+
+        if pstate.get("_gpu_lease_owned") is False:
+            return self._hold_admission_reconciliation(record, "inherited_lease_expired", container_check="inherited")
+
+        try:
+            health_resp = self.client.get(
+                f"{runtime_url.rstrip('/')}/health",
+                headers=runtime_headers,
+                timeout=10,
+            )
+            if health_resp.status_code != 200:
+                return self._hold_admission_reconciliation(record, "runtime_health_unreachable")
+            health_body = health_resp.json()
+        except Exception:
+            return self._hold_admission_reconciliation(record, "runtime_health_unreachable")
+        if not isinstance(health_body, dict):
+            return self._hold_admission_reconciliation(record, "runtime_health_unreachable")
+
+        active_ids = health_body.get("active_task_ids")
+        if isinstance(active_ids, list) and record.video_task_id in active_ids:
+            return self._hold_admission_reconciliation(
+                record, "runtime_worker_active_for_task", container_check="matched_active"
+            )
+
+        live_ident = health_body.get("runtime_identity")
+        if not self._has_concrete_runtime_identity(live_ident):
+            return self._hold_admission_reconciliation(record, "runtime_identity_unavailable")
+
+        bound_ident = self._bound_lease_identity(lease)
+        container_replaced = self._is_bound_container_replaced(bound_ident, live_ident)
+        if container_replaced:
+            if pstate.get("worker_settled") is False and str(lease.get("blocking_reason") or "") != "reconciled_terminated":
+                return self._hold_admission_reconciliation(
+                    record, "previous_worker_unsettled", container_check="replaced"
+                )
+            return self._settle_unstarted_expired_admission(
+                record,
+                outcome="bound_container_replaced_unstarted",
+                container_check="replaced",
+            )
+
+        fencing_token = int(lease.get("fencing_token") or 0)
+        seal_proof: dict | None = None
+        if lease_id or fencing_token > 0:
+            seal_state, seal_proof = self._seal_expired_lease_on_runtime(
+                runtime_url,
+                runtime_headers,
+                lease_id=lease_id,
+                fencing_token=fencing_token,
+                expected_pod_uid=str(live_ident.get("pod_uid") or ""),
+                require_worker_idle=(pstate.get("worker_settled") is False),
+            )
+            if seal_state != "sealed":
+                return self._hold_admission_reconciliation(
+                    record,
+                    seal_state,
+                    container_check="matched_unsealed",
+                )
+            post_state, post_tid, post_payload = self._probe_runtime_task_acceptance(
+                record, runtime_url, runtime_headers
+            )
+            if post_state == "accepted":
+                return self._recover_accepted_runtime_task(record, post_tid, post_payload)
+            if post_state != "not_found":
+                return self._hold_admission_reconciliation(
+                    record, f"post_seal_{post_state}", container_check="matched_and_sealed"
+                )
+        elif pstate.get("gpu_dispatched") is not False or record.dispatched_at or (record.error or {}).get("code") == "submission_unconfirmed":
+            return self._hold_admission_reconciliation(record, "missing_lease_fence_identity")
+
+        return self._settle_unstarted_expired_admission(
+            record,
+            outcome="unstarted_fence_sealed",
+            container_check="matched_and_sealed",
+            seal_proof=seal_proof,
+        )
 
     def acquire_scheduler_grant(
         self,
@@ -420,7 +845,13 @@ class VideoExecutor:
 
         pstate = dict(record.provider_state or {})
         admission_lease = inherited_lease if inherited_lease is not None else pstate.get("_gpu_lease")
-        if isinstance(admission_lease, dict) and admission_lease.get("state") == "expired":
+        if isinstance(admission_lease, dict) and (
+            str(admission_lease.get("state") or "").strip().lower() in {"expired", "revoked"}
+            or (
+                str(admission_lease.get("state") or "").strip().lower() == "released"
+                and not pstate.get("_gpu_lease_released")
+            )
+        ):
             if inherited_lease is not None:
                 record = self.tasks.update(record, provider_state={**pstate, "_gpu_lease_owned": False})
             return False, self._expired_scheduler_admission(record, admission_lease), {}
@@ -493,7 +924,7 @@ class VideoExecutor:
         pstate["_gpu_target_identity"] = target_ident
         pstate.pop("_gpu_lease_released", None)
 
-        if dec.get("state") == "expired":
+        if str(dec.get("state") or "").strip().lower() in {"expired", "revoked", "released"}:
             record = self.tasks.update(record, provider_state=pstate)
             return False, self._expired_scheduler_admission(record, dec), {}
 
@@ -613,6 +1044,8 @@ class VideoExecutor:
         token = int(lease_doc.get("fencing_token") or 0)
         if not lease_id:
             return record
+        if str(lease_doc.get("state") or "").strip().lower() in {"expired", "released"}:
+            return record
         try:
             self.scheduler.release(
                 lease_id,
@@ -655,6 +1088,8 @@ class VideoExecutor:
         lease_id = str(lease_doc.get("lease_id") or "")
         token = int(lease_doc.get("fencing_token") or 0)
         if not lease_id:
+            return record
+        if str(lease_doc.get("state") or "").strip().lower() in {"expired", "released"}:
             return record
 
         if str(lease_doc.get("state") or "") in {"queued", "draining"}:
@@ -818,7 +1253,10 @@ class VideoExecutor:
                     if (
                         rec.service in LOCAL_GPU_SERVICES
                         and rec.status == "queued"
-                        and (rec.provider_state or {}).get("gpu_dispatched") is False
+                        and (
+                            (rec.provider_state or {}).get("gpu_dispatched") is False
+                            or (rec.error or {}).get("code") == "gpu_admission_reconciliation_required"
+                        )
                     ):
                         queued_candidates.append((rec.created_at or "", rec.video_task_id))
         except OSError:
@@ -1714,8 +2152,31 @@ class VideoExecutor:
                 # work. Reconcile the durable task set, including unknowns.
                 self.release_or_reconcile_local_gpu(record.video_task_id)
 
+    def reconcile_expired_admissions(self) -> None:
+        """Read-only scheduler reconciliation; never acquires or submits inference."""
+        root = getattr(self.tasks, "root", None)
+        if root is None or not root.is_dir():
+            return
+        for path in root.glob("video_task_*.json"):
+            try:
+                with self.tasks.task_lock(path.stem, blocking=False) as acquired:
+                    if not acquired:
+                        continue
+                    record = self.tasks.get(path.stem)
+                    cached = (record.provider_state or {}).get("_gpu_lease")
+                    if record.status != "queued" or not isinstance(cached, dict) or not cached.get("lease_id"):
+                        continue
+                    # Refresh even an expired cached receipt from an older server.
+                    lease = self.scheduler.get_lease(str(cached["lease_id"]))
+                    if (isinstance(lease, dict) and lease.get("lease_id") == cached["lease_id"]
+                            and lease.get("state") == "expired"):
+                        self._expired_scheduler_admission(record, lease)
+            except Exception:
+                logging.getLogger(__name__).warning("Expired admission reconciliation deferred: %s", path.stem)
+
     def reconcile_gpu(self) -> None:
         if self.scheduler.enabled:
+            self.reconcile_expired_admissions()
             try:
                 self.scheduler.flush_pending_releases()
             except Exception:
@@ -1899,10 +2360,83 @@ class VideoExecutor:
         finished_at = prev_state.get("finished_at")
         force_backoff = False
 
-        if prev_state.get("gpu_dispatched") is False or not record.runtime_task_id:
+        lease_bound = bool(self._bound_lease_identity(prev_state.get("_gpu_lease")))
+        uncertain_untracked = (
+            not record.runtime_task_id
+            and record.service in MODERN_H3_SERVICES
+            and (
+                prev_state.get("gpu_dispatched") is not False
+                or lease_bound
+                or (record.error or {}).get("code") in {
+                    "submission_unconfirmed",
+                    "gpu_admission_reconciliation_required",
+                }
+            )
+        )
+        if uncertain_untracked:
+            try:
+                runtime_url, runtime_headers, _, _ = self.runtime(self._record_route(record))
+                runtime_url = record.runtime_endpoint or runtime_url
+                probe_state, recovered_tid, _ = self._probe_runtime_task_acceptance(
+                    record, runtime_url, runtime_headers
+                )
+                if probe_state == "accepted" and recovered_tid:
+                    record = self.tasks.update(record, runtime_task_id=recovered_tid)
+                elif probe_state == "not_found":
+                    lease_doc = prev_state.get("_gpu_lease") if isinstance(prev_state.get("_gpu_lease"), dict) else {}
+                    lease_id = str(lease_doc.get("lease_id") or "").strip()
+                    fencing_token = int(lease_doc.get("fencing_token") or 0)
+                    if lease_id or fencing_token > 0:
+                        live_ident = self.probe_runtime_identity(runtime_url, runtime_headers)
+                        if self._has_concrete_runtime_identity(live_ident):
+                            bound_ident = self._bound_lease_identity(lease_doc)
+                            if self._is_bound_container_replaced(bound_ident, live_ident):
+                                worker_settled = True
+                                cancel_delivered = True
+                            else:
+                                seal_state, seal_proof = self._seal_expired_lease_on_runtime(
+                                    runtime_url,
+                                    runtime_headers,
+                                    lease_id=lease_id,
+                                    fencing_token=fencing_token,
+                                    expected_pod_uid=str(live_ident.get("pod_uid") or ""),
+                                    require_worker_idle=(prev_state.get("worker_settled") is False),
+                                )
+                                if seal_state == "sealed":
+                                    post_state, post_tid, _ = self._probe_runtime_task_acceptance(
+                                        record, runtime_url, runtime_headers
+                                    )
+                                    if post_state == "accepted" and post_tid:
+                                        record = self.tasks.update(record, runtime_task_id=post_tid)
+                                    elif post_state == "not_found":
+                                        if isinstance(seal_proof, dict):
+                                            prev_state["reclaim_proof"] = dict(seal_proof)
+                                        worker_settled = True
+                                        cancel_delivered = True
+                                    else:
+                                        force_backoff = True
+                                else:
+                                    force_backoff = True
+                        else:
+                            force_backoff = True
+                    elif prev_state.get("gpu_dispatched") is False:
+                        worker_settled = True
+                        cancel_delivered = True
+                    else:
+                        force_backoff = True
+                else:
+                    force_backoff = True
+            except ExecutionError as exc:
+                if str(exc) == "route_unavailable":
+                    worker_settled = True
+                    cancel_delivered = True
+                else:
+                    force_backoff = True
+
+        if not uncertain_untracked and (prev_state.get("gpu_dispatched") is False or not record.runtime_task_id):
             worker_settled = True
             cancel_delivered = True
-        else:
+        elif record.runtime_task_id:
             try:
                 runtime_url, runtime_headers, _, _ = self.runtime(self._record_route(record))
                 runtime_url = record.runtime_endpoint or runtime_url
@@ -2038,9 +2572,24 @@ class VideoExecutor:
         if (
             record.service in LOCAL_H3_SERVICES
             and record.status == "queued"
+            and (record.error or {}).get("code") == "gpu_admission_reconciliation_required"
+        ):
+            record = self.reconcile_expired_scheduler_admission(record)
+            if record.status in TERMINAL_TASK_STATUS or not record.runtime_task_id:
+                return record
+
+        if (
+            record.service in LOCAL_H3_SERVICES
+            and record.status == "queued"
             and (record.provider_state or {}).get("gpu_dispatched") is False
         ):
-            return self._dispatch_local_generation(record)
+            record = self._dispatch_local_generation(record)
+            if (record.error or {}).get("code") == "gpu_admission_reconciliation_required":
+                record = self.reconcile_expired_scheduler_admission(record)
+                if record.status in TERMINAL_TASK_STATUS or not record.runtime_task_id:
+                    return record
+            else:
+                return record
 
         pstate_init = record.provider_state or {}
         if (

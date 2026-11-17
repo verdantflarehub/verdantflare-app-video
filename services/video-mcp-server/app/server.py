@@ -25,7 +25,7 @@ from . import __version__, titles
 from .content_rating import ContentRatingError, ContentRatingStore, include_nsfw_from_headers
 from .executor import ExecutionError, VideoExecutor
 from .channel_errors import MESSAGES, tool_errors
-from .dashboard import Dashboard, _etag_matches, public_task
+from .dashboard import Dashboard, _etag_matches, public_admission_reconciliation, public_gpu_queue, public_task
 from .registry import EtcdRegistry
 from .collection import public_collection
 from .tasks import TaskConflict, TaskNotFound, TaskStore
@@ -905,14 +905,18 @@ def video_status(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
     record = executor.status(tid) if t_store is executor.tasks else existing
     if _is_task_nsfw(record):
         raise TaskNotFound(f"NOT_FOUND: {tid}")
+    gpu_queue = public_gpu_queue(record)
+    admission_reconciliation = public_admission_reconciliation(record)
     return _result({**titles.project(t_store, record), "task_id": record.video_task_id, "video_task_id": record.video_task_id, "status": record.status,
                     "created_at": record.created_at, "updated_at": record.updated_at, "error": record.error,
                     "timing": record.timing, "runtime_metrics": record.runtime_metrics, "delivery": record.delivery,
                     "collection": public_collection(record),
                     "service": record.service, "runtime_route": record.runtime_route,
                     "execution_instance_id": record.execution_instance_id, "stage": record.runtime_stage,
-                    "needs_attention": record.runtime_stage in {"submission_unknown", "canceling"},
-                    "progress": (record.provider_state or {}).get("progress")})
+                    "needs_attention": record.runtime_stage in {"submission_unknown", "canceling"} or (record.status == "queued" and bool(record.error)),
+                    "progress": (record.provider_state or {}).get("progress"),
+                    **({"gpu_queue": gpu_queue} if gpu_queue is not None else {}),
+                    **({"admission_reconciliation": admission_reconciliation} if admission_reconciliation is not None else {})})
 
 
 @mcp.tool(name="video.result")

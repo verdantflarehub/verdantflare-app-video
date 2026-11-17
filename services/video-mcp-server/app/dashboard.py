@@ -155,6 +155,30 @@ def task_presentation(record, catalog=None):
             "generation_code": code, "generation_label": explanation}
 
 
+def public_gpu_queue(record):
+    pstate = record.provider_state or {}
+    if record.status == "queued" and any(
+        pstate.get(k) is not None for k in ("lease_state", "waiting_reason", "queue_position", "blocking_reason")
+    ):
+        return {
+            "lease_state": pstate.get("lease_state") or ("draining" if pstate.get("waiting_reason") == "draining_peer" else "queued"),
+            "waiting_reason": pstate.get("waiting_reason"),
+            "queue_position": pstate.get("queue_position"),
+            "blocking_reason": pstate.get("blocking_reason"),
+            "blocking_holder_id": pstate.get("blocking_holder_id") or None,
+        }
+    return None
+
+
+def public_admission_reconciliation(record):
+    pstate = record.provider_state or {}
+    raw = pstate.get("admission_reconciliation")
+    if not isinstance(raw, dict):
+        return None
+    allowed = ("outcome", "container_check", "runtime_task_found", "reason", "pending_reason", "reconciled_at", "last_checked_at")
+    return {k: raw[k] for k in allowed if k in raw}
+
+
 def public_task(record, store=None, ratings_store=None, catalog=None):
     record = TaskStore.with_timing(record)
     model = record.request.get("model")
@@ -183,20 +207,8 @@ def public_task(record, store=None, ratings_store=None, catalog=None):
     grid_mode = record.request.get("grid_mode") or (
         ((record.request.get("postprocess") or {}).get("regenerate_2k") or {}).get("grid_mode")
     )
-    pstate = record.provider_state or {}
-    gpu_queue = (
-        {
-            "lease_state": pstate.get("lease_state") or ("draining" if pstate.get("waiting_reason") == "draining_peer" else "queued"),
-            "waiting_reason": pstate.get("waiting_reason"),
-            "queue_position": pstate.get("queue_position"),
-            "blocking_reason": pstate.get("blocking_reason"),
-            "blocking_holder_id": pstate.get("blocking_holder_id") or None,
-        }
-        if record.status == "queued" and any(
-            pstate.get(k) is not None for k in ("lease_state", "waiting_reason", "queue_position", "blocking_reason")
-        )
-        else None
-    )
+    gpu_queue = public_gpu_queue(record)
+    admission_reconciliation = public_admission_reconciliation(record)
     return {**naming, "video_task_id": record.video_task_id, "project_id": record.project_id,
             "idempotency_key": record.idempotency_key, "service": record.service, "route": record.runtime_route or record.request.get("route"),
             "model": model, "presentation": task_presentation(record, catalog),
@@ -205,6 +217,7 @@ def public_task(record, store=None, ratings_store=None, catalog=None):
             "needs_attention": record.runtime_stage == "submission_unknown" or bool(record.error),
             "progress": (record.provider_state or {}).get("progress"),
             "gpu_queue": gpu_queue,
+            **({"admission_reconciliation": admission_reconciliation} if admission_reconciliation is not None else {}),
             "prompt": record.request.get("prompt", ""),
             "duration_seconds": record.request.get("duration_seconds"),
             "aspect_ratio": record.request.get("aspect_ratio"),
@@ -348,6 +361,13 @@ class Dashboard:
         for record in self.records():
             if record.service == 'fal' and self.executor.fal._channel_record(record):
                 continue  # The channel ledger resolves unknown acceptance by the original operation key.
+            pstate = record.provider_state or {}
+            if (record.error or {}).get("code") == "gpu_admission_reconciliation_required":
+                continue
+            if pstate.get("gpu_dispatched") is False and (
+                isinstance(pstate.get("_gpu_lease"), dict) or bool(pstate.get("waiting_reason"))
+            ):
+                continue
             if record.status == "queued" and not record.runtime_task_id and record.service not in {"depth", "sr", "interpolate", "regenerate_2k", "grok", "google", "higgsfield", "comfyui"}:
                 self.executor.tasks.update(record, status="queued" if record.service in {"h3-fasth3", "h3-singularity"} else "failed", error={
                     "code": "submission_unconfirmed",

@@ -141,6 +141,31 @@ class ExpiredAdmissionTest(unittest.TestCase):
                 self.assertEqual(record.error["code"], "gpu_admission_reconciliation_required")
                 self.assertNotIn("worker_settled", record.provider_state)
 
+    def test_never_granted_candidate_identity_converges_after_restart(self):
+        self.cache({**self.lease, "pod_uid": "candidate", "container_id": "candidate", "boot_id": "candidate"})
+        self.record = self.tasks.update(self.record, error={"code": "gpu_admission_reconciliation_required"})
+        self.executor.scheduler.get_lease.return_value = {**self.record.provider_state["_gpu_lease"], "never_granted": True}
+        self.executor.reconcile_expired_admissions()
+        record = self.tasks.get(self.record.video_task_id)
+        self.assertEqual(record.status, "failed")
+        self.assertEqual(record.error["code"], "gpu_admission_expired")
+        self.executor.scheduler.acquire.assert_not_called()
+        self.assertEqual(self.http_calls, [])
+
+    def test_never_granted_does_not_override_dispatch_uncertainty(self):
+        for changes in ({"runtime_task_id": "accepted"}, {"error": {"code": "submission_unconfirmed"}}):
+            record = self.tasks.update(self.record, **changes)
+            result = self.executor._expired_scheduler_admission(record, {**self.lease, "never_granted": True})
+            self.assertEqual(result.status, "queued")
+
+    def test_background_scan_retains_granted_and_missing_history(self):
+        self.cache({**self.lease, "pod_uid": "candidate"})
+        for extra in ({}, {"never_granted": False}, {"state": "queued", "never_granted": True}):
+            self.executor.scheduler.get_lease.return_value = {**self.record.provider_state["_gpu_lease"], **extra}
+            self.executor.reconcile_expired_admissions()
+            self.assertEqual(self.tasks.get(self.record.video_task_id).status, "queued")
+        self.executor.scheduler.acquire.assert_not_called()
+
     def test_inherited_expiry_never_claims_parent_worker_settled(self):
         ok, record, _ = self.acquire(inherited_lease=self.lease)
         self.assertFalse(ok)
