@@ -9,8 +9,9 @@ import httpx
 import json
 import logging
 import os
+from typing import Annotated
 
-from pydantic import StrictInt
+from pydantic import Field, StrictInt
 from mcp import types
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
@@ -80,6 +81,13 @@ def _resolve_rating_target(version_id: str, project_id: str | None = None) -> tu
         raise TaskNotFound(f"NOT_FOUND: {vid}") from e
     return art.artifact_id, art.project_id, None
 
+IMAGE_GUIDANCE_DESCRIPTION = (
+    "Local H3 (h3-fasth3 / h3-singularity) only; experimental frame-0 conditioning. "
+    "Exact output canvas required; not pixel preservation. Single-image frame-0 consumption is verified, "
+    "but multi-reference cross-style conversion acts as soft conditioning without hard geometry lock "
+    "(render a matching photoreal first-frame keyframe before motion generation)."
+)
+
 VIDEO_TOOLS_SCHEMA = [
     {
         "name": "video.create",
@@ -93,7 +101,11 @@ VIDEO_TOOLS_SCHEMA = [
                 "duration_seconds": {"type": "integer", "minimum": 1, "maximum": 15, "default": 5},
                 "route": {"type": "string", "description": "Execution channel; omitted uses the host default from video.capabilities"},
                 "quality_profile": {"type": "string", "description": "H3 only; omit for Grok"},
-                "image_guidance": {"type": "string", "enum": ["reference", "first_frame"], "description": "H3 Singularity only; experimental first image at frame zero. Exact output canvas required; not pixel preservation."},
+                "image_guidance": {
+                    "type": "string",
+                    "enum": ["reference", "first_frame"],
+                    "description": IMAGE_GUIDANCE_DESCRIPTION,
+                },
                 "audio_guidance": {"type": "string", "enum": ["reference", "timeline"], "description": "H3 Singularity only; timeline is experimental full-duration PCM audio conditioning, not guaranteed lip sync"},
                 "mode": {"type": "string", "enum": ["text_to_video", "image_to_video", "reference_to_video"]},
                 "resolution": {"type": "string", "enum": ["480p", "720p"]},
@@ -637,7 +649,7 @@ def video_preflight(project_id: str, prompt: str = "",
                     resolution: str | None = None, postprocess: dict | None = None,
                     channel_account_id: str | None = None, budget_limit: str | None = None,
                     price_ceiling: float | None = None, audio_guidance: str | None = None,
-                    image_guidance: str | None = None,
+                    image_guidance: Annotated[str | None, Field(default=None, description=IMAGE_GUIDANCE_DESCRIPTION)] = None,
                     source_artifact_id: str | None = None,
                     profile: str | None = None,
                     grid_mode: str | None = None,
@@ -809,7 +821,8 @@ def video_create(prompt: str,
                  quality_profile: str | None = None, mode: str | None = None,
                   resolution: str | None = None, postprocess: dict | None = None, title: object = None,
                   channel_account_id: str | None = None, budget_limit: str | None = None,
-                  price_ceiling: float | None = None, audio_guidance: str | None = None, image_guidance: str | None = None,
+                  price_ceiling: float | None = None, audio_guidance: str | None = None,
+                  image_guidance: Annotated[str | None, Field(default=None, description=IMAGE_GUIDANCE_DESCRIPTION)] = None,
                   workflow_params: dict[str, object] | None = None) -> types.CallToolResult:
     """Create an asynchronous video generation task."""
     record, naming = titles.create(executor, title=title, project_id=project_id, idempotency_key=idempotency_key, model=model,
@@ -833,7 +846,8 @@ def video_generate(project_id: str, idempotency_key: str, model: str, prompt: st
                    quality_profile: str | None = None, mode: str | None = None,
                   resolution: str | None = None, postprocess: dict | None = None, title: object = None,
                   channel_account_id: str | None = None, budget_limit: str | None = None,
-                  price_ceiling: float | None = None, audio_guidance: str | None = None, image_guidance: str | None = None,
+                  price_ceiling: float | None = None, audio_guidance: str | None = None,
+                  image_guidance: Annotated[str | None, Field(default=None, description=IMAGE_GUIDANCE_DESCRIPTION)] = None,
                   workflow_params: dict[str, object] | None = None) -> types.CallToolResult:
     """Generate with a business model and an explicitly selected runtime route.
 

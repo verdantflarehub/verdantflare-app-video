@@ -11,6 +11,7 @@ import tempfile
 import uuid
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -59,6 +60,20 @@ class TaskRecord(BaseModel):
     runtime_endpoint: str | None = None
 
 
+_FALLBACK_LOCKS_GUARD = threading.Lock()
+_FALLBACK_TASK_LOCKS: dict[tuple[str, str, str], threading.Lock] = {}
+
+
+def _fallback_task_lock(root: Path, task_id: str, purpose: str) -> threading.Lock:
+    key = (str(root.resolve()), task_id, purpose)
+    with _FALLBACK_LOCKS_GUARD:
+        lock = _FALLBACK_TASK_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _FALLBACK_TASK_LOCKS[key] = lock
+        return lock
+
+
 class TaskStore:
     def __init__(self, root: Path) -> None:
         self.root = root.resolve() / "tasks"
@@ -103,10 +118,16 @@ class TaskStore:
             yield True
             return
         with (self.root / f".{task_id}.{purpose}.lock").open("a") as stream:
+            fb_lock: threading.Lock | None = None
             if fcntl is not None:
                 try:
                     fcntl.flock(stream, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
                 except BlockingIOError:
+                    yield False
+                    return
+            else:
+                fb_lock = _fallback_task_lock(self.root, task_id, purpose)
+                if not fb_lock.acquire(blocking=blocking):
                     yield False
                     return
             held.add(key)
@@ -116,6 +137,8 @@ class TaskStore:
                 held.remove(key)
                 if fcntl is not None:
                     fcntl.flock(stream, fcntl.LOCK_UN)
+                elif fb_lock is not None:
+                    fb_lock.release()
 
     @classmethod
     def from_environment(cls) -> "TaskStore":
@@ -130,7 +153,15 @@ class TaskStore:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as output:
                 output.write(record.model_dump_json(indent=2) + "\n")
-            os.replace(temporary, self.root / f"{record.video_task_id}.json")
+            target_path = self.root / f"{record.video_task_id}.json"
+            for attempt in range(5):
+                try:
+                    os.replace(temporary, target_path)
+                    break
+                except PermissionError:
+                    if os.name != "nt" or attempt == 4:
+                        raise
+                    time.sleep(0.01 * (attempt + 1))
         except Exception:
             try:
                 os.unlink(temporary)

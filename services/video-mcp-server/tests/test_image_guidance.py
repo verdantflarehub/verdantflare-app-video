@@ -123,6 +123,19 @@ class ImageGuidanceTests(unittest.TestCase):
                 cap = next(r for r in self.e.capabilities()['routes'] if r['route']=='h3-singularity')['image_guidance']
             self.assertEqual('first_frame' in cap['modes'], supported)
             self.assertFalse(cap['gpu_verified'])
+            self.assertFalse(cap['exact_pixel_preservation'])
+            self.assertFalse(cap['hard_geometry_lock'])
+            self.assertEqual(cap['conditioning_strength'], 'soft_under_multi_reference_cross_style')
+            self.assertIn('PackedLayout', cap['workflow_boundary'])
+            self.assertIn('photoreal first-frame keyframe', cap['workflow_boundary'])
         for item in server.VIDEO_TOOLS_SCHEMA:
             if item['name'] in ('video.create', 'video.preflight'):
                 self.assertIn('image_guidance', item['inputSchema']['properties'])
+        create_desc = next(
+            item['inputSchema']['properties']['image_guidance']['description']
+            for item in server.VIDEO_TOOLS_SCHEMA
+            if item['name'] == 'video.create'
+        )
+        self.assertIn('h3-fasth3', create_desc)
+        self.assertIn('soft conditioning', create_desc)
+        self.assertIn('without hard geometry lock', create_desc)

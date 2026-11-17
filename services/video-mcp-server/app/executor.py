@@ -1402,7 +1402,14 @@ class VideoExecutor:
                                   verification_status="not_recorded", frame_grid="17k+5", fps=24,
                                   modes=["reference_to_video"],
                                   image_guidance={"modes": ["reference"], "default": "reference",
-                                      "experimental": True, "gpu_verified": False, "exact_pixel_preservation": False},
+                                      "experimental": True, "gpu_verified": False, "exact_pixel_preservation": False,
+                                      "hard_geometry_lock": False,
+                                      "conditioning_strength": "soft_under_multi_reference_cross_style",
+                                      "workflow_boundary": (
+                                          "No parameter loss observed; single-image hold verifies frame-0 PackedLayout consumption, "
+                                          "but multi-reference cross-style conversion acts as soft conditioning without hard geometry or camera lock. "
+                                          "Render a matching photoreal first-frame keyframe before video motion generation."
+                                      )},
                                   audio_guidance={"modes": ["reference"], "default": "reference",
                                       "timeline_experimental": True, "gpu_verified": False,
                                       "timeline_audio_format": "pcm_wav", "timeline_maximum_requested_seconds": 14,
