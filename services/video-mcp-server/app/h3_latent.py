@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+from contextlib import closing
 import httpx
 from .channel_errors import MESSAGES
 from .executor import ExecutionError, serialized, task_serialized
@@ -67,7 +68,7 @@ class H3LatentExecutor:
         if not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest):
             raise ExecutionError('invalid_source_descriptor')
         self.index.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.index) as db:
+        with closing(sqlite3.connect(self.index)) as db, db:
             db.execute('PRAGMA journal_mode=DELETE')
             db.execute('PRAGMA synchronous=FULL')
             db.execute('''CREATE TABLE IF NOT EXISTS h3_sources (
