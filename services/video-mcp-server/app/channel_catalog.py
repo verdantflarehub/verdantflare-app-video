@@ -16,6 +16,8 @@ from .channel_registry import ChannelRegistry, RegistryUnavailable
 
 def connections(executor):
     return {
+        **({'google-flow': (executor.google_flow.url, executor.google_flow.token)}
+           if getattr(executor, 'google_flow', None) and executor.google_flow.url else {}),
         'fal': (executor.fal.gateway_url, executor.fal.gateway_token),
         'grok': (executor.grok.channel_url, executor.grok.channel_token),
         'google': (executor.google.channel_url, executor.google.channel_token),
@@ -61,6 +63,19 @@ def read_directory(channel, url, token, *, transport=None):
             or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment):
         return {'schema_version': 1, 'channel_id': channel, 'state': 'unavailable',
                 'reason_code': 'channel_not_configured', 'capabilities': []}
+    if channel == 'google-flow':
+        # Its live model endpoint requires project-write authorization. This public
+        # directory describes adapter limits; preflight intersects them with live models.
+        from .providers.google_flow import MODELS
+        return {'schema_version': 1, 'channel_id': channel, 'channel_name': 'Google Flow',
+                'version': '1', 'state': 'available', 'capabilities': [
+                    {'capability_id': model, 'type': 'video', 'model_id': model,
+                     'display_name': 'Google Flow · ' + model, 'operation': 'video.generate',
+                     'execution_state': 'adapter_connected_unverified',
+                     'parameter_schema': {'type': 'object', 'properties': {
+                         'mode': {'enum': ['text_to_video', 'reference_to_video']},
+                         'duration_seconds': {'type': 'integer', 'enum': [4, 6, 8], 'minimum': 4, 'maximum': 8},
+                         'aspect_ratio': {'enum': ['16:9', '9:16']}}}} for model in MODELS]}
     try:
         with httpx.Client(timeout=3, trust_env=False, follow_redirects=False, transport=transport) as client:
             with client.stream('GET', url.rstrip('/') + '/v1/capabilities',
@@ -85,11 +100,13 @@ def supported_models(executor):
                                 FAL_LIP_MODEL_ID, FAL_LIP_PUBLIC_MODEL)
     from .providers.grok import MODELS as GROK_MODELS
     from .providers.google import MODELS as GOOGLE_MODELS
+    from .providers.google_flow import MODELS as FLOW_MODELS
     from .providers.higgsfield import MODELS as HF_MODELS
     return {'fal': {FAL_MODEL_ID: FAL_PUBLIC_MODEL, FAL_SD2_MODEL_ID: FAL_SD2_PUBLIC_MODEL,
                     FAL_LIP_MODEL_ID: FAL_LIP_PUBLIC_MODEL},
             'grok': {model: model for model in GROK_MODELS},
             'google': {model: model for model in GOOGLE_MODELS},
+            'google-flow': {model: model for model in FLOW_MODELS},
             'higgsfield': {model: model for model in HF_MODELS}}
 
 
@@ -108,6 +125,8 @@ def adapter_facts(executor):
             facts[channel] = adapter.capability()
     if hasattr(executor.higgsfield, 'capabilities'):
         facts['higgsfield'] = {item['model']: item for item in executor.higgsfield.capabilities()}
+    if getattr(executor, "google_flow", None):
+        facts["google-flow"] = {item["model"]: item for item in executor.google_flow.capabilities()}
     return facts
 
 
@@ -133,7 +152,9 @@ def declaration_profiles(capability, adapter=None):
                       'maximum': min(bounds['maximum'], adapter['duration_seconds']['maximum'])}
     return [{'id': 'declared-' + mode, 'mode': mode, 'resolutions': resolutions,
              'max_resolution': resolutions[-1] if resolutions else None,
-             'duration_seconds': bounds, 'duration_choices_seconds': [],
+             'duration_seconds': bounds, 'duration_choices_seconds': [
+                 seconds for seconds in duration.get('enum', []) if type(seconds) is int
+                 and (not bounds or bounds['minimum'] <= seconds <= bounds['maximum'])],
              'aspect_ratios': ratios, 'input_limits': None,
              'audio_input': 'unknown', 'audio_output': 'unknown', 'review_status': 'pending',
              'verification_status': 'unverified'} for mode in modes if isinstance(mode, str)]
@@ -183,10 +204,12 @@ def project(executor):
                     identity_review='pending', description=' · '.join(filter(None, [cap.get('input_summary'), cap.get('output_summary')])),
                     declaration_source='installed_channel', parameter_schema=cap['parameter_schema'],
                     execution_status=cap['execution_state'], capability_id=cap['capability_id'])
+                if channel == 'google-flow':
+                    model['declaration_source'] = 'video_adapter'
                 for field in ('team_profiles', 'supplier_profiles', 'billing_modes'):
                     model.setdefault(field, [])
                 adapter = facts.get(channel, {})
-                if channel == 'higgsfield':
+                if channel in {'higgsfield', 'google-flow'}:
                     adapter = adapter.get(identity, {})
                 if declaration_profiles(cap):
                     model['supplier_profiles'] = declaration_profiles(cap)
@@ -206,7 +229,7 @@ def project(executor):
                 can_submit = (public_model is not None and supported_operation(channel, cap['operation'], identity)
                               and state in {'enabled', 'adapter_connected_unverified'}
                               and adapter_ready
-                              and registry.permits(channel, cap['capability_id'], registrations)
+                              and registry.permits(channel, 'video' if channel == 'google-flow' else cap['capability_id'], registrations)
                               and (state == 'enabled' or channel in registry.allow_unverified))
                 execution[channel][model['id']] = {'state': state, 'route': channel, 'model': public_model,
                                                    'can_submit': can_submit, 'capability_id': cap['capability_id'],

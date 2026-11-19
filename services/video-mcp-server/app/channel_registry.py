@@ -29,7 +29,7 @@ class ChannelRegistry:
         self.password = env.get('ETCD_PASSWORD', '')
         self.transport = transport
         self.allow_unverified = frozenset(filter(None, env.get('VIDEO_CHANNEL_ALLOW_UNVERIFIED', '').split(',')))
-        if not self.allow_unverified <= {'higgsfield', 'fal', 'grok', 'google'}:
+        if not self.allow_unverified <= {'higgsfield', 'fal', 'grok', 'google', 'google-flow'}:
             raise ValueError('invalid_channel_validation_configuration')
 
     def snapshot(self):

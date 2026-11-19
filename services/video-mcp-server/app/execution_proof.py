@@ -1,6 +1,8 @@
 """Read-only proofs from fixed native tasks; no collection or generation."""
 import hashlib
 
+from .providers.google_flow import MODELS as FLOW_MODELS
+
 
 def proof(record, artifacts):
     p = record.request
@@ -24,7 +26,8 @@ def proof(record, artifacts):
         outputs = [media(record.artifact_id)]
         params = {k: p[k] for k in ('duration_seconds', 'aspect_ratio', 'quality_profile', 'audio_guidance', 'image_guidance') if k in p}
         params['fps'] = 24
-    elif record.service == 'higgsfield' and route == 'higgsfield' and model == 'seedance_2_5':
+    elif ((record.service == route == 'higgsfield' and model == 'seedance_2_5') or
+          (record.service == route == 'google-flow' and model in FLOW_MODELS)):
         refs = [r['artifact_id'] for group in ('images', 'videos', 'audios')
                 for r in p.get('references', {}).get(group, [])]
         if p.get('mode') not in {'text_to_video', 'reference_to_video'} or bool(refs) != (p.get('mode') == 'reference_to_video'):
@@ -34,7 +37,7 @@ def proof(record, artifacts):
             raise ValueError('execution_proof_not_ready')
         inputs = [media(artifact_id) for artifact_id in refs]
         outputs = [{'sha256': m['sha256'], 'size': m['size'], 'mime': 'video/mp4'}]
-        params = {k: p[k] for k in ('duration_seconds', 'aspect_ratio', 'resolution', 'mode')}
+        params = {k: p[k] for k in ('duration_seconds', 'aspect_ratio', 'resolution', 'mode') if k in p}
     else:
         raise ValueError('execution_proof_not_ready')
     return {'schema_version': 1, 'service_id': 'video', 'run_id': record.video_task_id,

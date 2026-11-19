@@ -40,6 +40,12 @@ def reference_limits(route, model):
             max_image_pixels=MAX_SOURCE_IMAGE_PIXELS if route == 'google' else 16 * mib,
             by_mode={'text_to_video': {'images': 0, 'videos': 0, 'audios': 0, 'total': 0},
                      'image_to_video': {'images': 1, 'videos': 0, 'audios': 0, 'total': 1, 'minimum_total': 1}})
+    elif route == 'google-flow':
+        value.update(images=3, videos=0, audios=0, total=3,
+                     max_bytes={'images': 10 * mib, 'videos': 0, 'audios': 0},
+                     formats={'images': ['PNG', 'JPEG', 'WebP'], 'videos': [], 'audios': []},
+                     by_mode={'text_to_video': {'images': 0, 'total': 0},
+                              'reference_to_video': {'images': 3, 'total': 3, 'minimum_total': 1}})
     elif route == 'higgsfield':
         mixed = model in {'wan3_0', 'seedance_2_5', 'seedance_2_5_draft'}
         value.update(images=4 if mixed else 0, videos=1 if mixed else 0, audios=0, total=5 if mixed else 0,
@@ -97,7 +103,10 @@ def effective_route(template, declaration, entry):
     value['channel_parameter_schema'] = channel_schema
     value['parameter_schema'] = {'type': 'object', 'properties': effective}
     value['defaults'] = {'resolution': '480p' if model == 'seedance_2_5_draft' else '720p'}
-    if route in {'google', 'grok'}:
+    if route == 'google-flow':
+        value['defaults'] = {'aspect_ratio': '16:9'}
+        effective['duration_seconds']['enum'] = [4, 6, 8]
+    elif route in {'google', 'grok'}:
         value['defaults']['by_mode'] = {'text_to_video': {'aspect_ratio': '16:9'}}
     elif route == 'higgsfield':
         value['defaults']['aspect_ratio'] = '16:9'

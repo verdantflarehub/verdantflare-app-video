@@ -331,6 +331,9 @@ async function refreshTaskDetail(id, version) {
     runtime[1] = elapsed(task);
     rows.push(["渠道确认完成", date(task.timing?.generation_completed_at)], ["计时说明", generationTimeHint]);
   }
+  if (task.service === "google-flow") {
+    rows.push(["渠道调用 ID", task.runtime_task_id || "待确认"], ["预计积分", task.quoted_credits ?? "未知"], ["实际积分", task.actual_credits ?? "未知"]);
+  }
   if (task.quality_profile) rows.push(["质量档位", task.quality_profile]);
   const gridMode = task.grid_mode || task.delivery?.grid_mode;
   if (gridMode) rows.push(["2K 网格档位", gridMode]);

@@ -594,3 +594,14 @@ test('P2 GPU queue rank/reason and unified 本地 channel badge without raw engi
   assert.match(params, /<dt>排队顺位<\/dt><dd>清场衔接中 · #1<\/dd>/);
   assert.doesNotMatch(params, /comfyui\/default|\bsr\b/i);
 });
+
+test('Google Flow keeps its membership name, icon and generated video preview', () => {
+  const view = setup();
+  const task = JSON.stringify({service:'google-flow',route:'google-flow',status:'succeeded',
+    presentation:{is_generation:true,channel_id:'google-flow',channel_label:'Google Flow',channel_icon:'google-flow',model_label:'Veo Lite'},
+    prompt:'scene',media:{sha256:'a'.repeat(64)}});
+  assert.equal(view.run(`taskRoute(${task})`), 'Google Flow');
+  assert.match(view.run(`channelLogo(${task})`), /#1a73e8/);
+  assert.equal(view.run(`taskPrompt(${task})`), 'scene');
+  assert.equal(view.run(`taskResolution(${task})`), '');
+});

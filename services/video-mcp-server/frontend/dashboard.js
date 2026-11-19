@@ -92,7 +92,7 @@ const taskStatusLabel = (task) => {
 };
 const generationTimeHint = "按服务端确认 Higgsfield 完成的时间计算；官方 CLI 未提供精确完成时间。";
 // Display metadata is shared by the list and detail API; raw IDs stay in task records.
-const generationServices = new Set(["h3", "h3-sol", "h3-vdn", "h3-fasth3", "h3-singularity", "regenerate_2k", "fal", "grok", "google", "higgsfield"]);
+const generationServices = new Set(["h3", "h3-sol", "h3-vdn", "h3-fasth3", "h3-singularity", "regenerate_2k", "fal", "grok", "google", "google-flow", "higgsfield"]);
 const localProcessingServices = new Set(["h3-latent-upscale", "sr", "interpolate", "depth"]);
 const serviceDisplayNames = {
   "h3-latent-upscale": "H3 Latent Upscaler", sr: "Video Super Resolution",
@@ -111,6 +111,7 @@ const localChannelLogo = '<svg class="channel-logo" width="14" height="14" viewB
 const falChannelLogo = '<svg class="channel-logo" width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><rect width="24" height="24" rx="6" fill="#6C3AED"/><path d="M8.5 7H15.5M8.5 12H13.5M8.5 7V17" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="15.5" cy="15.5" r="1.8" fill="#4CE39A"/></svg>';
 const channelLogo = (task) => {
   const icon = task.presentation?.channel_icon;
+  if (icon === "google-flow" || task.service === "google-flow") return '<svg class="channel-logo" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" fill="none"><rect width="24" height="24" rx="6" fill="#1a73e8"/><path d="M5 15c3-7 5-7 7 0s4 6 7-1" stroke="white" stroke-width="2" stroke-linecap="round"/></svg>';
   if (icon === "higgsfield") return higgsfieldLogo;
   if (icon === "local" || localProcessingServices.has(task.service)) return localChannelLogo;
   if (icon === "fal" || task.presentation?.channel_label === "fal.ai" || task.route === "fal" || task.service === "fal") return falChannelLogo;
@@ -124,6 +125,7 @@ const generationBadge = (task) => {
 const taskOperation = (task) =>
   ({
     h3: "视频生成",
+    "google-flow": "视频生成",
     higgsfield: "视频生成",
     grok: "视频生成",
     "h3-fasth3": "视频生成",
@@ -379,7 +381,7 @@ function serviceFailure(body) {
       ? { code, message: legacy[code], source: "video" } : null;
   }
   if (!/^[A-Za-z0-9_.-]{1,100}$/.test(candidate.code || "") ||
-      !["video", "studio", "higgsfield", "fal", "grok", "google"].includes(candidate.source) ||
+      !["video", "studio", "higgsfield", "fal", "grok", "google", "google-flow"].includes(candidate.source) ||
       typeof candidate.message !== "string") return null;
   const message = candidate.message
     .replace(/https?:\/\/\S+/gi, "[已隐藏链接]")
@@ -467,7 +469,7 @@ const hasResultPreview = (task) =>
   task?.status === "succeeded" &&
   Boolean(
     task.artifact_id ||
-      (task.service === "higgsfield" && task.media?.sha256),
+      (["higgsfield", "google-flow"].includes(task.service) && task.media?.sha256),
   );
 const previewKey = (task) =>
   `${task.video_task_id}:${task.status}:${task.artifact_id || task.media?.sha256 || ""}`;

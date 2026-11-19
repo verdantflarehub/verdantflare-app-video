@@ -172,6 +172,8 @@ class VideoExecutor:
         self.google = GoogleVideoAdapter(self)
         from .providers.higgsfield import HiggsfieldAdapter
         self.higgsfield = HiggsfieldAdapter(self)
+        from .providers.google_flow import GoogleFlowAdapter
+        self.google_flow = GoogleFlowAdapter(self)
         from .providers.comfyui import ComfyUIVideoAdapter
         self.comfyui = ComfyUIVideoAdapter(self)
         from .delivery import Delivery
@@ -1304,7 +1306,7 @@ class VideoExecutor:
 
     @staticmethod
     def _service_for_route(route: str) -> str:
-        return ("comfyui" if route == "comfyui" else
+        return (route if route in {"comfyui", "google-flow"} else
                 "google" if route == "google" else "grok" if route == "grok" else "fal" if route == "fal" else
                 "h3-vdn" if route == "h3-vdn" else
                 "h3-sol" if route.startswith("h3-sol") else
@@ -1445,6 +1447,7 @@ class VideoExecutor:
                        "modes": ["reference_to_video"],
                        "resolutions": ["480p", "720p"]})
         routes.extend(self.higgsfield.capabilities())
+        routes.extend(self.google_flow.capabilities())
         routes.append({"route": "fal", "model": FAL_LIP_PUBLIC_MODEL,
                        "configured": self.fal.connected() and self.fal.lip_sync_declared(),
                        "readiness": "not_checked", "limit_scope": "adapter",
@@ -1459,7 +1462,7 @@ class VideoExecutor:
                 if entry.get("model"):
                     dynamic_models.append({"model": entry["model"], "routes": [channel],
                         "execution_state": entry["state"], "can_submit": entry.get("can_submit", False)})
-        external = {"fal", "grok", "google", "higgsfield"}
+        external = {"fal", "grok", "google", "higgsfield", "google-flow"}
         from .channel_specs import external_routes
         route_templates = [item for item in routes if item["route"] in external]
         routes = [item for item in routes if item["route"] not in external]
@@ -1709,7 +1712,7 @@ class VideoExecutor:
             check_image_guidance(image_guidance, service)
             if route != "higgsfield" and price_ceiling is not None:
                 raise ValueError("price_ceiling_not_supported")
-            if route not in {'fal', 'grok', 'google'} and (channel_account_id is not None or budget_limit is not None):
+            if route not in {'fal', 'grok', 'google', 'google-flow'} and (channel_account_id is not None or budget_limit is not None):
                 raise ValueError('channel_budget_not_supported')
             if route != "comfyui" and workflow_params is not None:
                 raise ValueError("unsupported_parameter")
@@ -1730,6 +1733,12 @@ class VideoExecutor:
                         resolution=resolution,
                         workflow_params=workflow_params,
                     )
+            if route == "google-flow":
+                with self.tasks.exclusive():
+                    return self.google_flow.generate(project_id=project_id, idempotency_key=idempotency_key,
+                        model=model, prompt=prompt, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
+                        references=references, quality_profile=quality_profile, mode=mode, resolution=resolution,
+                        budget_limit=budget_limit, channel_account_id=channel_account_id)
             if route == "higgsfield":
                 with self.tasks.exclusive():
                     return self.higgsfield.generate(project_id=project_id, idempotency_key=idempotency_key,
@@ -2559,6 +2568,8 @@ class VideoExecutor:
         record = self.tasks.get(video_task_id)
         if record.service == "comfyui":
             return self.comfyui.status(record)
+        if record.service == "google-flow":
+            return self.google_flow.status(record)
         if record.service == "higgsfield":
             return self.higgsfield.status(record)
         if record.service == "grok":
@@ -2854,6 +2865,8 @@ class VideoExecutor:
         record = self.tasks.get(video_task_id)
         if record.service == "comfyui":
             return self.comfyui.result(record)
+        if record.service == "google-flow":
+            return self.google_flow.result(record)
         if record.service == "higgsfield":
             return self.higgsfield.result(record)
         if record.service == "grok":

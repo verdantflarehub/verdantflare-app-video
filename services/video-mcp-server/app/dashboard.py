@@ -94,7 +94,7 @@ def task_channel(record):
 
 
 def channel_label(channel):
-    return {"local": "本地", "higgsfield": "Higgsfield", "fal": "fal.ai",
+    return {"local": "本地", "google-flow": "Google Flow", "higgsfield": "Higgsfield", "fal": "fal.ai",
             "grok": "xAI", "google": "Google", "unknown": "未记录渠道"}.get(channel, channel)
 
 
@@ -119,7 +119,7 @@ def task_presentation(record, catalog=None):
             "generation_label": "超分音视频：潜空间超分与音视频同步重生成（Video Super-Resolution to Video-Audio）",
         }
     local = {"h3", "h3-sol", "h3-vdn", "h3-fasth3", "h3-singularity"}
-    generating = record.service in local | {"comfyui", "fal", "grok", "google", "higgsfield"}
+    generating = record.service in local | {"comfyui", "fal", "grok", "google", "google-flow", "higgsfield"}
     route = record.request.get("route") or record.runtime_route or record.service
     channel = task_channel(record)
     local_channel = channel == "local"
@@ -151,7 +151,7 @@ def task_presentation(record, catalog=None):
     return {"is_generation": generating, "channel_id": channel,
             "model_label": label if generating else None,
             "channel_label": channel_label(channel) if (generating or local_channel) else None,
-            "channel_icon": "local" if local_channel else ("higgsfield" if (generating and route == "higgsfield") else None),
+            "channel_icon": "local" if local_channel else (route if generating and route in {"higgsfield", "google-flow"} else None),
             "generation_code": code, "generation_label": explanation}
 
 
@@ -349,7 +349,7 @@ class Dashboard:
         errors = 0
         for record in self.records():
             channel_pending = record.service == 'fal' and self.executor.fal._channel_record(record)
-            if record.status in {"queued", "running"} and (record.runtime_task_id or channel_pending or record.service in {"depth", "sr", "interpolate", "regenerate_2k", "h3-fasth3", "h3-singularity", "grok", "google", "higgsfield", "comfyui"}):
+            if record.status in {"queued", "running"} and (record.runtime_task_id or channel_pending or record.service in {"depth", "sr", "interpolate", "regenerate_2k", "h3-fasth3", "h3-singularity", "grok", "google", "google-flow", "higgsfield", "comfyui"}):
                 try:
                     self.executor.status(record.video_task_id)
                 except (ExecutionError, OSError, ValueError):
@@ -368,7 +368,7 @@ class Dashboard:
                 isinstance(pstate.get("_gpu_lease"), dict) or bool(pstate.get("waiting_reason"))
             ):
                 continue
-            if record.status == "queued" and not record.runtime_task_id and record.service not in {"depth", "sr", "interpolate", "regenerate_2k", "grok", "google", "higgsfield", "comfyui"}:
+            if record.status == "queued" and not record.runtime_task_id and record.service not in {"depth", "sr", "interpolate", "regenerate_2k", "grok", "google", "google-flow", "higgsfield", "comfyui"}:
                 self.executor.tasks.update(record, status="queued" if record.service in {"h3-fasth3", "h3-singularity"} else "failed", error={
                     "code": "submission_unconfirmed",
                     "message": "Submission interrupted; do not resubmit automatically"})
@@ -393,9 +393,9 @@ class Dashboard:
         for record in records:
             if not include_nsfw and tasks_store.is_record_nsfw(record, ratings_store):
                 continue
-            if record.service == "higgsfield":
+            if record.service in {"higgsfield", "google-flow"}:
                 try:
-                    self.executor.higgsfield.authorize_record(record)
+                    self.member_adapter(record).authorize_record(record)
                 except (PermissionError, ValueError, httpx.HTTPError):
                     continue
             if record.service == "fal":
@@ -490,8 +490,8 @@ class Dashboard:
         record = tasks_store.get(task_id)
         if not include_nsfw and tasks_store.is_record_nsfw(record, ratings_store):
             raise TaskNotFound(f"NOT_FOUND: {task_id}")
-        if record.service == "higgsfield":
-            self.executor.higgsfield.authorize_record(record)
+        if record.service in {"higgsfield", "google-flow"}:
+            self.member_adapter(record).authorize_record(record)
         if record.service == "fal":
             self.executor.fal.authorize_record(record)
         value = self._public_task(record, tasks_store)
@@ -509,9 +509,12 @@ class Dashboard:
         artifact_id = (record.delivery or {}).get("final_artifact_id") or record.artifact_id
         if artifact_id:
             value["artifact"] = artifacts_store.get(artifact_id, record.project_id).model_dump()
-        if record.service == "higgsfield" and record.status == "succeeded":
-            value.update(self.executor.higgsfield.public_result(record))
+        if record.service in {"higgsfield", "google-flow"} and record.status == "succeeded":
+            value.update(self.member_adapter(record).public_result(record))
         return value
+
+    def member_adapter(self, record):
+        return self.executor.google_flow if record.service == "google-flow" else self.executor.higgsfield
 
     def thumbnail(self, task_id, request=None):
         tasks_store, artifacts_store, ratings_store = self._stores(request)
@@ -519,20 +522,20 @@ class Dashboard:
         record = tasks_store.get(task_id)
         if not include_nsfw and tasks_store.is_record_nsfw(record, ratings_store):
             raise TaskNotFound(f"NOT_FOUND: {task_id}")
-        if record.service == "higgsfield":
-            self.executor.higgsfield.authorize_record(record)
+        if record.service in {"higgsfield", "google-flow"}:
+            self.member_adapter(record).authorize_record(record)
         if record.service == "fal":
             self.executor.fal.authorize_record(record)
         if record.status != "succeeded":
             return JSONResponse({"error": "preview_unavailable"}, status_code=404)
-        native = record.service == "higgsfield"
+        native = record.service in {"higgsfield", "google-flow"}
         artifact_id = (record.delivery or {}).get("final_artifact_id") or record.artifact_id
         if native:
             digest = (record.media or {}).get("sha256")
             if not digest:
                 return JSONResponse({"error": "preview_unavailable"}, status_code=404)
             try:
-                source_path = self.executor.higgsfield.content_path(record)
+                source_path = self.member_adapter(record).content_path(record)
             except (ArtifactNotFound, FileNotFoundError):
                 return JSONResponse({"error": "preview_unavailable"}, status_code=404)
             except (ExecutionError, ArtifactError, OSError, ValueError):
@@ -627,9 +630,9 @@ class Dashboard:
                 record = tasks_store.get(request.path_params["task_id"])
                 if not include_nsfw and tasks_store.is_record_nsfw(record, ratings_store):
                     return JSONResponse({"error": "not_found"}, status_code=404)
-                if record.service != "higgsfield":
+                if record.service not in {"higgsfield", "google-flow"}:
                     return JSONResponse({"error": "not_found"}, status_code=404)
-                path = await run_in_threadpool(self.executor.higgsfield.content_path, record)
+                path = await run_in_threadpool(self.member_adapter(record).content_path, record)
                 digest = (record.media or {}).get("sha256") or record.video_task_id
                 etag = f'"{digest}"'
                 cache_headers = {
@@ -673,8 +676,8 @@ class Dashboard:
                         from .delivery import CALLER
                         if CALLER.get() is not None or os.getenv("VIDEO_PROJECT_SERVICE_URL", "").strip():
                             self.executor.comfyui.authorize_record(record, require_write=False)
-                    if record.service == "higgsfield":
-                        self.executor.higgsfield.authorize_record(record)
+                    if record.service in {"higgsfield", "google-flow"}:
+                        self.member_adapter(record).authorize_record(record)
                     if record.service == "fal":
                         self.executor.fal.authorize_record(record)
                     self.executor.result(request.path_params["task_id"])
@@ -763,11 +766,11 @@ class Dashboard:
                         else inputs.route
                     )
                     service = ("comfyui" if effective_route == "comfyui" else
-                               "higgsfield" if effective_route == "higgsfield" else "google" if effective_route == "google" else "grok" if effective_route == "grok" else "fal" if effective_route == "fal" else
+                               effective_route if effective_route in {"higgsfield", "google-flow"} else "google" if effective_route == "google" else "grok" if effective_route == "grok" else "fal" if effective_route == "fal" else
                                "h3-sol" if effective_route.startswith("h3-sol") else
                                "h3-fasth3" if effective_route == "h3-fasth3" else
                                "h3-singularity" if effective_route == "h3-singularity" else "h3")
-                    if service not in {"comfyui", "h3", "h3-sol", "h3-fasth3", "h3-singularity", "fal", "grok", "google", "higgsfield"}:
+                    if service not in {"comfyui", "h3", "h3-sol", "h3-fasth3", "h3-singularity", "fal", "grok", "google", "google-flow", "higgsfield"}:
                         return JSONResponse({"error": "service_not_connected"}, status_code=409)
                     if service == "comfyui" and not self.executor.comfyui.configured():
                         return JSONResponse({"error": "service_not_connected"}, status_code=409)

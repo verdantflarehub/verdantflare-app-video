@@ -680,7 +680,7 @@ def video_preflight(project_id: str, prompt: str = "",
     norm_post = normalize_postprocess(postprocess, selected)
     if selected != "comfyui" and workflow_params is not None:
         raise ValueError("unsupported_parameter")
-    if selected not in {'fal', 'grok', 'google'} and (channel_account_id is not None or budget_limit is not None):
+    if selected not in {'fal', 'grok', 'google', 'google-flow'} and (channel_account_id is not None or budget_limit is not None):
         raise ValueError('channel_budget_not_supported')
     if selected != 'higgsfield' and price_ceiling is not None:
         raise ValueError('channel_budget_not_supported')
@@ -697,6 +697,11 @@ def video_preflight(project_id: str, prompt: str = "",
             quality_profile=quality_profile,
             workflow_params=workflow_params,
         ))
+    if selected == "google-flow":
+        return _result(executor.google_flow.preflight(project_id=require_project_id(project_id),
+            prompt=prompt, model=model, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
+            references=references, mode=mode, resolution=resolution, quality_profile=quality_profile,
+            budget_limit=budget_limit, channel_account_id=channel_account_id))
     if selected == "higgsfield":
         executor.higgsfield.authorize(project_id)
         request, digest = executor.higgsfield.normalize(project_id=require_project_id(project_id),
@@ -880,6 +885,8 @@ def video_cancel(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
         raise TaskNotFound(f"NOT_FOUND: {tid}")
     if existing.service == "comfyui":
         executor.comfyui.authorize_record(existing, require_write=True)
+    if existing.service == "google-flow":
+        executor.google_flow.authorize_record(existing)
     if existing.service == "higgsfield":
         executor.higgsfield.authorize_record(existing)
     if existing.service == "fal":
@@ -910,6 +917,8 @@ def video_status(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
         raise TaskNotFound(f"NOT_FOUND: {tid}")
     if existing.service == 'comfyui':
         executor.comfyui.authorize_record(existing, require_write=False)
+    if existing.service == 'google-flow':
+        executor.google_flow.authorize_record(existing)
     if existing.service == 'higgsfield':
         executor.higgsfield.authorize_record(existing)
     if existing.service == 'fal':
@@ -952,6 +961,8 @@ def video_result(video_task_id: str = "", task_id: str = "", execution_proof_onl
         return _result({'execution_proof': proof(existing, a_store)})
     if existing.service == 'comfyui':
         executor.comfyui.authorize_record(existing, require_write=False)
+    if existing.service == 'google-flow':
+        executor.google_flow.authorize_record(existing)
     if existing.service == 'higgsfield':
         executor.higgsfield.authorize_record(existing)
     if existing.service == 'fal':
@@ -966,6 +977,8 @@ def video_result(video_task_id: str = "", task_id: str = "", execution_proof_onl
         record = existing
     if _is_task_nsfw(record):
         raise TaskNotFound(f"NOT_FOUND: {tid}")
+    if record.service == 'google-flow':
+        return _result({**executor.google_flow.public_result(record), **titles.project(t_store, record)})
     if record.service == 'higgsfield':
         return _result({**executor.higgsfield.public_result(record), **titles.project(t_store, record)})
     if record.service in executor.processing:
@@ -1154,7 +1167,7 @@ def transport_security_from_environment() -> TransportSecuritySettings:
 async def health(request: Request) -> JSONResponse:
     artifacts.ensure_ready(); tasks.ensure_ready(); ratings.ensure_ready()
     return JSONResponse({"status": "ok", "contract_version": "v1", "version": __version__,
-                         "channels": {"higgsfield": executor.higgsfield.channel_health()}})
+                         "channels": {"higgsfield": executor.higgsfield.channel_health(), "google-flow": executor.google_flow.channel_health()}})
 
 
 async def artifact_content(request: Request) -> Response:

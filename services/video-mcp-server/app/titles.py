@@ -124,6 +124,8 @@ def rename(executor, task_id, title, expected_title_revision):
     if not actor or not all(actor.get(k) for k in ('user_id', 'organization_id')):
         raise PermissionError('verified Studio identity required')
     record = executor.tasks.get(task_id)
+    if record.service == 'google-flow':
+        executor.google_flow.authorize_record(record)
     if record.service == 'higgsfield':
         executor.higgsfield.authorize_record(record)
     authorize(executor.client, record.project_id)

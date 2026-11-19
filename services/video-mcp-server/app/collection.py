@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from .tasks import TaskRecord
 from .artifacts import ArtifactError
 
-MANAGED_COLLECTORS = {"higgsfield", "grok", "google", "h3-latent-upscale", "comfyui"}
+MANAGED_COLLECTORS = {"google-flow", "higgsfield", "grok", "google", "h3-latent-upscale", "comfyui"}
 
 
 def public_collection(record):

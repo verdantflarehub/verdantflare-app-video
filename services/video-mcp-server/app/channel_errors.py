@@ -204,7 +204,7 @@ def safe_code(code, source):
 class ChannelError(ValueError):
     def __init__(self, code, *, source, http_status=None, accepted=None, message=None, retryable=None):
         self.code = code if safe_code(code, source) else "channel_http_error"
-        self.source = source if source in {"higgsfield", "fal", "grok", "google", "video"} else "video"
+        self.source = source if source in {"higgsfield", "fal", "grok", "google", "google-flow", "video"} else "video"
         self.http_status = http_status
         self.accepted = accepted if type(accepted) is bool else None
         self.message = message

@@ -190,7 +190,7 @@ class TaskStore:
         now = datetime.now(UTC).isoformat()
         if request.get("service") in {"depth", "sr", "interpolate", "regenerate_2k", "h3-latent-upscale"}:
             service = str(request["service"])
-        elif request.get("route") in {"fal", "grok", "higgsfield"}:
+        elif request.get("route") in {"fal", "grok", "higgsfield", "google-flow"}:
             service = str(request["route"])
         elif request.get("service") == "h3-sol":
             service = "h3-sol"
