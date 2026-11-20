@@ -161,7 +161,10 @@ class ImportStore:
                     digest.update(block)
             if path.stat().st_size != meta["size"] or digest.hexdigest() != meta["sha256"]:
                 raise ValueError("import_final_size_or_hash_mismatch")
-            media = self.validate_media(path, meta["media_type"])
+            if meta["purpose"] == "character_swap_source" and meta["media_type"] == "video/mp4":
+                media = self.validate_media(path, meta["media_type"], character_swap_source=True)
+            else:
+                media = self.validate_media(path, meta["media_type"])
             # A crash between publishing the artifact and committing SQLite
             # must recover the preassigned identity rather than duplicate it.
             final = self.artifacts.artifacts_root / row["artifact_id"]

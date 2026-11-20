@@ -13,7 +13,7 @@ MAX_VIDEO_PIXELS = 4096 * 2160
 MAX_DECODED_VIDEO_PIXELS = 1_000_000_000
 
 
-def validate_reference_media(path: Path, media_type: str) -> dict:
+def validate_reference_media(path: Path, media_type: str, *, character_swap_source: bool = False) -> dict:
     try:
         result = subprocess.run([
             "ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path),
@@ -44,8 +44,12 @@ def validate_reference_media(path: Path, media_type: str) -> dict:
                     media["width"], media["height"] = height, width
         else:
             duration = float(probe["format"]["duration"])
-            if not 2 <= duration <= 15.001:
-                raise ValueError("reference_duration_must_be_2_to_15_seconds")
+            swap_video = character_swap_source and kind == "video"
+            minimum = 1 if swap_video else 2
+            maximum = 362 / 24 + 0.001 if swap_video else 15.001
+            if not minimum <= duration <= maximum:
+                raise ValueError("source_duration_out_of_range" if swap_video else
+                                 "reference_duration_must_be_2_to_15_seconds")
             media["duration_seconds"] = duration
             if kind == "video":
                 if video["codec_name"] not in {"h264", "hevc"} or "mp4" not in probe["format"]["format_name"]:
@@ -56,8 +60,9 @@ def validate_reference_media(path: Path, media_type: str) -> dict:
                 media["source_fps"] = fps
                 media["conditioning_fps"] = 24
                 video_duration = float(video.get("duration", duration))
-                if not 2 <= video_duration <= 15.001:
-                    raise ValueError("reference_video_duration_must_be_2_to_15_seconds")
+                if not minimum <= video_duration <= maximum:
+                    raise ValueError("source_duration_out_of_range" if swap_video else
+                                     "reference_video_duration_must_be_2_to_15_seconds")
                 media["video_duration_seconds"] = video_duration
                 media["resampled_frames"] = math.ceil(video_duration * 24 - 1e-6)
                 rotation = float(next((item["rotation"] for item in video.get("side_data_list", []) if "rotation" in item), 0))
