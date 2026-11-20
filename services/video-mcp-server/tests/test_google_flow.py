@@ -7,6 +7,7 @@ import subprocess
 import secrets
 import tempfile
 import unittest
+import uuid
 from unittest.mock import patch
 
 import httpx
@@ -65,7 +66,7 @@ class GoogleFlowTests(unittest.TestCase):
             data = json.loads(req.content)
             self.prepares.append(data["write_id"])
             self.assertEqual(data["source"], {"kind":"task_output","service_id":"video","run_id":self.key,
-                                             "task_id":self.call,"project_id":self.project})
+                                             "task_id":str(uuid.UUID(self.call)),"project_id":self.project})
             self.source = data["source"]
             phase, result = "prepare", {"upload_id":self.upload}
         elif path.endswith(self.upload):

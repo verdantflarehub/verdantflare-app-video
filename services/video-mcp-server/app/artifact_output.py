@@ -19,8 +19,11 @@ def uuid7():
 
 
 def source(record):
+    task_id = record.runtime_task_id
+    if isinstance(task_id, str) and re.fullmatch(r"[0-9a-f]{32}", task_id):
+        task_id = str(uuid.UUID(task_id))
     return {"kind": "task_output", "service_id": "video", "project_id": record.project_id,
-            "run_id": record.video_task_id, "task_id": record.runtime_task_id}
+            "run_id": record.video_task_id, "task_id": task_id}
 
 
 def validate_media(media):
