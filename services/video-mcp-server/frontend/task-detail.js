@@ -148,12 +148,15 @@ function renderReferences(task, version) {
   ];
   const pending = [];
   $("referenceGroups").replaceChildren();
-  for (const [kind, heading, emptyNoun, prefix, limit, unit, quotaLabel, gridClass] of definitions) {
+  for (const [kind, heading, emptyNoun, prefix, globalLimit, unit, globalLabel, gridClass] of definitions) {
+    const modelLimit = task.reference_limits?.[kind];
+    const limit = Number.isInteger(modelLimit) ? modelLimit : globalLimit;
+    const quotaLabel = Number.isInteger(modelLimit) ? `本模型上限 ${limit} ${unit}` : globalLabel;
     const references = (task.references || []).filter(ref => ref.kind === kind);
     const group = document.createElement("section");
     group.className = "reference-group input-factor-section";
     group.dataset.factorKind = kind;
-    group.innerHTML = `<div class="factor-header pane-title"><h3>${heading} <small>（${quotaLabel}，不同模型上限不同）</small></h3><span class="factor-quota ${references.length === 0 ? "empty" : ""}">${references.length} / ${limit} ${unit}</span></div>`;
+    group.innerHTML = `<div class="factor-header pane-title"><h3>${heading} <small>（${quotaLabel}）</small></h3><span class="factor-quota ${references.length === 0 ? "empty" : ""}">${references.length} / ${limit} ${unit}</span></div>`;
     if (!references.length) {
       const empty = document.createElement("div");
       empty.className = "empty-factor-box ref-empty-box";
@@ -333,6 +336,23 @@ async function refreshTaskDetail(id, version) {
   }
   if (task.service === "google-flow") {
     rows.push(["渠道调用 ID", task.runtime_task_id || "待确认"], ["预计积分", task.quoted_credits ?? "未知"], ["实际积分", task.actual_credits ?? "未知"]);
+  }
+  if (task.service === "character_swap") {
+    rows.push(["换人 LoRA 版本", task.character_lora_version], ["LoRA 强度", task.lora_strength],
+      ["8 步 Turbo 变体", task.turbo_variant], ["分辨率档位", task.resolution_preset],
+      ["源视频 Artifact ID", task.source_artifact_id], ["角色参考图 Artifact ID", task.character_image_artifact_id]);
+    const metrics = task.runtime_metrics || {};
+    if (metrics.output_frames != null) {
+      const buckets = metrics.window_buckets;
+      if (Array.isArray(buckets) && buckets.length) {
+        rows.push(["帧数（归一化源 / 各窗采样桶 / 输出）",
+          `${metrics.source_frames} / ${buckets.join(" + ")} / ${metrics.output_frames}`]);
+      } else {
+        rows.push(["帧数（源 / 输出）", `${metrics.source_frames} / ${metrics.output_frames}`]);
+      }
+    }
+    if (metrics.audio_mode) rows.push(["音轨", metrics.audio_mode === "copy" ? "AAC 原音流复制" : "静音"]);
+    if (metrics.prompt_warning) rows.push(["提示词建议", metrics.prompt_warning]);
   }
   if (task.quality_profile) rows.push(["质量档位", task.quality_profile]);
   const gridMode = task.grid_mode || task.delivery?.grid_mode;

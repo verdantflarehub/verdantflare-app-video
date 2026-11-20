@@ -92,11 +92,11 @@ const taskStatusLabel = (task) => {
 };
 const generationTimeHint = "按服务端确认 Higgsfield 完成的时间计算；官方 CLI 未提供精确完成时间。";
 // Display metadata is shared by the list and detail API; raw IDs stay in task records.
-const generationServices = new Set(["h3", "h3-sol", "h3-vdn", "h3-fasth3", "h3-singularity", "regenerate_2k", "fal", "grok", "google", "google-flow", "higgsfield"]);
+const generationServices = new Set(["h3", "h3-sol", "h3-vdn", "h3-fasth3", "h3-singularity", "regenerate_2k", "character_swap", "fal", "grok", "google", "google-flow", "higgsfield"]);
 const localProcessingServices = new Set(["h3-latent-upscale", "sr", "interpolate", "depth"]);
 const serviceDisplayNames = {
   "h3-latent-upscale": "H3 Latent Upscaler", sr: "Video Super Resolution",
-  interpolate: "Frame Interpolation", regenerate_2k: "H3 Regenerate 2K", depth: "Depth Anything",
+  interpolate: "Frame Interpolation", regenerate_2k: "H3 Regenerate 2K", character_swap: "H3-Character-Swap", depth: "Depth Anything",
 };
 const taskModel = (task) => generationServices.has(task.service) ? task.presentation?.model_label || "未记录模型" : "";
 const taskRoute = (task) =>
@@ -135,6 +135,7 @@ const taskOperation = (task) =>
     fal: "视频生成",
     "h3-latent-upscale": "H3 潜空间超分",
     regenerate_2k: "2K 潜空间重生成",
+    character_swap: "视频角色替换",
     sr: "视频超分",
     interpolate: "视频补帧",
     depth: "深度视频",

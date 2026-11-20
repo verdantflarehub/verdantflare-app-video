@@ -49,7 +49,7 @@ H3_DURATION_TOLERANCE_MS = 1000
 MAX_INLINE_IMAGE_BYTES = 3 * 1024 * 1024
 MODERN_H3_SERVICES = {"h3-fasth3", "h3-singularity"}
 LOCAL_H3_SERVICES = {"h3", "h3-vdn", "h3-sol", *MODERN_H3_SERVICES}
-LOCAL_GPU_SERVICES = LOCAL_H3_SERVICES | {"regenerate_2k", "interpolate", "sr", "depth", "h3-latent-upscale"}
+LOCAL_GPU_SERVICES = LOCAL_H3_SERVICES | {"regenerate_2k", "character_swap", "interpolate", "sr", "depth", "h3-latent-upscale"}
 TERMINAL_TASK_STATUS = {"succeeded", "failed", "cancelled", "canceled"}
 
 
@@ -149,6 +149,8 @@ class VideoExecutor:
         if os.environ.get('VIDEO_PROJECT_CA_FILE'):
             trust.load_verify_locations(os.environ['VIDEO_PROJECT_CA_FILE'])
         self.client = client or httpx.Client(timeout=httpx.Timeout(connect=10, read=3600, write=600, pool=10), follow_redirects=False, verify=trust)
+        from .character_swap import EngineJournal
+        self.engine_journal = EngineJournal(self.tasks.db_path)
         self.gpu = GpuCoordinator.from_environment()
         self.stage_slot = LocalGpuStageSlot.from_environment(self.tasks)
         journal_dir = getattr(self.tasks, "root", None) or (
@@ -161,7 +163,7 @@ class VideoExecutor:
         from .depth import DepthExecutor
         self.depth = DepthExecutor(self)
         from .processing import ProcessingExecutor
-        self.processing = {name: ProcessingExecutor(self, name) for name in ("sr", "interpolate", "regenerate_2k")}
+        self.processing = {name: ProcessingExecutor(self, name) for name in ("sr", "interpolate", "regenerate_2k", "character_swap")}
         from .h3_latent import H3LatentExecutor
         self.processing["h3-latent-upscale"] = H3LatentExecutor(self)
         from .providers.fal import FalAdapter
@@ -539,6 +541,7 @@ class VideoExecutor:
 
         endpoint_map = {
             "regenerate_2k": "regenerate-2k",
+                "character_swap": "character-swap",
             "interpolate": "interpolate",
             "sr": "sr",
             "depth": "depth",
@@ -831,6 +834,56 @@ class VideoExecutor:
             seal_proof=seal_proof,
         )
 
+    def wake_int8(self, service, url, headers):
+        if not self.gpu.enabled or not self.scheduler.enabled:
+            return None
+        self.engine_journal.wake(self.gpu, service, time.time())
+        deadline = time.monotonic() + int(os.getenv("VIDEO_ENGINE_READY_TIMEOUT_SECONDS", "180"))
+        while time.monotonic() < deadline:
+            try:
+                response = self.client.get(f"{url}/health", headers=headers, timeout=5)
+                data = response.json() if response.status_code == 200 else {}
+                identity = data.get("runtime_identity")
+                profiles = data.get("capabilities", {}).get(service + "_profiles", [])
+                if (data.get("ready") is True and self.processing[service].backend in profiles
+                        and self._has_concrete_runtime_identity(identity)):
+                    if self.engine_journal.generation(service) is None:
+                        self.recover_ready_engine(service, identity["pod_uid"])
+                    self.engine_journal.observed(service, "woken_pod_uid", identity["pod_uid"])
+                    return identity
+            except (httpx.HTTPError, TypeError, ValueError):
+                pass
+            time.sleep(1)
+        raise ExecutionError("runtime_not_ready")
+
+    def reconcile_pending_grant(self, record, attempt_id, service, target_identity, leases, *, resume):
+        matches = sorted((item for item in leases
+            if item.get("holder_task_id") == record.video_task_id and item.get("stage_id") == service
+            and item.get("attempt_id") == attempt_id and item.get("state") not in {"expired", "released"}),
+            key=lambda item: (int(item.get("fencing_token") or 0), int(item.get("version") or 0)))
+        retained = None
+        for lease in matches:
+            if (resume and lease is matches[-1] and record.status == "queued"
+                    and not (record.provider_state or {}).get("gpu_dispatched")
+                    and target_identity and lease.get("pod_uid") == target_identity.get("pod_uid")):
+                retained = lease
+                continue
+            if (record.provider_state or {}).get("gpu_dispatched") and record.status not in TERMINAL_TASK_STATUS:
+                raise ExecutionError("gpu_admission_reconciliation_required")
+            options = dict(worker_settled=False, reclaim_mode="abort_unstarted")
+            if self._is_lease_identity_bound(lease):
+                proof, epoch = self.fetch_receiver_reclaim_proof(service, record, lease)
+                if not proof or any(proof.get("sealed_" + k) != lease.get(k)
+                                    for k in ("pod_uid", "container_id", "boot_id")):
+                    raise ExecutionError("gpu_admission_reconciliation_required")
+                options.update(worker_settled=True, reclaim_mode="epoch_unload", reclaim_proof=proof,
+                               current_identity=lease, gpu_epoch=epoch or 0)
+            receipt = self.scheduler.release(lease["lease_id"], fencing_token=lease["fencing_token"],
+                                             expected_version=lease.get("version", 0), **options)
+            if not SchedulerLeaseClient._is_confirmed_release_receipt(lease["lease_id"], receipt):
+                raise ExecutionError("gpu_admission_reconciliation_required")
+        return retained
+
     def acquire_scheduler_grant(
         self,
         record: TaskRecord,
@@ -900,6 +953,7 @@ class VideoExecutor:
         elapsed = max(0.0, now_wall - q_wall) if q_wall is not None else 0.0
 
         attempt_id = str(pstate.get("_gpu_attempt_id") or f"att-{record.video_task_id[-12:]}")
+        journaled = service in {"regenerate_2k", "character_swap"} and self.gpu.enabled
         try:
             if (
                 isinstance(existing_lease, dict)
@@ -909,13 +963,16 @@ class VideoExecutor:
             ):
                 dec = self.scheduler.get_lease(str(existing_lease["lease_id"]))
             else:
-                dec = self.scheduler.acquire(
-                    record.video_task_id,
-                    service,
-                    attempt_id=attempt_id,
-                    runtime_identity=target_ident,
-                    bind_identity=bind_immediately,
-                )
+                options = dict(attempt_id=attempt_id, runtime_identity=target_ident, bind_identity=bind_immediately)
+                if journaled:
+                    options, fresh = self.engine_journal.stage_acquire(record.video_task_id, attempt_id, service, options)
+                    recovered = None if fresh else self.reconcile_pending_grant(
+                        record, attempt_id, service, target_ident, self.scheduler.list_leases(), resume=True)
+                    if not recovered and options.get("runtime_identity") != target_ident:
+                        raise ExecutionError("gpu_admission_reconciliation_required")
+                    dec = recovered or self.scheduler.acquire(record.video_task_id, service, **options)
+                else:
+                    dec = self.scheduler.acquire(record.video_task_id, service, **options)
         except SchedulerError as exc:
             raise ExecutionError(f"GPU scheduler acquire failed ({exc.code})") from exc
 
@@ -926,6 +983,9 @@ class VideoExecutor:
         pstate["_gpu_target_identity"] = target_ident
         pstate.pop("_gpu_lease_released", None)
 
+        if journaled:
+            record = self.tasks.update(record, provider_state=pstate)
+            self.engine_journal.confirm_acquire(record.video_task_id, attempt_id, service)
         if str(dec.get("state") or "").strip().lower() in {"expired", "revoked", "released"}:
             record = self.tasks.update(record, provider_state=pstate)
             return False, self._expired_scheduler_admission(record, dec), {}
@@ -2190,7 +2250,119 @@ class VideoExecutor:
             except Exception:
                 logging.getLogger(__name__).warning("Expired admission reconciliation deferred: %s", path.stem)
 
+    def recover_ready_engine(self, service, uid):
+        if not self.tasks.root.is_dir() or self.engine_journal.pending(service):
+            raise ExecutionError("engine_generation_requires_reconciliation")
+        for path in self.tasks.root.iterdir():
+            if not path.match("video_task_*.json"):
+                continue
+            task = TaskRecord.model_validate_json(path.read_bytes())
+            ps = task.provider_state or {}
+            if service in {task.service, ps.get("_gpu_active_service"), (task.delivery or {}).get("stage")}:
+                if ps.get("gpu_dispatched") and task.status not in TERMINAL_TASK_STATUS:
+                    raise ExecutionError("engine_generation_requires_reconciliation")
+                if ps.get("_gpu_lease_owned") and not ps.get("_gpu_lease_released"):
+                    raise ExecutionError("engine_generation_requires_reconciliation")
+        if any(l.get("stage_id") == service and l.get("state") not in {"expired", "released"}
+               for l in self.scheduler.list_leases()):
+            raise ExecutionError("engine_generation_requires_reconciliation")
+        self.engine_journal.recover_ready_generation(service, uid, time.time())
+
+    def retire_idle_engine(self, service, *, rollback=False):
+        if not self.gpu.enabled or not self.scheduler.enabled:
+            return
+        journal = self.engine_journal
+        state = journal.generation(service)
+        if self.gpu.engine_replicas(service) != 1:
+            return
+        with self._lock:
+            if not state:
+                url, headers = self._resolve_service_runtime_target(service)
+                response = self.client.get(f"{url}/health", headers=headers, timeout=5)
+                health = response.json() if response.status_code == 200 else {}
+                identity = health.get("runtime_identity")
+                if health.get("ready") is True and self._has_concrete_runtime_identity(identity):
+                    self.recover_ready_engine(service, identity["pod_uid"])
+                return
+            self.scheduler.flush_pending_releases()
+            with self.scheduler._journal_lock:
+                if self.scheduler._pending_releases:
+                    return
+            owners = set()
+            latest = state["last_active"]
+            if not self.tasks.root.is_dir():
+                return
+            for pending in journal.pending(service):
+                task = self.tasks.get(pending["task_id"])
+                if task.status not in TERMINAL_TASK_STATUS:
+                    return
+                self.reconcile_pending_grant(task, pending["attempt_id"], service, None,
+                                             self.scheduler.list_leases(), resume=False)
+                journal.confirm_acquire(task.video_task_id, pending["attempt_id"], service)
+            for path in self.tasks.root.iterdir():
+                if not path.match("video_task_*.json"):
+                    continue
+                rec = TaskRecord.model_validate_json(path.read_bytes())
+                ps = rec.provider_state or {}
+                pipeline = rec.delivery or {}
+                if rec.service != service and ps.get("_gpu_active_service") != service and pipeline.get("stage") != service:
+                    continue
+                owners.add(rec.video_task_id)
+                if self.collector.eligible(rec) or (rec.collection or {}).get("state") in {"downloading", "retry_wait"}:
+                    return
+                if rec.status not in TERMINAL_TASK_STATUS or pipeline.get("status") in {"queued", "running"}:
+                    return
+                if ps.get("worker_settled") is False or (ps.get("_gpu_lease_owned") and not ps.get("_gpu_lease_released")):
+                    return
+                if rec.completed_at:
+                    latest = max(latest, datetime.fromisoformat(rec.completed_at).timestamp())
+            with self._state_guard:
+                if owners.intersection(self._submitting_tasks) and not rollback:
+                    return
+            with self.collector.lock:
+                if owners.intersection(self.collector.active):
+                    return
+            if not rollback and time.time() - latest < self.gpu.idle_seconds:
+                return
+            for lease in self.scheduler.list_leases():
+                if lease.get("state") not in {"expired", "released"} and (
+                    lease.get("stage_id") == service or lease.get("holder_task_id") in owners
+                    or lease.get("consumer_kind") == "video." + service):
+                    return
+            from contextlib import closing
+            with closing(journal.connect()) as db, db:
+                db.execute("BEGIN IMMEDIATE")
+                current = db.execute("SELECT * FROM engine_scale_state WHERE service=?", (service,)).fetchone()
+                if not current or dict(current) != state:
+                    return
+                if db.execute("SELECT 1 FROM pending_lease_acquires WHERE service=? LIMIT 1", (service,)).fetchone():
+                    return
+                url, headers = self._resolve_service_runtime_target(service)
+                try:
+                    resp = self.client.get(f"{url}/health", headers=headers, timeout=5)
+                    body = resp.json() if resp.status_code == 200 else None
+                except (ValueError, httpx.HTTPError):
+                    body = None
+                if body is None:
+                    if db.execute("SELECT 1 FROM recovered_engine_generations WHERE service=? AND generation=?",
+                                  (service, state["generation"])).fetchone():
+                        return
+                    if state["bound_pod_uid"] or state["dispatched_pod_uid"]:
+                        return
+                elif (not isinstance(body, dict) or body.get("gpu_worker_active") is not False
+                      or body.get("active_task_ids") != [] or body.get("reap_stalled") is True
+                      or not state["woken_pod_uid"]
+                      or (body.get("runtime_identity") or {}).get("pod_uid") != state["woken_pod_uid"]):
+                    return
+                self.gpu.scale_engine(service, 0)
+
     def reconcile_gpu(self) -> None:
+        if self.gpu.enabled and self.scheduler.enabled:
+            for engine in ("regenerate_2k", "character_swap"):
+                try:
+                    self.retire_idle_engine(engine)
+                except Exception:
+                    logging.getLogger(__name__).exception("Engine idle reconciliation deferred for %s", engine)
         if self.scheduler.enabled:
             self.reconcile_expired_admissions()
             try:

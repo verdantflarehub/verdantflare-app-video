@@ -127,7 +127,8 @@
     ? knownParameterText(entry.model.description).replace(/^fal 官方 /, '') : entry.model.description;
   function inputGuidance(entries) {
     const rows = entries.map(entry => {
-      const p = (entry.model.supplier_profiles || []).find(profile => profile.input_guidance);
+      const p = (entry.model.team_profiles || []).find(profile => profile.input_guidance)
+        || (entry.model.supplier_profiles || []).find(profile => profile.input_guidance);
       if (!p) return '';
       const g = p.input_guidance;
       let source;

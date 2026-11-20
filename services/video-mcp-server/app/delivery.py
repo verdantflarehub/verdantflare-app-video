@@ -222,11 +222,17 @@ class Delivery:
         return result
 
     def regenerate_capability(self):
+        return self._int8_capability('regenerate_2k')
+
+    def character_swap_capability(self, *, character_lora_version='v1.5', turbo_variant='fl2v_turbo_8step'):
+        return self._int8_capability('character_swap', character_lora_version, turbo_variant)
+
+    def _int8_capability(self, service, character_lora_version=None, turbo_variant=None):
         project_configured = bool(
             os.environ.get('VIDEO_PROJECT_SERVICE_URL')
             and os.environ.get('VIDEO_PROJECT_SERVICE_TOKEN')
         )
-        adapter = self.executor.processing['regenerate_2k']
+        adapter = self.executor.processing[service]
         runtime_url = ''
         runtime_headers: dict[str, str] = {}
         runtime_version = adapter.runtime_version
@@ -247,20 +253,48 @@ class Delivery:
             'default_enabled': False,
             'configured': configured,
             'readiness': 'not_configured' if not configured else 'unreachable',
+            'reason': 'not_configured' if not configured else 'unreachable',
+            'backend_ready': False,
+            'wake_on_task': False,
+            'orchestration_alive': False,
             'runtime_version': runtime_version,
         }
+        if service == 'character_swap':
+            result.update(profile='h3_character_swap_lora', backend='h3_character_swap_lora',
+                          character_lora_versions=['v1.5', 'v1'], resolution_presets=['768p', '480p'],
+                          turbo_variants=['fl2v_turbo_8step', 'pika_h3_flex_turbo_8step_hd_ref2va'])
+            for key in ('grid_modes', 'default_grid_mode', 'generation_routes'):
+                result.pop(key)
         if not configured:
             return result
+        gpu = self.executor.gpu
+        if gpu.enabled and gpu.api is not None:
+            try:
+                if gpu.engine_replicas(service) == 0:
+                    result.update(readiness='scaled_to_zero', reason='scaled_to_zero',
+                                  wake_on_task=True, orchestration_alive=True)
+                    return result
+            except httpx.HTTPStatusError as exc:
+                reason = 'rbac_denied' if exc.response.status_code in {401, 403} else 'k8s_unreachable'
+                result.update(readiness=reason, reason=reason)
+                return result
+            except (OSError, RuntimeError, ValueError, httpx.HTTPError):
+                result.update(readiness='k8s_unreachable', reason='k8s_unreachable')
+                return result
+        result['orchestration_alive'] = True
         try:
             response = adapter.client.get(f'{runtime_url}/health', headers=runtime_headers, timeout=5)
             data = response.json()
             if response.status_code == 200 and isinstance(data, dict) and data.get('ready') is True:
                 caps = data.get('capabilities')
-                if isinstance(caps, dict):
-                    supported = caps.get('regenerate_2k_profiles')
-                    ready = isinstance(supported, list) and 'open_h3_2k_ic' in supported
-                else:
+                supported = (caps or {}).get(service + '_profiles', []) if isinstance(caps, dict) else []
+                ready = isinstance(supported, list) and result['profile'] in supported
+                if service == 'character_swap' and ready:
+                    ready = all(isinstance(caps.get(key), list) and value in caps[key] for key, value in (
+                        ('character_lora_versions', character_lora_version), ('turbo_variants', turbo_variant)))
+                if service == 'regenerate_2k' and not isinstance(caps, dict):
                     ready = True
+                result['backend_ready'] = ready
                 result['readiness'] = 'ready' if ready else 'not_ready'
                 if isinstance(data.get('runtime_version'), str):
                     result['runtime_version'] = data['runtime_version']
@@ -268,6 +302,7 @@ class Delivery:
                 result['readiness'] = 'not_ready'
         except (httpx.HTTPError, ValueError, AttributeError):
             pass
+        result['reason'] = result['readiness']
         return result
 
     def prepare(self, request, digest, option, check=True):
@@ -283,7 +318,7 @@ class Delivery:
         if check:
             if 'regenerate_2k' in normalized:
                 rcap = self.regenerate_capability()
-                if not rcap['configured'] or rcap['readiness'] != 'ready':
+                if not rcap['configured'] or rcap['readiness'] not in {'ready', 'scaled_to_zero'}:
                     raise ExecutionError('runtime_not_ready')
             if 'interpolate' in normalized:
                 cap = self.capability()
@@ -489,6 +524,8 @@ class Delivery:
             lease_doc = owner_pstate.get('_gpu_lease')
 
         next_url, next_headers, _ = next_adapter._runtime_target()
+        if next_stage_id == 'regenerate_2k':
+            self.executor.wake_int8('regenerate_2k', next_url, next_headers)
         next_ident = self.executor.probe_runtime_identity(next_url, next_headers)
         lease_gpu = str(lease_doc.get('gpu_uuid') or '')
         if not lease_gpu and isinstance(lease_doc.get('gpu_uuids'), list) and lease_doc['gpu_uuids']:
@@ -497,6 +534,8 @@ class Delivery:
         cross_card = bool(lease_gpu and visible and lease_gpu not in visible)
         if cross_card:
             released_owner = self.executor.maybe_release_scheduler_lease(lease_owner, force_release_owned=True)
+            if not (released_owner.provider_state or {}).get('_gpu_lease_released'):
+                raise ExecutionError('Previous GPU lease release has not been confirmed')
             if released_owner.video_task_id == parent.video_task_id:
                 parent = released_owner
             return parent, None

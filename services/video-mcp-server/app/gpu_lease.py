@@ -40,6 +40,7 @@ SCHEDULER_CONSUMER_SPECS: dict[str, dict[str, object]] = {
     "h3-sol": {"consumer_kind": "h3", "stage_id": "generation", "reclaim_mode": "epoch_unload"},
     "h3-fasth3": {"consumer_kind": "h3", "stage_id": "generation", "reclaim_mode": "epoch_unload"},
     "h3-singularity": {"consumer_kind": "h3", "stage_id": "generation", "reclaim_mode": "epoch_unload"},
+    "character_swap": {"consumer_kind": "video.character_swap", "stage_id": "character_swap", "reclaim_mode": "epoch_unload"},
     "regenerate_2k": {"consumer_kind": "video.regenerate_2k", "stage_id": "regenerate_2k", "reclaim_mode": "epoch_unload"},
     "h3-latent-upscale": {"consumer_kind": "video.regenerate_2k", "stage_id": "regenerate_2k", "reclaim_mode": "epoch_unload"},
     "interpolate": {"consumer_kind": "rife", "stage_id": "postprocess_rife", "reclaim_mode": "warm_idle_settled"},
@@ -265,6 +266,22 @@ class GpuCoordinator:
             return int(self.api.get_scale(self.deployment))
         except Exception:
             return None
+
+    @staticmethod
+    def engine_deployment(service: str) -> str:
+        if service not in {"character_swap", "regenerate_2k"}:
+            raise ValueError("unknown_int8_engine")
+        return os.getenv(f"VIDEO_{service.upper()}_DEPLOYMENT") or "video-minimax-h3-" + service.replace("_", "-")
+
+    def engine_replicas(self, service: str) -> int:
+        return self.api.get_scale(self.engine_deployment(service))
+
+    def scale_engine(self, service: str, replicas: int) -> None:
+        if replicas not in (0, 1):
+            raise ValueError("invalid_engine_replicas")
+        name = self.engine_deployment(service)
+        if self.api.get_scale(name) != replicas:
+            self.api.patch_scale(name, replicas)
 
     def scale_to(self, replicas: int) -> None:
         if not self.enabled or not self.deployment:
@@ -926,6 +943,17 @@ class SchedulerLeaseClient:
             body["expected_version"] = eff_version
         _, data = self._request("POST", f"/internal/v1/gpu-scheduler/leases/{lease_id}/bind-target", json_body=body)
         return self._record_lease_decision(data)
+
+    def list_leases(self, *, holder_app_id: str | None = None) -> list[dict]:
+        from urllib.parse import urlencode
+        query = urlencode({"holder_app_id": holder_app_id or self.holder_app_id})
+        _, data = self._request("GET", f"/internal/v1/gpu-scheduler/leases?{query}")
+        leases = data.get("leases")
+        if not isinstance(leases, list) or not all(isinstance(item, dict) for item in leases):
+            raise ValueError("invalid_scheduler_leases")
+        for item in leases:
+            self._record_lease_decision(item)
+        return leases
 
     def get_lease(self, lease_id: str) -> dict:
         _, data = self._request("GET", f"/internal/v1/gpu-scheduler/leases/{lease_id}")

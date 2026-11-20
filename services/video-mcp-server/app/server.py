@@ -187,6 +187,24 @@ VIDEO_TOOLS_SCHEMA = [
         },
     },
     {
+        "name": "video.character_swap",
+        "description": "Replace the specified person in a source video with one character image.",
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "required": ["project_id", "idempotency_key", "source_artifact_id", "character_image_artifact_id", "prompt"],
+            "properties": {
+                "project_id": {"type": "string"}, "idempotency_key": {"type": "string"},
+                "source_artifact_id": {"type": "string"}, "character_image_artifact_id": {"type": "string"},
+                "prompt": {"type": "string", "minLength": 1, "maxLength": 16384},
+                "seed": {"type": "integer", "minimum": 0, "maximum": 4294967295, "default": 7},
+                "seed_mode": {"enum": ["fixed"]}, "character_lora_version": {"enum": ["v1.5", "v1"]},
+                "turbo_variant": {"enum": ["fl2v_turbo_8step", "pika_h3_flex_turbo_8step_hd_ref2va"]},
+                "resolution_preset": {"enum": ["768p", "480p"]},
+                "lora_strength": {"type": "number", "minimum": 0.5, "maximum": 1.2},
+            },
+        },
+    },
+    {
         "name": "video.regenerate_2k",
         "description": "Regenerate a project 24 FPS H3 video into strict aspect-preserving 2K with Open-H3-Regenerate-2K-IC, preserving lossless AAC audio.",
         "inputSchema": {
@@ -496,6 +514,25 @@ def _submit_regenerate_2k(
     return {**res, **naming}
 
 
+@mcp.tool(name="video.character_swap")
+@mcp.tool(name="video.character_swap.generate")
+@tool_errors
+def video_character_swap(project_id: str, idempotency_key: str, source_artifact_id: str,
+                         character_image_artifact_id: str, prompt: str, seed: int = 7,
+                         character_lora_version: str = "v1.5", lora_strength: float = 1.0,
+                         turbo_variant: str = "fl2v_turbo_8step", resolution_preset: str = "768p",
+                         seed_mode: str = "fixed") -> types.CallToolResult:
+    """Replace one person in a project video using its target character image."""
+    authorize(executor.client, project_id)
+    adapter = executor.processing["character_swap"]
+    record = adapter.generate(project_id=project_id, idempotency_key=idempotency_key,
+        source_artifact_id=source_artifact_id, character_image_artifact_id=character_image_artifact_id,
+        prompt=prompt, seed=seed, character_lora_version=character_lora_version, lora_strength=lora_strength,
+        turbo_variant=turbo_variant, resolution_preset=resolution_preset, seed_mode=seed_mode)
+    return _result({**adapter.public_status(record), "task_id": record.video_task_id,
+                    **titles.project(executor.tasks, record)})
+
+
 @mcp.tool(name="video.regenerate_2k.generate")
 @tool_errors
 def video_regenerate_2k_generate(
@@ -561,6 +598,48 @@ def video_regenerate_2k_preview(video_task_id: str) -> types.CallToolResult:
         raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
     authorize(executor.client, existing.project_id)
     adapter = executor.processing["regenerate_2k"]
+    record = adapter.result(video_task_id)
+    if _is_task_nsfw(record):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
+    return _result({**adapter.public_result(record, preview=True), **titles.project(executor.tasks, record)})
+
+
+@mcp.tool(name="video.character_swap.status")
+@tool_errors
+def video_character_swap_status(video_task_id: str) -> types.CallToolResult:
+    existing = _active_tasks().get(video_task_id)
+    if existing.service != "character_swap" or _is_task_nsfw(existing):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
+    authorize(executor.client, existing.project_id)
+    adapter = executor.processing["character_swap"]
+    record = adapter.status(video_task_id)
+    if _is_task_nsfw(record):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
+    return _result({**adapter.public_status(record), **titles.project(executor.tasks, record)})
+
+
+@mcp.tool(name="video.character_swap.result")
+@tool_errors
+def video_character_swap_result(video_task_id: str) -> types.CallToolResult:
+    existing = _active_tasks().get(video_task_id)
+    if existing.service != "character_swap" or _is_task_nsfw(existing):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
+    authorize(executor.client, existing.project_id)
+    adapter = executor.processing["character_swap"]
+    record = adapter.result(video_task_id)
+    if _is_task_nsfw(record):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
+    return _result({**adapter.public_result(record), **titles.project(executor.tasks, record)})
+
+
+@mcp.tool(name="video.character_swap.preview")
+@tool_errors
+def video_character_swap_preview(video_task_id: str) -> types.CallToolResult:
+    existing = _active_tasks().get(video_task_id)
+    if existing.service != "character_swap" or _is_task_nsfw(existing):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
+    authorize(executor.client, existing.project_id)
+    adapter = executor.processing["character_swap"]
     record = adapter.result(video_task_id)
     if _is_task_nsfw(record):
         raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
@@ -651,11 +730,29 @@ def video_preflight(project_id: str, prompt: str = "",
                     price_ceiling: float | None = None, audio_guidance: str | None = None,
                     image_guidance: Annotated[str | None, Field(default=None, description=IMAGE_GUIDANCE_DESCRIPTION)] = None,
                     source_artifact_id: str | None = None,
+                    character_image_artifact_id: str | None = None,
+                    character_lora_version: str = "v1.5", turbo_variant: str = "fl2v_turbo_8step",
+                    lora_strength: float = 1.0, resolution_preset: str = "768p",
                     profile: str | None = None,
                     grid_mode: str | None = None,
                     seed: int | None = None,
                     workflow_params: dict[str, object] | None = None) -> types.CallToolResult:
     """Validate exact media and parameters and read the selected channel's real pricing and admission."""
+    if route == "character_swap" or mode == "character_swap" or character_image_artifact_id is not None:
+        from .character_swap import prepare_request
+        authorize(executor.client, project_id)
+        if not source_artifact_id or not character_image_artifact_id:
+            raise ValueError("source video and character image are required")
+        request = prepare_request(executor.artifacts, project_id, source_artifact_id, {
+            "character_image_artifact_id": character_image_artifact_id, "prompt": prompt,
+            "character_lora_version": character_lora_version, "turbo_variant": turbo_variant,
+            "lora_strength": lora_strength, "resolution_preset": resolution_preset,
+            "seed": 7 if seed is None else seed})
+        capability = executor.delivery.character_swap_capability(
+            character_lora_version=request["character_lora_version"], turbo_variant=request["turbo_variant"])
+        if capability["readiness"] not in {"ready", "scaled_to_zero"}:
+            raise ValueError(capability["reason"])
+        return _result({**request, **capability, "status": "validated", "gpu_verified": False})
     if source_artifact_id is not None or route == "regenerate_2k":
         if source_artifact_id is None:
             raise ValueError("source_artifact_id is required")
@@ -923,7 +1020,7 @@ def video_status(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
         executor.higgsfield.authorize_record(existing)
     if existing.service == 'fal':
         executor.fal.authorize_record(existing)
-    if existing.service in {'interpolate', 'regenerate_2k'} or existing.request.get('postprocess'):
+    if existing.service in {'interpolate', 'regenerate_2k', 'character_swap'} or existing.request.get('postprocess'):
         authorize(executor.client, existing.project_id)
     record = executor.status(tid) if t_store is executor.tasks else existing
     if _is_task_nsfw(record):
@@ -967,7 +1064,7 @@ def video_result(video_task_id: str = "", task_id: str = "", execution_proof_onl
         executor.higgsfield.authorize_record(existing)
     if existing.service == 'fal':
         executor.fal.authorize_record(existing)
-    if existing.service in {'interpolate', 'regenerate_2k'} or existing.request.get('postprocess'):
+    if existing.service in {'interpolate', 'regenerate_2k', 'character_swap'} or existing.request.get('postprocess'):
         authorize(executor.client, existing.project_id)
     if t_store is executor.tasks:
         record = executor.result(tid)

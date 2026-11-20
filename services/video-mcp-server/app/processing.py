@@ -36,25 +36,77 @@ from .tasks import TaskConflict, TaskRecord
 
 
 SAFE_REJECTION_CODES = {
-    'source_already_2k',
+    'attempt_stage_conflict',
+    'body_too_large',
+    'boot_id_mismatch',
+    'character_image_integrity_failed',
+    'character_image_not_found',
+    'container_id_mismatch',
+    'duration_out_of_range',
+    'fence_state_corrupted',
+    'fence_state_persist_failed',
+    'gpu_identity_unavailable',
+    'gpu_uuid_mismatch',
+    'idempotency_conflict',
+    'invalid_character_image_artifact_id',
+    'invalid_character_image_media',
+    'invalid_character_image_sha256',
+    'invalid_content_length',
+    'invalid_idempotency_key',
+    'invalid_json',
+    'invalid_lora_strength',
+    'invalid_project_id',
+    'invalid_prompt',
+    'invalid_request',
+    'invalid_request_fields',
+    'invalid_seed',
+    'invalid_source_artifact_id',
+    'invalid_source_dimensions',
+    'invalid_source_fps',
     'invalid_source_media',
-    'unsupported_grid_mode',
-    'unsupported_regenerate_profile',
-    'source_not_found',
+    'invalid_source_sha256',
+    'json_object_required',
+    'lease_expired',
+    'missing_or_invalid_gpu_grant',
+    'multi_character_single_pass_unsupported',
+    'pod_uid_mismatch',
     'queue_full',
     'runtime_not_ready',
+    'source_already_2k',
+    'source_integrity_failed',
+    'source_not_found',
+    'stale_or_revoked_fencing_token',
+    'unsupported_character_lora_version',
+    'unsupported_grid_mode',
+    'unsupported_regenerate_profile',
+    'unsupported_resolution_preset',
+    'unsupported_seed_mode',
+    'unsupported_source_audio_codec',
+    'unsupported_turbo_variant',
 }
 
 SAFE_RUNTIME_FAILURE_CODES = {
+    'audio_stream_copy_mismatch',
+    'capacity_profile_mismatch',
+    'character_image_integrity_failed',
+    'character_image_not_found',
+    'duration_out_of_range',
+    'fence_state_corrupted',
+    'fence_state_persist_failed',
+    'fps_normalization_failed',
+    'gpu_memory_occupancy_changed',
+    'inference_failed',
     'interrupted',
+    'invalid_character_image_media',
     'invalid_media',
     'invalid_source_media',
+    'output_media_mismatch',
+    'preview_media_mismatch',
+    'runtime_not_ready',
     'source_already_2k',
     'source_integrity_failed',
-    'inference_failed',
-    'capacity_profile_mismatch',
-    'gpu_memory_occupancy_changed',
-    'runtime_not_ready',
+    'source_not_found',
+    'unsupported_source_audio_codec',
 }
 
 
@@ -64,21 +116,21 @@ class ProcessingExecutor:
         self.artifacts, self.tasks = executor.artifacts, executor.tasks
         self._client_override = None
         self._lock = executor._lock
-        if service not in {'sr', 'interpolate', 'regenerate_2k'}:
+        if service not in {'sr', 'interpolate', 'regenerate_2k', 'character_swap'}:
             raise ValueError('unsupported processing service')
         self.service = service
-        self.endpoint_path = 'regenerate-2k' if service == 'regenerate_2k' else service
+        self.endpoint_path = service.replace('_', '-')
         self.backend = (
             'seedvr2' if service == 'sr'
             else 'open_h3_2k_ic' if service == 'regenerate_2k'
+            else 'h3_character_swap_lora' if service == 'character_swap'
             else 'rife'
         )
-        if service == 'regenerate_2k':
-            self.url = os.environ.get('VIDEO_REGENERATE_2K_RUNTIME_URL', '').strip().rstrip('/')
-            self.runtime_version = (
-                os.environ.get('VIDEO_REGENERATE_2K_RUNTIME_VERSION', 'video-minimax-h3-regenerate-2k-v0.1.0').strip()
-                or 'video-minimax-h3-regenerate-2k-v0.1.0'
-            )
+        if service in {'character_swap', 'regenerate_2k'}:
+            prefix = 'VIDEO_' + service.upper()
+            version = f'video-minimax-h3-{self.endpoint_path}-v0.1.0'
+            self.url = os.getenv(f'{prefix}_RUNTIME_URL', '').strip().rstrip('/')
+            self.runtime_version = os.getenv(f'{prefix}_RUNTIME_VERSION', version).strip() or version
         else:
             name = 'video-super-resolution' if service == 'sr' else 'video-frame-interpolation'
             prefix = 'VIDEO_SR' if service == 'sr' else 'VIDEO_INTERPOLATION'
@@ -95,7 +147,7 @@ class ProcessingExecutor:
         self._client_override = value
 
     def _runtime_target(self, record: TaskRecord | None = None) -> tuple[str, dict[str, str], str]:
-        if self.service != 'regenerate_2k':
+        if self.service not in {'character_swap', 'regenerate_2k'}:
             endpoint = (record.runtime_endpoint if record and record.runtime_endpoint else self.url).rstrip('/')
             version = (record.runtime_version if record and record.runtime_version else self.runtime_version)
             prefix = 'VIDEO_SR' if self.service == 'sr' else 'VIDEO_INTERPOLATION'
@@ -105,16 +157,17 @@ class ProcessingExecutor:
             )
             hdrs = {'Authorization': f'Bearer {tok}'} if tok else {}
             return endpoint, hdrs, version
-        token = os.environ.get('VIDEO_REGENERATE_2K_RUNTIME_TOKEN', '').strip()
+        prefix = 'VIDEO_' + self.service.upper()
+        token = os.environ.get(f'{prefix}_RUNTIME_TOKEN', '').strip()
         url = (
             record.runtime_endpoint
             if record and record.runtime_endpoint
-            else os.environ.get('VIDEO_REGENERATE_2K_RUNTIME_URL', '').strip() or self.url
+            else os.environ.get(f'{prefix}_RUNTIME_URL', '').strip() or self.url
         ).rstrip('/')
         version = (
             record.runtime_version
             if record and record.runtime_version
-            else os.environ.get('VIDEO_REGENERATE_2K_RUNTIME_VERSION', '').strip() or self.runtime_version
+            else os.environ.get(f'{prefix}_RUNTIME_VERSION', '').strip() or self.runtime_version
         )
         if not url or not token:
             raise ExecutionError('runtime_not_ready')
@@ -285,7 +338,7 @@ class ProcessingExecutor:
         )
         target_w, target_h, levels = geo['target_w'], geo['target_h'], geo['levels']
         regen_cap = self.executor.delivery.regenerate_capability()
-        if not regen_cap['configured'] or regen_cap['readiness'] != 'ready':
+        if not regen_cap['configured'] or regen_cap['readiness'] not in {'ready', 'scaled_to_zero'}:
             raise ValueError('runtime_not_ready')
         norm_post = validated.get('postprocess')
         if norm_post is not None:
@@ -416,7 +469,12 @@ class ProcessingExecutor:
             project_id = require_project_id(project_id)
             if not idempotency_key.strip() or len(idempotency_key) > 128:
                 raise ValueError('idempotency_key is invalid')
-            validated = self.validate_parameters(parameters)
+            if self.service == 'character_swap':
+                from .character_swap import prepare_request
+                swap_request = prepare_request(self.artifacts, project_id, source_artifact_id, parameters)
+                validated = swap_request
+            else:
+                validated = self.validate_parameters(parameters)
             source = self.artifacts.get(source_artifact_id, project_id)
             if not source.media_type.startswith('video/'):
                 raise ValueError('source artifact must be video')
@@ -424,7 +482,9 @@ class ProcessingExecutor:
             postprocess = validated.get('postprocess')
             authority = None
             inspected = None
-            if self.service == 'regenerate_2k':
+            if self.service == 'character_swap':
+                request = swap_request
+            elif self.service == 'regenerate_2k':
                 inspected = self._inspect_regenerate_source_media(project_id, source, strict=False)
                 if inspected is not None:
                     resolve_2k_target_geometry(
@@ -488,7 +548,7 @@ class ProcessingExecutor:
                         authority=authority,
                         runtime_endpoint=runtime_url,
                         runtime_version=runtime_version,
-                        runtime_route='h3-regenerate-2k' if self.service == 'regenerate_2k' else None,
+                        runtime_route=f'h3-{self.endpoint_path}' if self.service in {'character_swap', 'regenerate_2k'} else None,
                     )
                     initial_pstate: dict[str, object] = {}
                     if isinstance(inspected, dict) and type(inspected.get('frames')) is int:
@@ -504,7 +564,7 @@ class ProcessingExecutor:
                         runtime_version=runtime_version,
                         runtime_task_id=record.video_task_id,
                         runtime_endpoint=runtime_url,
-                        runtime_route='h3-regenerate-2k' if self.service == 'regenerate_2k' else None,
+                        runtime_route=f'h3-{self.endpoint_path}' if self.service in {'character_swap', 'regenerate_2k'} else None,
                         authority=authority,
                         delivery=initial_delivery,
                         error={'code': 'submission_unconfirmed', 'message': 'Submission is pending confirmation'},
@@ -572,9 +632,18 @@ class ProcessingExecutor:
         grant_headers: dict[str, str] = {}
         try:
             local_gating = bool(
-                self.service in {'sr', 'interpolate', 'regenerate_2k'}
+                self.service in {'sr', 'interpolate', 'regenerate_2k', 'character_swap'}
                 and (self.executor.gpu.enabled or self.executor.stage_slot.enabled)
             )
+            identity = None
+            if self.service in {'regenerate_2k', 'character_swap'}:
+                try:
+                    identity = self.executor.wake_int8(self.service, url, headers)
+                except ExecutionError:
+                    failed = self._fail_record(record, {"code": "runtime_not_ready",
+                        "message": "Engine readiness deadline exceeded", "retryable": True})
+                    self.executor.retire_idle_engine(self.service, rollback=True)
+                    return failed
             if self.executor.scheduler.enabled:
                 inherited = (record.provider_state or {}).get('_inherited_lease')
                 try:
@@ -625,12 +694,20 @@ class ProcessingExecutor:
                     runtime_headers=headers,
                 )
 
+            if identity:
+                target = (record.provider_state or {}).get("_gpu_target_identity") or {}
+                if any(identity.get(key) != target.get(key) for key in ("pod_uid", "container_id", "boot_id")):
+                    return self._fail_record(record, {"code": "runtime_not_ready",
+                        "message": "Engine identity changed before dispatch", "retryable": True})
+                self.executor.engine_journal.observed(self.service, "bound_pod_uid", target["pod_uid"])
             dispatched_pstate = {
                 k: v for k, v in (record.provider_state or {}).items() if k != 'waiting_reason'
             }
             dispatched_pstate['gpu_dispatched'] = True
             record = self.tasks.update(record, provider_state=dispatched_pstate)
 
+            if identity:
+                self.executor.engine_journal.observed(self.service, "dispatched_pod_uid", identity["pod_uid"])
             try:
                 response = self.client.post(
                     f'{url}/v1/{self.endpoint_path}',
@@ -639,9 +716,13 @@ class ProcessingExecutor:
                     timeout=30,
                 )
                 if response.status_code in {400, 404, 409, 422, 429} or (
+                    self.service == 'character_swap' and response.status_code in {403, 413, 503}
+                ) or (
                     self.service == 'regenerate_2k' and response.status_code == 503
                 ):
                     extracted = self._extract_error_code(response)
+                    if extracted == 'not_ready':
+                        extracted = 'runtime_not_ready'
                     code = extracted if extracted in SAFE_REJECTION_CODES else f'{self.service}_request_rejected'
                     message = MESSAGES.get(
                         code,
@@ -652,7 +733,7 @@ class ProcessingExecutor:
                         {
                             'code': code,
                             'message': message,
-                            'retryable': code in {'queue_full', 'runtime_not_ready'},
+                            'retryable': code in {'queue_full', 'runtime_not_ready', 'lease_expired'},
                         },
                     )
                 response.raise_for_status()
@@ -1012,6 +1093,9 @@ class ProcessingExecutor:
                     raise ValueError('resolution mismatch')
                 if media['frames'] != source['frames'] or Fraction(media['frame_rate']) != Fraction(source['frame_rate']):
                     raise ValueError('timeline mismatch')
+            elif self.service == 'character_swap':
+                if Fraction(media['frame_rate']) != 24 or media['frames'] != round(float(source['duration_seconds']) * 24):
+                    raise ValueError('character_swap timeline mismatch')
             elif self.service == 'regenerate_2k':
                 expected_geo = resolve_2k_target_geometry(
                     source['width'],
@@ -1044,7 +1128,7 @@ class ProcessingExecutor:
             duration = float(Fraction(media['frames']) / Fraction(media['frame_rate']))
             if abs(duration - float(media['duration_seconds'])) > 0.001 or abs(
                 duration - float(source['duration_seconds'])
-            ) > 0.001:
+            ) > (1/48 + 0.001 if self.service == 'character_swap' else 0.001):
                 raise ValueError('duration mismatch')
 
             expected_pw, expected_ph = preview_geometry(media['width'], media['height'])
@@ -1054,7 +1138,19 @@ class ProcessingExecutor:
                 raise ValueError('preview mismatch')
 
             model = data['model']
-            if self.service == 'regenerate_2k':
+            if self.service == 'character_swap':
+                if model['backend'] != self.backend:
+                    raise ValueError('character_swap model mismatch')
+                for key in ('character_image_artifact_id', 'character_image_sha256', 'character_lora_version',
+                            'turbo_variant', 'seed', 'lora_strength', 'resolution_preset', 'source_sha256'):
+                    if data['parameters'][key] != record.request[key]:
+                        raise ValueError('character_swap parameter mismatch')
+                metrics = data['runtime_metrics']
+                if source['audio'] and (not re.fullmatch('[a-f0-9]{64}', metrics['source_audio_sha256'])
+                                        or metrics['source_audio_sha256'] != metrics['output_audio_sha256']):
+                    raise ValueError('character_swap audio mismatch')
+                media['model'] = model
+            elif self.service == 'regenerate_2k':
                 if (
                     model.get('backend') != 'open_h3_2k_ic'
                     or model.get('profile') != 'open_h3_2k_ic'
@@ -1258,6 +1354,10 @@ class ProcessingExecutor:
                 'blocking_reason': pstate.get('blocking_reason'),
                 'blocking_holder_id': pstate.get('blocking_holder_id') or None,
             }
+        if self.service == 'character_swap':
+            for key in ('character_image_artifact_id', 'character_image_sha256', 'character_lora_version',
+                        'source_artifact_id', 'source_sha256', 'lora_strength', 'turbo_variant', 'resolution_preset'):
+                value[key] = record.request.get(key)
         if self.service == 'regenerate_2k':
             value['delivery'] = record.delivery
             value['source_artifact_id'] = record.request.get('source_artifact_id')

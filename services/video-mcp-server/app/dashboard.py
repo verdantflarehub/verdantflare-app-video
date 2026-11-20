@@ -89,7 +89,7 @@ class ContentRatingUpdate(BaseModel):
 def task_channel(record):
     route = record.request.get("route") or record.runtime_route or record.service
     local = {"h3", "h3-sol", "h3-vdn", "h3-fasth3", "h3-singularity", "minimax-h3-sol-ref2va",
-             "h3-latent-upscale", "sr", "interpolate", "regenerate_2k", "depth", "comfyui", "local"}
+             "h3-latent-upscale", "sr", "interpolate", "regenerate_2k", "character_swap", "depth", "comfyui", "local"}
     return "local" if route in local else route or "unknown"
 
 
@@ -100,6 +100,14 @@ def channel_label(channel):
 
 def task_presentation(record, catalog=None):
     """UI labels only: keep provider identifiers and stored requests unchanged."""
+    if record.service == "character_swap":
+        version = str(record.request.get("character_lora_version", "v1.5")).upper()
+        label = next((model.get("display_name") for channel in (catalog or {}).get("channels", [])
+                      if channel.get("id") == "local" for model in channel.get("models", [])
+                      if model.get("id") == "local-h3-character-swap"), None)
+        return {"is_generation": True, "channel_id": "local", "channel_label": "本地",
+                "channel_icon": "local", "model_label": label or "H3-Character-Swap",
+                "generation_code": "VED", "generation_label": f"角色替换（Character Swap {version} · 8步Turbo）"}
     if record.service == "regenerate_2k":
         label = None
         for entry_channel in (catalog or {}).get("channels", []):
@@ -187,6 +195,7 @@ def public_task(record, store=None, ratings_store=None, catalog=None):
             "sr": "seedvr2",
             "interpolate": "rife",
             "regenerate_2k": "open-h3-regenerate-2k-ic",
+            "character_swap": "h3-character-swap-lora",
             "depth": "video-depth-anything",
             "h3-latent-upscale": "h3-latent-upscaler",
         }.get(record.service)
@@ -209,6 +218,14 @@ def public_task(record, store=None, ratings_store=None, catalog=None):
     )
     gpu_queue = public_gpu_queue(record)
     admission_reconciliation = public_admission_reconciliation(record)
+    swap_fields = {}
+    if record.service == "character_swap":
+        swap_fields = {key: record.request.get(key) for key in (
+            "source_artifact_id", "source_sha256", "character_image_artifact_id", "character_image_sha256")}
+        for key, default in (("character_lora_version", "v1.5"), ("lora_strength", 1.0),
+                             ("turbo_variant", "fl2v_turbo_8step"), ("resolution_preset", "768p")):
+            swap_fields[key] = record.request.get(key, default)
+        swap_fields["resolution"] = record.request.get("resolution") or swap_fields["resolution_preset"]
     return {**naming, "video_task_id": record.video_task_id, "project_id": record.project_id,
             "idempotency_key": record.idempotency_key, "service": record.service, "route": record.runtime_route or record.request.get("route"),
             "model": model, "presentation": task_presentation(record, catalog),
@@ -228,7 +245,7 @@ def public_task(record, store=None, ratings_store=None, catalog=None):
             "media": media, "delivery": sanitized_delivery, "error": record.error, "collection": public_collection(record),
             "input_digest": record.input_digest, "execution_instance_id": record.execution_instance_id, "association_source": "runtime" if record.execution_instance_id else None, "runtime_stage": record.runtime_stage,
             "dispatched_at": record.dispatched_at, "timing": record.timing, "runtime_metrics": record.runtime_metrics,
-            **ui_fields}
+            **swap_fields, **ui_fields}
 
 
 def _is_valid_jpeg(path: Path) -> bool:
@@ -499,7 +516,14 @@ class Dashboard:
         value.update(tasks_store.record_ui_fields(record, ratings_store, can_write=True))
         value["runtime_version"] = record.runtime_version or self.executor.runtime_version
         value["references"] = []
-        for kind, items in record.request.get("references", {}).items():
+        references = record.request.get("references", {})
+        if record.service == "character_swap":
+            references = {"images": [{"artifact_id": record.request["character_image_artifact_id"],
+                                      "purpose": "目标角色参考图 <Picture 1>"}],
+                          "videos": [{"artifact_id": record.request["source_artifact_id"],
+                                      "purpose": "源视频 <Video 1>"}]}
+            value["reference_limits"] = {"images": 1, "videos": 1, "audios": 0}
+        for kind, items in references.items():
             for item in items:
                 try:
                     artifact = artifacts_store.get(item["artifact_id"], record.project_id)

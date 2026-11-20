@@ -8,7 +8,7 @@ import unicodedata
 
 PROVIDED_TITLE = ContextVar('video_provided_title', default=None)
 OPERATIONS = {'interpolate': '视频补帧', 'sr': '视频超分', 'depth': '深度视频',
-              'regenerate_2k': '2K 潜空间重生成', 'h3-latent-upscale': '视频超分'}
+              'character_swap': '视频角色替换', 'regenerate_2k': '2K 潜空间重生成', 'h3-latent-upscale': '视频超分'}
 
 
 class TitleConflict(RuntimeError):
@@ -76,7 +76,7 @@ def initialize(store, record):
                     info = project(store, parent)
                     if info['title_source'] != 'fallback':
                         suffix = {'interpolate': ' · 补帧', 'depth': ' · 深度',
-                                  'regenerate_2k': ' · 2K'}.get(record.service, ' · 超分')
+                                  'character_swap': ' · 换人', 'regenerate_2k': ' · 2K'}.get(record.service, ' · 超分')
                         value = info['title'][:64-len(suffix)] + suffix
                         source = 'fallback'
                     break
