@@ -397,7 +397,7 @@ def run_character_swap(request, source, directory, set_stage, *, gpu_uuid, free_
     with raw.open("xb") as stream, torch.inference_mode():
         for index, win in enumerate(windows):
             set_stage(f"sampling_window_{index + 1}")
-            vf = (f"trim=start_frame={win.start}:end_frame={win.end},"
+            vf = (f"trim=start_frame={win.start}:end_frame={win.end},setpts=PTS-STARTPTS,"
                   f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
                   f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2")
             pixels = subprocess.check_output(["ffmpeg", "-v", "error", "-nostdin", "-i",

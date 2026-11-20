@@ -16,7 +16,7 @@ concurrency:
 
 env:
   SERVICE: video-minimax-h3-character-swap
-  VERSION: 0.1.0
+  VERSION: 0.1.1
 
 jobs:
   build:
