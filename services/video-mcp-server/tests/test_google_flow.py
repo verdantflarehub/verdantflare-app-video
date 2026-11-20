@@ -190,3 +190,38 @@ class GoogleFlowTests(unittest.TestCase):
 
     def test_commit_response_lost(self):
         self.check_artifact_loss("commit")
+
+    def test_veo_quality_rejects_references_and_catalog_exposes_limits(self):
+        from app.channel_catalog import read_directory, declaration_profiles
+        from app.channel_specs import reference_limits
+
+        asset = self.exe.artifacts.create_from_chunks(
+            project_id=self.project, operation="import", filename="face.png",
+            media_type="image/png", chunks=[b"fixture"],
+        )
+        with self.assertRaisesRegex(ValueError, "unsupported_references"):
+            self.create(model="veo-quality", references={"images": [{"artifact_id": asset.artifact_id, "purpose": "character"}]})
+        with self.assertRaisesRegex(ValueError, "mode_reference_mismatch"):
+            self.create(model="veo-quality", mode="reference_to_video", references={})
+        self.assertEqual(self.checks, 0)
+
+        directory = read_directory("google-flow", "http://flow.invalid", "t" * 32)
+        by_id = {cap["model_id"]: cap for cap in directory["capabilities"]}
+        self.assertEqual(by_id["veo-quality"]["parameter_schema"]["properties"]["mode"]["enum"], ["text_to_video"])
+        self.assertEqual(by_id["veo-quality"]["parameter_schema"]["properties"]["references"]["properties"]["images"]["maxItems"], 0)
+        self.assertIn("ref_cap=0", by_id["veo-quality"]["input_summary"])
+        self.assertEqual(by_id["veo-fast"]["parameter_schema"]["properties"]["references"]["properties"]["images"]["maxItems"], 3)
+        self.assertEqual(by_id["omni-flash"]["parameter_schema"]["properties"]["references"]["properties"]["images"]["maxItems"], 7)
+        self.assertEqual(by_id["omni-flash"]["parameter_schema"]["properties"]["duration_seconds"]["enum"], [4, 6, 8, 10])
+
+        q_profiles = declaration_profiles(by_id["veo-quality"])
+        self.assertEqual([p["mode"] for p in q_profiles], ["text_to_video"])
+        self.assertEqual(q_profiles[0]["input_limits"], {"images": 0, "videos": 0, "audio_files": 0})
+        f_profiles = {p["mode"]: p for p in declaration_profiles(by_id["veo-fast"])}
+        self.assertEqual(f_profiles["reference_to_video"]["input_limits"], {"images": 3, "videos": 0, "audio_files": 0})
+
+        q_limits = reference_limits("google-flow", "veo-quality")
+        self.assertEqual(q_limits["images"], 0)
+        self.assertNotIn("reference_to_video", q_limits["by_mode"])
+        self.assertEqual(reference_limits("google-flow", "veo-fast")["images"], 3)
+        self.assertEqual(reference_limits("google-flow", "omni-flash")["images"], 7)

@@ -13,7 +13,41 @@ from ..channel_errors import ChannelError, channel_error
 from ..tasks import TaskConflict
 from .membership import MembershipAccess
 
-MODELS = ("veo-lite", "veo-fast", "veo-quality", "omni-flash")
+MODEL_SPECS = {
+    "veo-lite": {
+        "display_name": "Veo 3.1 Lite",
+        "modes": ["text_to_video", "reference_to_video"],
+        "durations": (4, 6, 8),
+        "max_reference_images": 3,
+        "input_summary": "文生视频 / 参考生视频（最多 3 张参考图，无参考视频）",
+        "output_summary": "4 / 6 / 8s · 16:9 / 9:16",
+    },
+    "veo-fast": {
+        "display_name": "Veo 3.1 Fast",
+        "modes": ["text_to_video", "reference_to_video"],
+        "durations": (4, 6, 8),
+        "max_reference_images": 3,
+        "input_summary": "文生视频 / 参考生视频（最多 3 张参考图，无参考视频）",
+        "output_summary": "4 / 6 / 8s · 16:9 / 9:16",
+    },
+    "veo-quality": {
+        "display_name": "Veo 3.1 Quality",
+        "modes": ["text_to_video"],
+        "durations": (4, 6, 8),
+        "max_reference_images": 0,
+        "input_summary": "仅文生视频（不支持参考图，ref_cap=0）",
+        "output_summary": "4 / 6 / 8s · 16:9 / 9:16",
+    },
+    "omni-flash": {
+        "display_name": "Omni Flash",
+        "modes": ["text_to_video", "reference_to_video"],
+        "durations": (4, 6, 8, 10),
+        "max_reference_images": 7,
+        "input_summary": "文生视频 / 参考生视频（最多 7 张参考图，无参考视频）",
+        "output_summary": "4 / 6 / 8 / 10s · 16:9 / 9:16",
+    },
+}
+MODELS = tuple(MODEL_SPECS)
 ROUTE = "google-flow"
 
 
@@ -40,24 +74,38 @@ class GoogleFlowAdapter(MembershipAccess):
         return {"configured": self.configured(), "enabled": self.enabled}
 
     def capabilities(self):
-        return [dict(route=ROUTE, provider=ROUTE, model=model, modes=["text_to_video", "reference_to_video"],
-                     aspect_ratios=["16:9", "9:16"], duration_seconds={"minimum": 4, "maximum": 8, "enum": [4,6,8]},
-                     poll=True, cancel=False, readiness="not_checked", **self.channel_health()) for model in MODELS]
+        result = []
+        for model, spec in MODEL_SPECS.items():
+            durations = list(spec["durations"])
+            max_refs = spec["max_reference_images"]
+            limits_by_mode = {"text_to_video": {"images": 0, "videos": 0, "audio_files": 0}}
+            if max_refs > 0:
+                limits_by_mode["reference_to_video"] = {"images": max_refs, "videos": 0, "audio_files": 0}
+            result.append(dict(
+                route=ROUTE, provider=ROUTE, model=model, modes=list(spec["modes"]),
+                aspect_ratios=["16:9", "9:16"],
+                duration_seconds={"minimum": min(durations), "maximum": max(durations), "enum": durations},
+                input_limits_by_mode=limits_by_mode,
+                poll=True, cancel=False, readiness="not_checked", **self.channel_health(),
+            ))
+        return result
 
     def normalize(self, project_id, prompt, model, duration_seconds, aspect_ratio, references,
                   mode=None, resolution=None, quality_profile=None, budget_limit=None, channel_account_id=None):
-        if model not in MODELS or quality_profile is not None or resolution is not None or channel_account_id is not None:
+        if model not in MODEL_SPECS or quality_profile is not None or resolution is not None or channel_account_id is not None:
             raise ValueError("unsupported_parameter")
-        if type(duration_seconds) is not int or duration_seconds not in (4, 6, 8):
+        spec = MODEL_SPECS[model]
+        if type(duration_seconds) is not int or duration_seconds not in spec["durations"]:
             raise ValueError("unsupported_duration")
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt.strip()) > 5000:
             raise ValueError("invalid_prompt")
         if aspect_ratio is not None and aspect_ratio not in ("16:9", "9:16"):
             raise ValueError("unsupported_aspect_ratio")
-        if not isinstance(references, dict) or set(references) - {"images","videos","audios"}:
+        if not isinstance(references, dict) or set(references) - {"images", "videos", "audios"}:
             raise ValueError("invalid_references")
         images = references.get("images", [])
-        if references.get("videos") or references.get("audios") or not isinstance(images,list) or len(images)>3:
+        if (references.get("videos") or references.get("audios") or not isinstance(images, list)
+                or len(images) > spec["max_reference_images"]):
             raise ValueError("unsupported_references")
         sources = []
         for ref in images:
@@ -68,7 +116,7 @@ class GoogleFlowAdapter(MembershipAccess):
             _, info = self.reference_source(project_id, ref["artifact_id"], "image")
             sources.append(info)
         resolved_mode = "reference_to_video" if images else "text_to_video"
-        if mode not in (None, resolved_mode):
+        if resolved_mode not in spec["modes"] or mode not in (None, resolved_mode):
             raise ValueError("mode_reference_mismatch")
         budget = None
         if budget_limit is not None:

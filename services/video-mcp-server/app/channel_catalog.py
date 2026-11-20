@@ -66,22 +66,31 @@ def read_directory(channel, url, token, *, transport=None):
     if channel == 'google-flow':
         # Its live model endpoint requires project-write authorization. This public
         # directory describes adapter limits; preflight intersects them with live models.
-        from .providers.google_flow import MODELS
-        display_names = {
-            'veo-lite': 'Veo 3.1 Lite',
-            'veo-fast': 'Veo 3.1 Fast',
-            'veo-quality': 'Veo 3.1 Quality',
-            'omni-flash': 'Omni Flash',
-        }
+        from .providers.google_flow import MODEL_SPECS
+        capabilities = []
+        for model, spec in MODEL_SPECS.items():
+            durations = list(spec['durations'])
+            max_refs = spec['max_reference_images']
+            capabilities.append({
+                'capability_id': model, 'type': 'video', 'model_id': model,
+                'display_name': spec['display_name'], 'operation': 'video.generate',
+                'execution_state': 'adapter_connected_unverified',
+                'input_summary': spec['input_summary'],
+                'output_summary': spec['output_summary'],
+                'parameter_schema': {'type': 'object', 'properties': {
+                    'mode': {'enum': list(spec['modes'])},
+                    'duration_seconds': {'type': 'integer', 'enum': durations,
+                                         'minimum': min(durations), 'maximum': max(durations)},
+                    'aspect_ratio': {'enum': ['16:9', '9:16']},
+                    'references': {'type': 'object', 'additionalProperties': False, 'properties': {
+                        'images': {'type': 'array', 'maxItems': max_refs},
+                        'videos': {'type': 'array', 'maxItems': 0},
+                        'audios': {'type': 'array', 'maxItems': 0},
+                    }},
+                }},
+            })
         return {'schema_version': 1, 'channel_id': channel, 'channel_name': 'Google Flow',
-                'version': '1', 'state': 'available', 'capabilities': [
-                    {'capability_id': model, 'type': 'video', 'model_id': model,
-                     'display_name': display_names.get(model, model), 'operation': 'video.generate',
-                     'execution_state': 'adapter_connected_unverified',
-                     'parameter_schema': {'type': 'object', 'properties': {
-                         'mode': {'enum': ['text_to_video', 'reference_to_video']},
-                         'duration_seconds': {'type': 'integer', 'enum': [4, 6, 8], 'minimum': 4, 'maximum': 8},
-                         'aspect_ratio': {'enum': ['16:9', '9:16']}}}} for model in MODELS]}
+                'version': '1', 'state': 'available', 'capabilities': capabilities}
     try:
         with httpx.Client(timeout=3, trust_env=False, follow_redirects=False, transport=transport) as client:
             with client.stream('GET', url.rstrip('/') + '/v1/capabilities',
@@ -156,12 +165,25 @@ def declaration_profiles(capability, adapter=None):
         if bounds and adapter.get('duration_seconds'):
             bounds = {'minimum': max(bounds['minimum'], adapter['duration_seconds']['minimum']),
                       'maximum': min(bounds['maximum'], adapter['duration_seconds']['maximum'])}
+    ref_props = field('references').get('properties', {})
+    ref_props = ref_props if isinstance(ref_props, dict) else {}
+    def profile_limits(mode):
+        if adapter and isinstance(adapter.get('input_limits_by_mode'), dict) and mode in adapter['input_limits_by_mode']:
+            return deepcopy(adapter['input_limits_by_mode'][mode])
+        if ref_props and all(isinstance(ref_props.get(k), dict) and isinstance(ref_props[k].get('maxItems'), int)
+                             for k in ('images', 'videos', 'audios')):
+            if mode == 'text_to_video':
+                return {'images': 0, 'videos': 0, 'audio_files': 0}
+            return {'images': ref_props['images']['maxItems'],
+                    'videos': ref_props['videos']['maxItems'],
+                    'audio_files': ref_props['audios']['maxItems']}
+        return None
     return [{'id': 'declared-' + mode, 'mode': mode, 'resolutions': resolutions,
              'max_resolution': resolutions[-1] if resolutions else None,
              'duration_seconds': bounds, 'duration_choices_seconds': [
                  seconds for seconds in duration.get('enum', []) if type(seconds) is int
                  and (not bounds or bounds['minimum'] <= seconds <= bounds['maximum'])],
-             'aspect_ratios': ratios, 'input_limits': None,
+             'aspect_ratios': ratios, 'input_limits': profile_limits(mode),
              'audio_input': 'unknown', 'audio_output': 'unknown', 'review_status': 'pending',
              'verification_status': 'unverified'} for mode in modes if isinstance(mode, str)]
 
