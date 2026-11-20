@@ -218,6 +218,33 @@ async function loadTaskResult(task, version, retrieve = false) {
     const link = document.createElement("a"); link.className = "button primary"; link.href = url;
     link.download = task.artifact?.filename || `${task.video_task_id}.mp4`; link.textContent = "下载视频 ↓";
     $("resultActions").replaceChildren(link);
+    if (task.service === "character_swap" && task.media?.preview_artifact_id) {
+      const compare = document.createElement("button");
+      compare.type = "button";
+      compare.textContent = "查看左右对比";
+      compare.addEventListener("click", async () => {
+        compare.disabled = true;
+        try {
+          const previewURL = await mediaURL(task.media.preview_artifact_id, task.video_task_id);
+          if (modalTask !== task.video_task_id || version !== revision) return;
+          const comparison = document.createElement("video");
+          comparison.controls = true;
+          comparison.playsInline = true;
+          comparison.preload = "metadata";
+          comparison.setAttribute("aria-label", "原片与换人成片左右对比");
+          comparison.src = previewURL;
+          $("videoArea").append(comparison);
+          compare.remove();
+          comparison.scrollIntoView({ block: "nearest" });
+        } catch (error) {
+          if (modalTask === task.video_task_id && version === revision) {
+            compare.disabled = false;
+            $("resultMessage").textContent = error.message;
+          }
+        }
+      });
+      $("resultActions").append(compare);
+    }
     $("resultMessage").textContent = `${task.media?.width || "—"} × ${task.media?.height || "—"} · ${task.media?.frame_rate || "—"} FPS`;
     resultArtifact = task.content_ref?.version_id || task.artifact.artifact_id;
     $("outputCount").textContent = "1 / 1 个视频产物";
