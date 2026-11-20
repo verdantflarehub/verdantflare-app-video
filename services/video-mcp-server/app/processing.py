@@ -642,6 +642,8 @@ class ProcessingExecutor:
                 except ExecutionError:
                     failed = self._fail_record(record, {"code": "runtime_not_ready",
                         "message": "Engine readiness deadline exceeded", "retryable": True})
+                    with self.executor._state_guard:
+                        self.executor._submitting_tasks.discard(record.video_task_id)
                     self.executor.retire_idle_engine(self.service, rollback=True)
                     return failed
             if self.executor.scheduler.enabled:

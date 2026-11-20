@@ -151,6 +151,7 @@ class VideoExecutor:
         self.client = client or httpx.Client(timeout=httpx.Timeout(connect=10, read=3600, write=600, pool=10), follow_redirects=False, verify=trust)
         from .character_swap import EngineJournal
         self.engine_journal = EngineJournal(self.tasks.db_path)
+        self._engine_idle_observations = {}
         self.gpu = GpuCoordinator.from_environment()
         self.stage_slot = LocalGpuStageSlot.from_environment(self.tasks)
         journal_dir = getattr(self.tasks, "root", None) or (
@@ -2284,6 +2285,7 @@ class VideoExecutor:
                 if health.get("ready") is True and self._has_concrete_runtime_identity(identity):
                     self.recover_ready_engine(service, identity["pod_uid"])
                 return
+            previous = self._engine_idle_observations.pop(service, None)
             self.scheduler.flush_pending_releases()
             with self.scheduler._journal_lock:
                 if self.scheduler._pending_releases:
@@ -2327,17 +2329,25 @@ class VideoExecutor:
                 if rec.completed_at:
                     latest = max(latest, datetime.fromisoformat(rec.completed_at).timestamp())
             with self._state_guard:
-                if owners.intersection(self._submitting_tasks) and not rollback:
+                if owners.intersection(self._submitting_tasks):
                     return
             with self.collector.lock:
                 if owners.intersection(self.collector.active):
                     return
-            if not rollback and time.time() - latest < self.gpu.idle_seconds:
-                return
             for lease in self.scheduler.list_leases():
                 if lease.get("state") not in {"expired", "released"} and (
                     lease.get("stage_id") == service or lease.get("holder_task_id") in owners
                     or lease.get("consumer_kind") == "video." + service):
+                    return
+            # Wall time survives restarts. The process-local observation also requires
+            # a full idle interval even if the wall clock jumps forwards.
+            if not rollback:
+                idle_key = (state["generation"], latest)
+                if previous is None or previous[0] != idle_key:
+                    previous = (idle_key, time.monotonic())
+                self._engine_idle_observations[service] = previous
+                if (time.monotonic() - previous[1] < self.gpu.idle_seconds
+                        or time.time() - latest < self.gpu.idle_seconds):
                     return
             from contextlib import closing
             with closing(journal.connect()) as db, db:
