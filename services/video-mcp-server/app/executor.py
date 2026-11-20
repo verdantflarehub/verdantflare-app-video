@@ -2312,7 +2312,17 @@ class VideoExecutor:
                     return
                 if rec.status not in TERMINAL_TASK_STATUS or pipeline.get("status") in {"queued", "running"}:
                     return
-                if ps.get("worker_settled") is False or (ps.get("_gpu_lease_owned") and not ps.get("_gpu_lease_released")):
+                if ps.get("worker_settled") is False:
+                    return
+                lease = ps.get("_gpu_lease") or {}
+                reconciliation = ps.get("admission_reconciliation") or {}
+                sealed_without_grant = (
+                    lease.get("state") == "expired" and lease.get("never_granted") is True
+                    and ps.get("gpu_dispatched") is False and ps.get("worker_settled") is True
+                    and reconciliation.get("outcome") == "unstarted_fence_sealed"
+                    and reconciliation.get("runtime_task_found") is False
+                )
+                if ps.get("_gpu_lease_owned") and not ps.get("_gpu_lease_released") and not sealed_without_grant:
                     return
                 if rec.completed_at:
                     latest = max(latest, datetime.fromisoformat(rec.completed_at).timestamp())
