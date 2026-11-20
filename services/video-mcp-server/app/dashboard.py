@@ -89,7 +89,7 @@ class ContentRatingUpdate(BaseModel):
 def task_channel(record):
     route = record.request.get("route") or record.runtime_route or record.service
     local = {"h3", "h3-sol", "h3-vdn", "h3-fasth3", "h3-singularity", "minimax-h3-sol-ref2va",
-             "h3-latent-upscale", "sr", "interpolate", "regenerate_2k", "character_swap", "depth", "comfyui", "local"}
+             "h3-character-swap", "h3-regenerate-2k", "h3-latent-upscale", "sr", "interpolate", "regenerate_2k", "character_swap", "depth", "comfyui", "local"}
     return "local" if route in local else route or "unknown"
 
 
