@@ -67,10 +67,16 @@ def read_directory(channel, url, token, *, transport=None):
         # Its live model endpoint requires project-write authorization. This public
         # directory describes adapter limits; preflight intersects them with live models.
         from .providers.google_flow import MODELS
+        display_names = {
+            'veo-lite': 'Veo 3.1 Lite',
+            'veo-fast': 'Veo 3.1 Fast',
+            'veo-quality': 'Veo 3.1 Quality',
+            'omni-flash': 'Omni Flash',
+        }
         return {'schema_version': 1, 'channel_id': channel, 'channel_name': 'Google Flow',
                 'version': '1', 'state': 'available', 'capabilities': [
                     {'capability_id': model, 'type': 'video', 'model_id': model,
-                     'display_name': 'Google Flow · ' + model, 'operation': 'video.generate',
+                     'display_name': display_names.get(model, model), 'operation': 'video.generate',
                      'execution_state': 'adapter_connected_unverified',
                      'parameter_schema': {'type': 'object', 'properties': {
                          'mode': {'enum': ['text_to_video', 'reference_to_video']},
