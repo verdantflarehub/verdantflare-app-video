@@ -1120,6 +1120,8 @@ class VideoExecutor:
             )
             pstate.pop("_gpu_lease", None)
             pstate.pop("_gpu_lease_released", None)
+            # Station keys an acquire by attempt. A confirmed rollback ends that attempt.
+            pstate["_gpu_attempt_id"] = f"att-{uuid.uuid4().hex}"
             record = self.tasks.update(record, provider_state=pstate)
         except Exception:
             logging.getLogger(__name__).warning("Rollback of unstarted scheduler grant deferred for %s", record.video_task_id)

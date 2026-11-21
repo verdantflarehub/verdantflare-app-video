@@ -85,3 +85,18 @@ class EngineRetirementTest(unittest.TestCase):
             wall.return_value = since + 600
             self.executor.retire_idle_engine(self.service)
             self.executor.gpu.scale_engine.assert_called_once_with(self.service, 0)
+
+    def test_confirmed_unbound_rollback_rotates_station_attempt(self):
+        task = self.failed_task("rollback-before-local-slot")
+        lease = {"lease_id": "grant", "state": "leased", "fencing_token": 1, "version": 1}
+        task = self.executor.tasks.update(task, provider_state={
+            "_gpu_lease": lease, "_gpu_attempt_id": "first", "gpu_dispatched": False})
+        self.executor.scheduler.release.side_effect = TimeoutError()
+        unresolved = self.executor.rollback_unstarted_scheduler_grant(task)
+        self.assertEqual(unresolved.provider_state["_gpu_attempt_id"], "first")
+        self.assertEqual(unresolved.provider_state["_gpu_lease"], lease)
+        self.executor.scheduler.release.side_effect = None
+        renewed = self.executor.rollback_unstarted_scheduler_grant(unresolved)
+        self.assertNotEqual(renewed.provider_state["_gpu_attempt_id"], "first")
+        self.assertNotIn("_gpu_lease", renewed.provider_state)
+        self.assertEqual(self.executor.tasks.get(task.video_task_id).provider_state, renewed.provider_state)
