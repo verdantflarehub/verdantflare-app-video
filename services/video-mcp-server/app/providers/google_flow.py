@@ -13,13 +13,24 @@ from ..channel_errors import ChannelError, channel_error
 from ..tasks import TaskConflict
 from .membership import MembershipAccess
 
+FLOW_MODEL_HELP = "https://support.google.com/flow/answer/16352836?hl=en"
+
+# Official Flow web modes, independent of the gateway's request schema.
+VEO_FRAME_MODES = {
+    "text_to_video": (4, 6, 8),
+    "image_to_video": (4, 6, 8),
+    "first_last_frame_to_video": (4, 6, 8),
+}
+OMNI_DURATIONS = tuple(range(3, 16))
+
 MODEL_SPECS = {
     "veo-lite": {
         "display_name": "Veo 3.1 Lite",
         "modes": ["text_to_video", "reference_to_video"],
         "durations": (4, 6, 8),
         "max_reference_images": 3,
-        "input_summary": "文生视频 / 参考生视频（最多 3 张参考图，无参考视频）",
+        "supplier_modes": {**VEO_FRAME_MODES, "reference_to_video": (8,)},
+        "input_summary": "Flow 官网支持首帧、首尾帧及 8 秒素材参考。当前接口支持文本及最多 3 张参考图。",
         "output_summary": "4 / 6 / 8s · 16:9 / 9:16",
     },
     "veo-fast": {
@@ -27,7 +38,8 @@ MODEL_SPECS = {
         "modes": ["text_to_video", "reference_to_video"],
         "durations": (4, 6, 8),
         "max_reference_images": 3,
-        "input_summary": "文生视频 / 参考生视频（最多 3 张参考图，无参考视频）",
+        "supplier_modes": {**VEO_FRAME_MODES, "reference_to_video": (8,)},
+        "input_summary": "Flow 官网支持首帧、首尾帧及 8 秒素材参考。当前接口支持文本及最多 3 张参考图。",
         "output_summary": "4 / 6 / 8s · 16:9 / 9:16",
     },
     "veo-quality": {
@@ -35,16 +47,20 @@ MODEL_SPECS = {
         "modes": ["text_to_video"],
         "durations": (4, 6, 8),
         "max_reference_images": 0,
-        "input_summary": "仅文生视频（不支持参考图，ref_cap=0）",
+        "supplier_modes": VEO_FRAME_MODES,
+        "input_summary": "Flow 官网支持首帧及首尾帧。当前接口仅文生视频（ref_cap=0）。",
         "output_summary": "4 / 6 / 8s · 16:9 / 9:16",
     },
     "omni-1.2-flash": {
         "display_name": "Omni 1.2 Flash",
-        "modes": ["text_to_video", "reference_to_video"],
+        "modes": ["text_to_video", "reference_to_video", "video_editing"],
         "durations": (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
         "max_reference_images": 7,
-        "input_summary": "文生视频 / 参考生视频（最多 7 张参考图，无参考视频）",
-        "output_summary": "3–15s · 16:9 / 9:16",
+        "max_reference_videos": 1,
+        "supplier_modes": dict.fromkeys(("text_to_video", "image_to_video", "first_last_frame_to_video",
+                                     "reference_to_video", "video_editing"), OMNI_DURATIONS),
+        "input_summary": "Flow 网页支持首帧、首尾帧、图片或视频参考、原片编辑时追加素材。当前接口支持文本、最多 7 张参考图及 1 段原片视频编辑。",
+        "output_summary": "3–10s，Google AI Plus / Pro / Ultra 可达 15s · 16:9 / 9:16",
     },
 }
 MODELS = tuple(MODEL_SPECS)
@@ -78,9 +94,12 @@ class GoogleFlowAdapter(MembershipAccess):
         for model, spec in MODEL_SPECS.items():
             durations = list(spec["durations"])
             max_refs = spec["max_reference_images"]
+            max_vrefs = spec.get("max_reference_videos", 0)
             limits_by_mode = {"text_to_video": {"images": 0, "videos": 0, "audio_files": 0}}
             if max_refs > 0:
-                limits_by_mode["reference_to_video"] = {"images": max_refs, "videos": 0, "audio_files": 0}
+                limits_by_mode["reference_to_video"] = {"images": max_refs, "videos": max_vrefs, "audio_files": 0}
+            if max_vrefs > 0:
+                limits_by_mode["video_editing"] = {"images": max_refs, "videos": max_vrefs, "audio_files": 0}
             result.append(dict(
                 route=ROUTE, provider=ROUTE, model=model, modes=list(spec["modes"]),
                 aspect_ratios=["16:9", "9:16"],
@@ -104,8 +123,10 @@ class GoogleFlowAdapter(MembershipAccess):
         if not isinstance(references, dict) or set(references) - {"images", "videos", "audios"}:
             raise ValueError("invalid_references")
         images = references.get("images", [])
-        if (references.get("videos") or references.get("audios") or not isinstance(images, list)
-                or len(images) > spec["max_reference_images"]):
+        videos = references.get("videos", [])
+        max_vrefs = spec.get("max_reference_videos", 0)
+        if (references.get("audios") or not isinstance(images, list) or not isinstance(videos, list)
+                or len(images) > spec["max_reference_images"] or len(videos) > max_vrefs):
             raise ValueError("unsupported_references")
         sources = []
         for ref in images:
@@ -115,8 +136,21 @@ class GoogleFlowAdapter(MembershipAccess):
                 raise ValueError("invalid_reference")
             _, info = self.reference_source(project_id, ref["artifact_id"], "image")
             sources.append(info)
-        resolved_mode = "reference_to_video" if images else "text_to_video"
-        if resolved_mode not in spec["modes"] or mode not in (None, resolved_mode):
+        video_sources = []
+        for ref in videos:
+            if (not isinstance(ref, dict) or set(ref) != {"artifact_id", "purpose"}
+                    or not isinstance(ref["purpose"], str) or not ref["purpose"].strip()):
+                raise ValueError("invalid_reference")
+            _, info = self.reference_source(project_id, ref["artifact_id"], "video")
+            video_sources.append(info)
+        if videos:
+            allowed_modes = {"video_editing", "reference_to_video"}
+            resolved_mode = mode if mode in allowed_modes else "video_editing"
+        elif images:
+            resolved_mode = "reference_to_video"
+        else:
+            resolved_mode = "text_to_video"
+        if resolved_mode not in spec["modes"] or (mode is not None and mode != resolved_mode):
             raise ValueError("mode_reference_mismatch")
         budget = None
         if budget_limit is not None:
@@ -129,8 +163,8 @@ class GoogleFlowAdapter(MembershipAccess):
             budget = int(value)
         request = dict(route=ROUTE, model=model, gateway_profile=self.profile, project_id=project_id,
                        duration_seconds=duration_seconds, aspect_ratio=aspect_ratio or "16:9", mode=resolved_mode,
-                       prompt=prompt, references={"images":images, "videos":[], "audios":[]}, sources=sources,
-                       budget_limit=budget)
+                       prompt=prompt, references={"images":images, "videos":videos, "audios":[]}, sources=sources,
+                       video_sources=video_sources, budget_limit=budget)
         return request, "sha256:" + hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
 
     def headers(self, project, actor):
@@ -150,6 +184,8 @@ class GoogleFlowAdapter(MembershipAccess):
         args = {"prompt":request["prompt"], "duration":request["duration_seconds"], "aspect":request["aspect_ratio"]}
         if request["sources"]:
             args["reference_images"] = [i["sha256"] for i in request["sources"]]
+        if request.get("video_sources"):
+            args["reference_videos"] = [v["sha256"] for v in request["video_sources"]]
         result = dict(model=request["model"], capability="video", parameters=args)
         if request["budget_limit"] is not None:
             result["budget_limit"] = request["budget_limit"]
@@ -215,6 +251,15 @@ class GoogleFlowAdapter(MembershipAccess):
                         with path.open("rb") as stream:
                             receipt = self.response(self.client.put(self.url+"/v1/inputs", content=stream, headers={
                                 **headers,"Content-Type":"image/"+info["format"],"X-Content-SHA256":info["sha256"]}))
+                        if receipt.get("sha256") != info["sha256"] or receipt.get("size") != info["size"]:
+                            raise ValueError("input_receipt_mismatch")
+                    for ref, expected in zip(record.request["references"].get("videos", []),record.request.get("video_sources", []),strict=True):
+                        path, info = self.reference_source(record.project_id, ref["artifact_id"],"video")
+                        if info != expected:
+                            raise ValueError("source_integrity_failed")
+                        with path.open("rb") as stream:
+                            receipt = self.response(self.client.put(self.url+"/v1/inputs", content=stream, headers={
+                                **headers,"Content-Type":"video/"+info["format"],"X-Content-SHA256":info["sha256"]}))
                         if receipt.get("sha256") != info["sha256"] or receipt.get("size") != info["size"]:
                             raise ValueError("input_receipt_mismatch")
                     record = tasks.update(record, status="running", runtime_stage="submission_unknown",

@@ -66,15 +66,17 @@ def read_directory(channel, url, token, *, transport=None):
     if channel == 'google-flow':
         # Its live model endpoint requires project-write authorization. This public
         # directory describes adapter limits; preflight intersects them with live models.
-        from .providers.google_flow import MODEL_SPECS
+        from .providers.google_flow import FLOW_MODEL_HELP, MODEL_SPECS
         capabilities = []
         for model, spec in MODEL_SPECS.items():
             durations = list(spec['durations'])
             max_refs = spec['max_reference_images']
+            max_vrefs = spec.get('max_reference_videos', 0)
             capabilities.append({
                 'capability_id': model, 'type': 'video', 'model_id': model,
                 'display_name': spec['display_name'], 'operation': 'video.generate',
                 'execution_state': 'adapter_connected_unverified',
+                'source_url': FLOW_MODEL_HELP,
                 'input_summary': spec['input_summary'],
                 'output_summary': spec['output_summary'],
                 'parameter_schema': {'type': 'object', 'properties': {
@@ -84,7 +86,7 @@ def read_directory(channel, url, token, *, transport=None):
                     'aspect_ratio': {'enum': ['16:9', '9:16']},
                     'references': {'type': 'object', 'additionalProperties': False, 'properties': {
                         'images': {'type': 'array', 'maxItems': max_refs},
-                        'videos': {'type': 'array', 'maxItems': 0},
+                        'videos': {'type': 'array', 'maxItems': max_vrefs},
                         'audios': {'type': 'array', 'maxItems': 0},
                     }},
                 }},
@@ -188,6 +190,27 @@ def declaration_profiles(capability, adapter=None):
              'verification_status': 'unverified'} for mode in modes if isinstance(mode, str)]
 
 
+def flow_supplier_profiles(capability):
+    from .providers.google_flow import MODEL_SPECS
+
+    template = declaration_profiles(capability)[0]
+    limits = {
+        'text_to_video': {'images': 0, 'videos': 0, 'audio_files': 0},
+        'image_to_video': {'images': 1, 'videos': 0, 'audio_files': 0},
+        'first_last_frame_to_video': {'images': 2, 'videos': 0, 'audio_files': 0},
+    }
+    profiles = []
+    for mode, durations in MODEL_SPECS[capability['model_id']]['supplier_modes'].items():
+        # Google documents Ingredients and editing without a per-media count here.
+        profiles.append({
+            **deepcopy(template), 'id': 'flow-web-' + mode, 'mode': mode,
+            'duration_choices_seconds': list(durations),
+            'duration_seconds': {'minimum': min(durations), 'maximum': max(durations)},
+            'input_limits': limits.get(mode),
+        })
+    return profiles
+
+
 def project(executor):
     from .catalog import group_entries
     catalog = executor.catalog.snapshot()
@@ -239,8 +262,9 @@ def project(executor):
                 adapter = facts.get(channel, {})
                 if channel in {'higgsfield', 'google-flow'}:
                     adapter = adapter.get(identity, {})
-                if declaration_profiles(cap):
-                    model['supplier_profiles'] = declaration_profiles(cap)
+                declared = declaration_profiles(cap)
+                if declared:
+                    model['supplier_profiles'] = flow_supplier_profiles(cap) if channel == 'google-flow' else declared
                     model['team_profiles'] = declaration_profiles(cap, adapter) if adapter else []
                 public_model = supported[channel].get(identity)
                 state = cap['execution_state']

@@ -42,13 +42,18 @@ def reference_limits(route, model):
                      'image_to_video': {'images': 1, 'videos': 0, 'audios': 0, 'total': 1, 'minimum_total': 1}})
     elif route == 'google-flow':
         from .providers.google_flow import MODEL_SPECS
-        max_refs = MODEL_SPECS.get(model, {}).get('max_reference_images', 0)
-        by_mode = {'text_to_video': {'images': 0, 'total': 0}}
+        spec = MODEL_SPECS.get(model, {})
+        max_refs = spec.get('max_reference_images', 0)
+        max_vrefs = spec.get('max_reference_videos', 0)
+        total = max_refs + max_vrefs
+        by_mode = {'text_to_video': {'images': 0, 'videos': 0, 'total': 0}}
         if max_refs > 0:
-            by_mode['reference_to_video'] = {'images': max_refs, 'total': max_refs, 'minimum_total': 1}
-        value.update(images=max_refs, videos=0, audios=0, total=max_refs,
-                     max_bytes={'images': 10 * mib if max_refs > 0 else 0, 'videos': 0, 'audios': 0},
-                     formats={'images': ['PNG', 'JPEG', 'WebP'] if max_refs > 0 else [], 'videos': [], 'audios': []},
+            by_mode['reference_to_video'] = {'images': max_refs, 'videos': max_vrefs, 'total': total, 'minimum_total': 1}
+        if max_vrefs > 0:
+            by_mode['video_editing'] = {'images': max_refs, 'videos': max_vrefs, 'total': total, 'minimum_total': 1}
+        value.update(images=max_refs, videos=max_vrefs, audios=0, total=total,
+                     max_bytes={'images': 10 * mib if max_refs > 0 else 0, 'videos': 128 * mib if max_vrefs > 0 else 0, 'audios': 0},
+                     formats={'images': ['PNG', 'JPEG', 'WebP'] if max_refs > 0 else [], 'videos': ['MP4'] if max_vrefs > 0 else [], 'audios': []},
                      by_mode=by_mode)
     elif route == 'higgsfield':
         mixed = model in {'wan3_0', 'seedance_2_5', 'seedance_2_5_draft'}

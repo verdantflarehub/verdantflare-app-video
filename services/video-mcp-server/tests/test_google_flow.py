@@ -94,7 +94,7 @@ class GoogleFlowTests(unittest.TestCase):
         self.assertEqual((req.headers["X-Organization-Id"],req.headers["X-User-Id"],req.headers["X-Project-Id"],
                           req.headers["X-Project-Write"]), (self.org,self.user,self.project,"true"))
         if path=="/v1/capabilities":
-            return httpx.Response(200,json={"models":{"video":["veo-lite"]}})
+            return httpx.Response(200,json={"models":{"video":["veo-lite","omni-1.2-flash"]}})
         if path=="/v1/account":
             return httpx.Response(200,json={"authorized":True,"credits":99})
         if path=="/v1/cost":
@@ -222,8 +222,39 @@ class GoogleFlowTests(unittest.TestCase):
         f_profiles = {p["mode"]: p for p in declaration_profiles(by_id["veo-fast"])}
         self.assertEqual(f_profiles["reference_to_video"]["input_limits"], {"images": 3, "videos": 0, "audio_files": 0})
 
+        from app.channel_catalog import flow_supplier_profiles
+        for model_id, cap in by_id.items():
+            with self.subTest(model=model_id):
+                official = {p["mode"]: p for p in flow_supplier_profiles(cap)}
+                self.assertEqual(official["image_to_video"]["input_limits"]["images"], 1)
+                self.assertEqual(official["first_last_frame_to_video"]["input_limits"]["images"], 2)
+                self.assertEqual("video_editing" in official, model_id == "omni-1.2-flash")
+                self.assertEqual("reference_to_video" in official, model_id != "veo-quality")
+                if model_id in ("veo-fast", "veo-lite"):
+                    self.assertEqual(official["reference_to_video"]["duration_choices_seconds"], [8])
+                self.assertEqual(cap["parameter_schema"]["properties"]["references"]["properties"]["videos"]["maxItems"],
+                                 1 if model_id == "omni-1.2-flash" else 0)
+
         q_limits = reference_limits("google-flow", "veo-quality")
         self.assertEqual(q_limits["images"], 0)
+        self.assertEqual(q_limits["videos"], 0)
         self.assertNotIn("reference_to_video", q_limits["by_mode"])
         self.assertEqual(reference_limits("google-flow", "veo-fast")["images"], 3)
+        self.assertEqual(reference_limits("google-flow", "veo-fast")["videos"], 0)
         self.assertEqual(reference_limits("google-flow", "omni-1.2-flash")["images"], 7)
+        self.assertEqual(reference_limits("google-flow", "omni-1.2-flash")["videos"], 1)
+
+        vid_asset = self.exe.artifacts.create_from_chunks(
+            project_id=self.project, operation="import", filename="source.mp4",
+            media_type="video/mp4", chunks=[b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom"],
+        )
+        with self.assertRaisesRegex(ValueError, "unsupported_references"):
+            self.create(model="veo-fast", references={"videos": [{"artifact_id": vid_asset.artifact_id, "purpose": "source_video"}]})
+        rec = self.create(
+            model="omni-1.2-flash", duration_seconds=6,
+            references={"images": [{"artifact_id": asset.artifact_id, "purpose": "character"}],
+                        "videos": [{"artifact_id": vid_asset.artifact_id, "purpose": "source_video"}]},
+        )
+        self.assertEqual(rec.request["mode"], "video_editing")
+        self.assertEqual(len(rec.request["video_sources"]), 1)
+        self.assertEqual(len(rec.request["sources"]), 1)
