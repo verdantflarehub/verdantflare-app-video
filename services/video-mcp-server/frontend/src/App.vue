@@ -22,6 +22,7 @@ type Task = {
   } | null
   prompt?: string
   status: string
+  runtime_stage?: string | null
   created_at: string
   completed_at?: string | null
   duration_seconds?: number | null
@@ -84,6 +85,9 @@ const routeName = (task: Task) => task.presentation?.channel_label || (localProc
 const isLocalIcon = (task: Task) => task.presentation?.channel_icon === 'local' || localProcessing.has(task.service)
 const isDrainingQueue = (task: Task) => Boolean(task.status === 'queued' && task.gpu_queue && (task.gpu_queue.lease_state === 'draining' || task.gpu_queue.waiting_reason === 'draining_peer' || task.gpu_queue.blocking_reason === 'draining_evictable_peer'))
 const statusLabel = (task: Task) => {
+  if (task.status === 'running' && task.runtime_stage === 'submission_unknown') {
+    return '提交待确认'
+  }
   if (task.status === 'queued' && task.gpu_queue) {
     const stage = isDrainingQueue(task) ? '清场衔接中' : '排队中'
     const pos = Number(task.gpu_queue.queue_position)

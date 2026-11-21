@@ -264,3 +264,46 @@ class GoogleFlowTests(unittest.TestCase):
             self.create(model="veo-lite", idempotency_key="lite-up", upscale="1080p")
         self.assertNotIn("upscale", by_id["veo-lite"]["parameter_schema"]["properties"])
         self.assertEqual(by_id["omni-1.2-flash"]["parameter_schema"]["properties"]["upscale"]["enum"], ["1080p"])
+
+    def test_pre_send_rejection_marks_failed_with_rejected_error(self):
+        from app.dashboard import task_presentation
+
+        self.accepted, self.stage = False, "failed"
+        orig_respond = self.respond
+
+        def _respond_rejected(req):
+            resp = orig_respond(req)
+            if req.url.path.startswith("/v1/jobs"):
+                data = resp.json()
+                data["reason_code"] = "rejected"
+                data["reserved"] = 0
+                data["credits"] = 0
+                return httpx.Response(200, json=data)
+            return resp
+
+        self.adapter.client = httpx.Client(transport=httpx.MockTransport(_respond_rejected))
+        self.addCleanup(self.adapter.client.close)
+        asset = self.exe.artifacts.create_from_chunks(
+            project_id=self.project, operation="import", filename="face.png",
+            media_type="image/png", chunks=[b"fixture"],
+        )
+        vid_asset = self.exe.artifacts.create_from_chunks(
+            project_id=self.project, operation="import", filename="source.mp4",
+            media_type="video/mp4", chunks=[b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom"],
+        )
+        rec = self.create(
+            idempotency_key="edit-refused",
+            model="omni-1.2-flash",
+            duration_seconds=3,
+            references={
+                "images": [{"artifact_id": asset.artifact_id, "purpose": "character"}],
+                "videos": [{"artifact_id": vid_asset.artifact_id, "purpose": "source_video"}],
+            },
+        )
+        pres = task_presentation(rec)
+        self.assertEqual((pres["generation_code"], pres["generation_label"]), ("VED", "原片视频编辑"))
+        settled = self.poll(rec)
+        self.assertEqual(settled.status, "failed")
+        self.assertEqual(settled.runtime_stage, "failed")
+        self.assertEqual(settled.error["code"], "rejected")
+        self.assertIs(settled.error["accepted"], False)

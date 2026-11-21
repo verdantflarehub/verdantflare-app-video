@@ -151,7 +151,8 @@ def task_presentation(record, catalog=None):
     modes = {"text_to_video": ("T2V", "文生视频"), "image_to_video": ("I2V", "图生视频"),
              "lip_sync": ("A2V", "音频驱动口型"),
              "first_last_frame_to_video": ("F2V", "首尾帧视频"),
-             "reference_to_video": ("R2V", "参考生视频"), "ref2va": ("R2V", "参考生视频")}
+             "reference_to_video": ("R2V", "参考生视频"), "ref2va": ("R2V", "参考生视频"),
+             "video_editing": ("VED", "原片视频编辑")}
     mode = record.request.get("mode")
     if not mode and (record.service in local or model == "minimax-h3-ref2va"):
         mode = "ref2va"

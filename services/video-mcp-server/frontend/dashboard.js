@@ -76,6 +76,9 @@ const gpuQueueReasonText = (task) => {
   return holderLabel ? `${baseLabel}（当前占用：${holderLabel}）` : baseLabel;
 };
 const taskStatusLabel = (task) => {
+  if (task.status === "running" && task.runtime_stage === "submission_unknown") {
+    return "提交待确认";
+  }
   if (
     task.service === "higgsfield" &&
     task.status === "running" &&
