@@ -251,10 +251,16 @@ class GoogleFlowTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported_references"):
             self.create(model="veo-fast", references={"videos": [{"artifact_id": vid_asset.artifact_id, "purpose": "source_video"}]})
         rec = self.create(
-            model="omni-1.2-flash", duration_seconds=6,
+            model="omni-1.2-flash", duration_seconds=6, upscale="1080p",
             references={"images": [{"artifact_id": asset.artifact_id, "purpose": "character"}],
                         "videos": [{"artifact_id": vid_asset.artifact_id, "purpose": "source_video"}]},
         )
         self.assertEqual(rec.request["mode"], "video_editing")
+        self.assertEqual(rec.request["upscale"], "1080p")
+        self.assertEqual(self.adapter.payload(rec.request)["parameters"]["upscale"], "1080p")
         self.assertEqual(len(rec.request["video_sources"]), 1)
         self.assertEqual(len(rec.request["sources"]), 1)
+        with self.assertRaisesRegex(ValueError, "unsupported_upscale"):
+            self.create(model="veo-lite", idempotency_key="lite-up", upscale="1080p")
+        self.assertNotIn("upscale", by_id["veo-lite"]["parameter_schema"]["properties"])
+        self.assertEqual(by_id["omni-1.2-flash"]["parameter_schema"]["properties"]["upscale"]["enum"], ["1080p"])

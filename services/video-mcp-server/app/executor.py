@@ -1758,7 +1758,8 @@ class VideoExecutor:
                  channel_account_id: str | None = None, budget_limit: str | None = None,
                  price_ceiling: float | None = None, audio_guidance: str | None = None,
                  image_guidance: str | None = None,
-                 workflow_params: dict[str, object] | None = None) -> TaskRecord:
+                 workflow_params: dict[str, object] | None = None,
+                 upscale: str | None = None) -> TaskRecord:
         with self._lock:
             project_id = require_project_id(project_id)
             if not idempotency_key.strip() or len(idempotency_key) > 128:
@@ -1779,6 +1780,8 @@ class VideoExecutor:
                 raise ValueError('channel_budget_not_supported')
             if route != "comfyui" and workflow_params is not None:
                 raise ValueError("unsupported_parameter")
+            if route != "google-flow" and upscale is not None:
+                raise ValueError("unsupported_upscale")
             from .delivery import normalize, authorize
             normalize(postprocess, route)
             if route == "comfyui":
@@ -1801,7 +1804,7 @@ class VideoExecutor:
                     return self.google_flow.generate(project_id=project_id, idempotency_key=idempotency_key,
                         model=model, prompt=prompt, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
                         references=references, quality_profile=quality_profile, mode=mode, resolution=resolution,
-                        budget_limit=budget_limit, channel_account_id=channel_account_id)
+                        budget_limit=budget_limit, channel_account_id=channel_account_id, upscale=upscale)
             if route == "higgsfield":
                 with self.tasks.exclusive():
                     return self.higgsfield.generate(project_id=project_id, idempotency_key=idempotency_key,

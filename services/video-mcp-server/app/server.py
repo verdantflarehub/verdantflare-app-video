@@ -736,7 +736,8 @@ def video_preflight(project_id: str, prompt: str = "",
                     profile: str | None = None,
                     grid_mode: str | None = None,
                     seed: int | None = None,
-                    workflow_params: dict[str, object] | None = None) -> types.CallToolResult:
+                    workflow_params: dict[str, object] | None = None,
+                    upscale: str | None = None) -> types.CallToolResult:
     """Validate exact media and parameters and read the selected channel's real pricing and admission."""
     if route == "character_swap" or mode == "character_swap" or character_image_artifact_id is not None:
         from .character_swap import prepare_request
@@ -777,6 +778,8 @@ def video_preflight(project_id: str, prompt: str = "",
     norm_post = normalize_postprocess(postprocess, selected)
     if selected != "comfyui" and workflow_params is not None:
         raise ValueError("unsupported_parameter")
+    if selected != "google-flow" and upscale is not None:
+        raise ValueError("unsupported_upscale")
     if selected not in {'fal', 'grok', 'google', 'google-flow'} and (channel_account_id is not None or budget_limit is not None):
         raise ValueError('channel_budget_not_supported')
     if selected != 'higgsfield' and price_ceiling is not None:
@@ -798,7 +801,7 @@ def video_preflight(project_id: str, prompt: str = "",
         return _result(executor.google_flow.preflight(project_id=require_project_id(project_id),
             prompt=prompt, model=model, duration_seconds=duration_seconds, aspect_ratio=aspect_ratio,
             references=references, mode=mode, resolution=resolution, quality_profile=quality_profile,
-            budget_limit=budget_limit, channel_account_id=channel_account_id))
+            budget_limit=budget_limit, channel_account_id=channel_account_id, upscale=upscale))
     if selected == "higgsfield":
         executor.higgsfield.authorize(project_id)
         request, digest = executor.higgsfield.normalize(project_id=require_project_id(project_id),
@@ -925,7 +928,8 @@ def video_create(prompt: str,
                   channel_account_id: str | None = None, budget_limit: str | None = None,
                   price_ceiling: float | None = None, audio_guidance: str | None = None,
                   image_guidance: Annotated[str | None, Field(default=None, description=IMAGE_GUIDANCE_DESCRIPTION)] = None,
-                  workflow_params: dict[str, object] | None = None) -> types.CallToolResult:
+                  workflow_params: dict[str, object] | None = None,
+                  upscale: str | None = None) -> types.CallToolResult:
     """Create an asynchronous video generation task."""
     record, naming = titles.create(executor, title=title, project_id=project_id, idempotency_key=idempotency_key, model=model,
                                prompt=prompt, duration_seconds=duration_seconds,
@@ -933,7 +937,7 @@ def video_create(prompt: str,
                                quality_profile=quality_profile, mode=mode, resolution=resolution, postprocess=postprocess,
                                channel_account_id=channel_account_id, budget_limit=budget_limit, price_ceiling=price_ceiling,
                                audio_guidance=audio_guidance, image_guidance=image_guidance,
-                               workflow_params=workflow_params)
+                               workflow_params=workflow_params, upscale=upscale)
     return _result({**naming, "task_id": record.video_task_id, "video_task_id": record.video_task_id,
                     "status": record.status, "created_at": record.created_at, "error": record.error, "delivery": record.delivery,
                     "resolved_output": record.request.get("resolved_output"),
@@ -950,7 +954,8 @@ def video_generate(project_id: str, idempotency_key: str, model: str, prompt: st
                   channel_account_id: str | None = None, budget_limit: str | None = None,
                   price_ceiling: float | None = None, audio_guidance: str | None = None,
                   image_guidance: Annotated[str | None, Field(default=None, description=IMAGE_GUIDANCE_DESCRIPTION)] = None,
-                  workflow_params: dict[str, object] | None = None) -> types.CallToolResult:
+                  workflow_params: dict[str, object] | None = None,
+                  upscale: str | None = None) -> types.CallToolResult:
     """Generate with a business model and an explicitly selected runtime route.
 
     `route` selects a configured channel such as h3-sol, h3-vdn, or fal.
@@ -964,7 +969,7 @@ def video_generate(project_id: str, idempotency_key: str, model: str, prompt: st
                                quality_profile=quality_profile, mode=mode, resolution=resolution, postprocess=postprocess,
                                channel_account_id=channel_account_id, budget_limit=budget_limit, price_ceiling=price_ceiling,
                                audio_guidance=audio_guidance, image_guidance=image_guidance,
-                               workflow_params=workflow_params)
+                               workflow_params=workflow_params, upscale=upscale)
     return _result({**naming, "task_id": record.video_task_id, "video_task_id": record.video_task_id,
                     "status": record.status, "created_at": record.created_at, "error": record.error, "delivery": record.delivery})
 

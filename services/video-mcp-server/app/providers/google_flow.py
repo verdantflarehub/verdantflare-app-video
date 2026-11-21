@@ -29,6 +29,7 @@ MODEL_SPECS = {
         "modes": ["text_to_video", "reference_to_video"],
         "durations": (4, 6, 8),
         "max_reference_images": 3,
+        "upscales": (),
         "supplier_modes": {**VEO_FRAME_MODES, "reference_to_video": (8,)},
         "input_summary": "Flow 官网支持首帧、首尾帧及 8 秒素材参考。当前接口支持文本及最多 3 张参考图。",
         "output_summary": "4 / 6 / 8s · 16:9 / 9:16",
@@ -38,18 +39,20 @@ MODEL_SPECS = {
         "modes": ["text_to_video", "reference_to_video"],
         "durations": (4, 6, 8),
         "max_reference_images": 3,
+        "upscales": ("1080p",),
         "supplier_modes": {**VEO_FRAME_MODES, "reference_to_video": (8,)},
         "input_summary": "Flow 官网支持首帧、首尾帧及 8 秒素材参考。当前接口支持文本及最多 3 张参考图。",
-        "output_summary": "4 / 6 / 8s · 16:9 / 9:16",
+        "output_summary": "4 / 6 / 8s · 16:9 / 9:16 · 可选超分导出 1080p",
     },
     "veo-quality": {
         "display_name": "Veo 3.1 Quality",
         "modes": ["text_to_video"],
         "durations": (4, 6, 8),
         "max_reference_images": 0,
+        "upscales": ("1080p",),
         "supplier_modes": VEO_FRAME_MODES,
         "input_summary": "Flow 官网支持首帧及首尾帧。当前接口仅文生视频（ref_cap=0）。",
-        "output_summary": "4 / 6 / 8s · 16:9 / 9:16",
+        "output_summary": "4 / 6 / 8s · 16:9 / 9:16 · 可选超分导出 1080p",
     },
     "omni-1.2-flash": {
         "display_name": "Omni 1.2 Flash",
@@ -57,10 +60,11 @@ MODEL_SPECS = {
         "durations": (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
         "max_reference_images": 7,
         "max_reference_videos": 1,
+        "upscales": ("1080p",),
         "supplier_modes": dict.fromkeys(("text_to_video", "image_to_video", "first_last_frame_to_video",
                                      "reference_to_video", "video_editing"), OMNI_DURATIONS),
         "input_summary": "Flow 网页支持首帧、首尾帧、图片或视频参考、原片编辑时追加素材。当前接口支持文本、最多 7 张参考图及 1 段原片视频编辑。",
-        "output_summary": "3–10s，Google AI Plus / Pro / Ultra 可达 15s · 16:9 / 9:16",
+        "output_summary": "3–10s，Google AI Plus / Pro / Ultra 可达 15s · 16:9 / 9:16 · 可选超分导出 1080p",
     },
 }
 MODELS = tuple(MODEL_SPECS)
@@ -103,6 +107,7 @@ class GoogleFlowAdapter(MembershipAccess):
             result.append(dict(
                 route=ROUTE, provider=ROUTE, model=model, modes=list(spec["modes"]),
                 aspect_ratios=["16:9", "9:16"],
+                upscales=list(spec.get("upscales", ())),
                 duration_seconds={"minimum": min(durations), "maximum": max(durations), "enum": durations},
                 input_limits_by_mode=limits_by_mode,
                 poll=True, cancel=False, readiness="not_checked", **self.channel_health(),
@@ -110,10 +115,14 @@ class GoogleFlowAdapter(MembershipAccess):
         return result
 
     def normalize(self, project_id, prompt, model, duration_seconds, aspect_ratio, references,
-                  mode=None, resolution=None, quality_profile=None, budget_limit=None, channel_account_id=None):
+                  mode=None, resolution=None, quality_profile=None, budget_limit=None, channel_account_id=None,
+                  upscale=None):
         if model not in MODEL_SPECS or quality_profile is not None or resolution is not None or channel_account_id is not None:
             raise ValueError("unsupported_parameter")
         spec = MODEL_SPECS[model]
+        if upscale is not None:
+            if not isinstance(upscale, str) or upscale not in spec.get("upscales", ()):
+                raise ValueError("unsupported_upscale")
         if type(duration_seconds) is not int or duration_seconds not in spec["durations"]:
             raise ValueError("unsupported_duration")
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt.strip()) > 5000:
@@ -165,6 +174,8 @@ class GoogleFlowAdapter(MembershipAccess):
                        duration_seconds=duration_seconds, aspect_ratio=aspect_ratio or "16:9", mode=resolved_mode,
                        prompt=prompt, references={"images":images, "videos":videos, "audios":[]}, sources=sources,
                        video_sources=video_sources, budget_limit=budget)
+        if upscale is not None:
+            request["upscale"] = upscale
         return request, "sha256:" + hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
 
     def headers(self, project, actor):
@@ -186,6 +197,8 @@ class GoogleFlowAdapter(MembershipAccess):
             args["reference_images"] = [i["sha256"] for i in request["sources"]]
         if request.get("video_sources"):
             args["reference_videos"] = [v["sha256"] for v in request["video_sources"]]
+        if request.get("upscale"):
+            args["upscale"] = request["upscale"]
         result = dict(model=request["model"], capability="video", parameters=args)
         if request["budget_limit"] is not None:
             result["budget_limit"] = request["budget_limit"]
@@ -213,8 +226,11 @@ class GoogleFlowAdapter(MembershipAccess):
         actor = self.authorize(kwargs["project_id"])
         request,digest = self.normalize(**kwargs)
         quote = self.check(request,actor)
+        resolved = {k:request[k] for k in ("route","model","mode","duration_seconds","aspect_ratio")}
+        if request.get("upscale"):
+            resolved["upscale"] = request["upscale"]
         return dict(status="validated", can_submit=True, generation_verified=False, input_digest=digest,
-                    resolved_output={k:request[k] for k in ("route","model","mode","duration_seconds","aspect_ratio")},
+                    resolved_output=resolved,
                     reference_mapping=request["references"], quoted_credits=quote, unit="Credits")
 
     def generate(self, idempotency_key, **kwargs):
@@ -275,6 +291,9 @@ class GoogleFlowAdapter(MembershipAccess):
                 accepted = data["accepted"]
                 stage = data["state"]
                 state = dict(record.provider_state, accepted=accepted, actual_credits=data.get("credits"))
+                if data.get("upscale_status"):
+                    state["upscale_status"] = data["upscale_status"]
+                    state["upscale_target"] = data.get("upscale_target")
                 if accepted is None:
                     stage = "submission_unknown"
                 elif type(accepted) is not bool or stage not in {"pending","running","failed","succeeded"}:
@@ -300,7 +319,11 @@ class GoogleFlowAdapter(MembershipAccess):
 
     def public_result(self, record):
         state = record.provider_state
-        return dict(task_id=record.video_task_id, video_task_id=record.video_task_id, status=record.status,
-                    model=record.request["model"], runtime_route=ROUTE, media=record.media, content_ref=state["content_ref"],
-                    download_path=state["download_path"], quoted_credits=state.get("quoted_credits"),
-                    actual_credits=state.get("actual_credits"),input_digest=record.input_digest)
+        res = dict(task_id=record.video_task_id, video_task_id=record.video_task_id, status=record.status,
+                   model=record.request["model"], runtime_route=ROUTE, media=record.media, content_ref=state["content_ref"],
+                   download_path=state["download_path"], quoted_credits=state.get("quoted_credits"),
+                   actual_credits=state.get("actual_credits"),input_digest=record.input_digest)
+        if state.get("upscale_status"):
+            res["upscale_status"] = state["upscale_status"]
+            res["upscale_target"] = state.get("upscale_target")
+        return res

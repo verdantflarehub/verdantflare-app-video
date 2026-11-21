@@ -72,6 +72,20 @@ def read_directory(channel, url, token, *, transport=None):
             durations = list(spec['durations'])
             max_refs = spec['max_reference_images']
             max_vrefs = spec.get('max_reference_videos', 0)
+            upscales = list(spec.get('upscales', ()))
+            props = {
+                'mode': {'enum': list(spec['modes'])},
+                'duration_seconds': {'type': 'integer', 'enum': durations,
+                                     'minimum': min(durations), 'maximum': max(durations)},
+                'aspect_ratio': {'enum': ['16:9', '9:16']},
+                'references': {'type': 'object', 'additionalProperties': False, 'properties': {
+                    'images': {'type': 'array', 'maxItems': max_refs},
+                    'videos': {'type': 'array', 'maxItems': max_vrefs},
+                    'audios': {'type': 'array', 'maxItems': 0},
+                }},
+            }
+            if upscales:
+                props['upscale'] = {'type': 'string', 'enum': upscales}
             capabilities.append({
                 'capability_id': model, 'type': 'video', 'model_id': model,
                 'display_name': spec['display_name'], 'operation': 'video.generate',
@@ -79,17 +93,7 @@ def read_directory(channel, url, token, *, transport=None):
                 'source_url': FLOW_MODEL_HELP,
                 'input_summary': spec['input_summary'],
                 'output_summary': spec['output_summary'],
-                'parameter_schema': {'type': 'object', 'properties': {
-                    'mode': {'enum': list(spec['modes'])},
-                    'duration_seconds': {'type': 'integer', 'enum': durations,
-                                         'minimum': min(durations), 'maximum': max(durations)},
-                    'aspect_ratio': {'enum': ['16:9', '9:16']},
-                    'references': {'type': 'object', 'additionalProperties': False, 'properties': {
-                        'images': {'type': 'array', 'maxItems': max_refs},
-                        'videos': {'type': 'array', 'maxItems': max_vrefs},
-                        'audios': {'type': 'array', 'maxItems': 0},
-                    }},
-                }},
+                'parameter_schema': {'type': 'object', 'properties': props},
             })
         return {'schema_version': 1, 'channel_id': channel, 'channel_name': 'Google Flow',
                 'version': '1', 'state': 'available', 'capabilities': capabilities}
