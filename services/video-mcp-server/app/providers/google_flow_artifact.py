@@ -45,8 +45,9 @@ def collect(adapter, record, headers):
                     raise ValueError("media_integrity_failed") from None
                 width, height = details["width"], details["height"]
                 a, b = map(int, record.request["aspect_ratio"].split(":"))
+                dur_tol = 600 if record.request.get("mode") == "video_editing" or record.request.get("video_sources") else 100
                 if (min(width, height) <= 0 or abs(width*b - height*a) > max(a,b)
-                        or abs(details["duration_ms"] - 1000*record.request["duration_seconds"]) > 100):
+                        or abs(details["duration_ms"] - 1000*record.request["duration_seconds"]) > dur_tol):
                     raise ValueError("media_spec_mismatch")
                 os.replace(temp, path)
                 media = {"mime":"video/mp4", "sha256":digest, "size":size, **details}
