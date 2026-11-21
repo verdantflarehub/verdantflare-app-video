@@ -211,8 +211,10 @@ class GoogleFlowTests(unittest.TestCase):
         self.assertEqual(by_id["veo-quality"]["parameter_schema"]["properties"]["references"]["properties"]["images"]["maxItems"], 0)
         self.assertIn("ref_cap=0", by_id["veo-quality"]["input_summary"])
         self.assertEqual(by_id["veo-fast"]["parameter_schema"]["properties"]["references"]["properties"]["images"]["maxItems"], 3)
-        self.assertEqual(by_id["omni-flash"]["parameter_schema"]["properties"]["references"]["properties"]["images"]["maxItems"], 7)
-        self.assertEqual(by_id["omni-flash"]["parameter_schema"]["properties"]["duration_seconds"]["enum"], [4, 6, 8, 10])
+        self.assertNotIn("omni-flash", by_id)
+        self.assertEqual(by_id["omni-1.2-flash"]["display_name"], "Omni 1.2 Flash")
+        self.assertEqual(by_id["omni-1.2-flash"]["parameter_schema"]["properties"]["references"]["properties"]["images"]["maxItems"], 7)
+        self.assertEqual(by_id["omni-1.2-flash"]["parameter_schema"]["properties"]["duration_seconds"]["enum"], list(range(3, 16)))
 
         q_profiles = declaration_profiles(by_id["veo-quality"])
         self.assertEqual([p["mode"] for p in q_profiles], ["text_to_video"])
@@ -224,4 +226,4 @@ class GoogleFlowTests(unittest.TestCase):
         self.assertEqual(q_limits["images"], 0)
         self.assertNotIn("reference_to_video", q_limits["by_mode"])
         self.assertEqual(reference_limits("google-flow", "veo-fast")["images"], 3)
-        self.assertEqual(reference_limits("google-flow", "omni-flash")["images"], 7)
+        self.assertEqual(reference_limits("google-flow", "omni-1.2-flash")["images"], 7)

@@ -38,13 +38,13 @@ MODEL_SPECS = {
         "input_summary": "仅文生视频（不支持参考图，ref_cap=0）",
         "output_summary": "4 / 6 / 8s · 16:9 / 9:16",
     },
-    "omni-flash": {
-        "display_name": "Omni Flash",
+    "omni-1.2-flash": {
+        "display_name": "Omni 1.2 Flash",
         "modes": ["text_to_video", "reference_to_video"],
-        "durations": (4, 6, 8, 10),
+        "durations": (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
         "max_reference_images": 7,
         "input_summary": "文生视频 / 参考生视频（最多 7 张参考图，无参考视频）",
-        "output_summary": "4 / 6 / 8 / 10s · 16:9 / 9:16",
+        "output_summary": "3–15s · 16:9 / 9:16",
     },
 }
 MODELS = tuple(MODEL_SPECS)
