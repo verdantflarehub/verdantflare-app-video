@@ -781,14 +781,15 @@ class SchedulerP1bFenceAndDowngradeTest(unittest.TestCase):
         self.assertNotIn(lease_id, executor.scheduler._pending_releases)
         self.assertEqual(sched.leases[lease_id]["state"], "released")
 
-    def test_h7_canonical_lock_order_scheduler_first_and_unstarted_rollback(self) -> None:
+    def test_h7_canonical_lock_order_engine_slot_first_and_no_abort_storm(self) -> None:
         executor, sched, _ = self._make_executor(cutover_downgrade_enabled=True)
-        executor.stage_slot.enabled = True
-        executor.stage_slot.queue_seconds = 600
+        executor.engine_gate.enabled = True
+        executor.engine_gate.queue_seconds = 600
         tok = CALLER.set({"user_id": "u1", "organization_id": "org1"})
         self.addCleanup(CALLER.reset, tok)
 
-        # 1. When :5056 queues the task, local stage_slot MUST NOT be acquired
+        # 1. Engine slot is acquired BEFORE :5056; while queued on :5056 the task keeps its engine slot
+        #    and a second task on the SAME engine queues on engine_slot with zero :5056 acquire/abort calls.
         sched.force_queued = True
         rec_q = executor.processing["regenerate_2k"].generate(
             project_id="proj_sched",
@@ -796,10 +797,29 @@ class SchedulerP1bFenceAndDowngradeTest(unittest.TestCase):
             source_artifact_id=self.source_art.artifact_id,
         )
         self.assertEqual(rec_q.status, "queued")
-        self.assertIsNone(executor.stage_slot.current_holder())
+        acq_before = len([c for c in sched.calls if c[1].endswith("/acquire")])
 
-        # 2. When :5056 grants while local stage_slot is busy, unbound :5056 grant is immediately aborted (abort_unstarted)
+        rec_same_engine = executor.processing["regenerate_2k"].generate(
+            project_id="proj_sched",
+            idempotency_key="h7-same-engine-wait",
+            source_artifact_id=self.source_art.artifact_id,
+        )
+        self.assertEqual(rec_same_engine.status, "queued")
+        self.assertEqual((rec_same_engine.provider_state or {}).get("waiting_reason"), "engine_slot")
+        acq_after = len([c for c in sched.calls if c[1].endswith("/acquire")])
+        self.assertEqual(acq_after, acq_before)
+
+        # 2. Zero abort_unstarted calls are emitted by local engine-slot rejection.
+        abort_calls = [
+            c for c in sched.calls
+            if c[1].endswith("/release") and c[2].get("reclaim_mode") == "abort_unstarted"
+        ]
+        self.assertEqual(len(abort_calls), 0)
+
+        # 3. Different engine (sr) holding its own slot does not block regenerate_2k when :5056 grants.
         sched.force_queued = False
+        self.tasks.update(rec_q, status="cancelled", provider_state={"worker_settled": True})
+        executor.release_local_slots(rec_q.video_task_id, force=True)
         holder = self.tasks.create(
             project_id="proj_sched",
             idempotency_key="slot-holder",
@@ -809,20 +829,14 @@ class SchedulerP1bFenceAndDowngradeTest(unittest.TestCase):
             status="running",
         )
         holder = self.tasks.update(holder, service="sr", provider_state={"worker_settled": False})
-        self.assertTrue(executor.stage_slot.try_acquire(holder.video_task_id, "sr"))
+        self.assertTrue(executor.engine_gate.try_acquire(holder.video_task_id, "sr"))
 
-        rec_slot_wait = executor.processing["regenerate_2k"].generate(
+        rec_cross_engine = executor.processing["regenerate_2k"].generate(
             project_id="proj_sched",
-            idempotency_key="h7-slot-wait",
+            idempotency_key="h7-cross-engine-ok",
             source_artifact_id=self.source_art.artifact_id,
         )
-        self.assertEqual(rec_slot_wait.status, "queued")
-        abort_calls = [
-            c for c in sched.calls
-            if c[1].endswith("/release") and c[2].get("reclaim_mode") == "abort_unstarted"
-        ]
-        self.assertEqual(len(abort_calls), 1)
-        self.assertFalse(abort_calls[0][2]["worker_settled"])
+        self.assertIn(rec_cross_engine.status, {"running", "succeeded"})
 
     def test_r2_m1_durable_pending_release_journal_strict_receipt_and_restart_recovery(self) -> None:
         from app.gpu_lease import SchedulerError

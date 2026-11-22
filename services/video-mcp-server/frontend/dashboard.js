@@ -33,6 +33,8 @@ const gpuQueueBlockingLabels = {
   quarantined_holder_blocking: "前序异常进程隔离冻结中",
   quota_slot_held_by_protected: "GPU 副本配额被受保护实例占用",
   k8s_slot_exhausted: "GPU 副本配额已满",
+  engine_slot: "等待同引擎执行槽位释放",
+  gpu_stage_slot: "等待本地执行槽位释放",
   stage_slot_busy: "本地执行槽位繁忙",
   scheduler_unavailable: "GPU 调度服务暂不可达",
 };

@@ -612,7 +612,7 @@ class ProcessingExecutor:
                 'completed_at': record.delivery.get('completed_at') or now,
             }
         updated = self.tasks.update(record, **updates)
-        self.executor.stage_slot.release(updated.video_task_id, force=True)
+        self.executor.release_local_slots(updated.video_task_id, force=True)
         updated = self.executor.maybe_release_scheduler_lease(updated)
         return updated
 
@@ -633,6 +633,7 @@ class ProcessingExecutor:
         try:
             local_gating = bool(
                 self.service in {'sr', 'interpolate', 'regenerate_2k', 'character_swap'}
+                and (not self.executor.scheduler.enabled)
                 and (self.executor.gpu.enabled or self.executor.stage_slot.enabled)
             )
             identity = None
@@ -646,16 +647,15 @@ class ProcessingExecutor:
                         self.executor._submitting_tasks.discard(record.video_task_id)
                     self.executor.retire_idle_engine(self.service, rollback=True)
                     return failed
-            if self.executor.scheduler.enabled:
-                inherited = (record.provider_state or {}).get('_inherited_lease')
+
+            if self.service in {'sr', 'interpolate', 'regenerate_2k', 'character_swap'} and self.executor.engine_gate.enabled:
+                slot_ident = identity or self.executor.probe_runtime_identity(url, headers)
                 try:
-                    sched_ok, record, grant_headers = self.executor.acquire_scheduler_grant(
-                        record,
+                    acquired = self.executor.acquire_engine_slot(
+                        record.video_task_id,
                         self.service,
-                        runtime_url=url,
-                        runtime_headers=headers,
-                        inherited_lease=inherited if isinstance(inherited, dict) else None,
-                        bind_immediately=not local_gating,
+                        runtime_identity=slot_ident,
+                        record=record,
                     )
                 except LeaseBusy:
                     return self._fail_record(
@@ -666,10 +666,9 @@ class ProcessingExecutor:
                             'retryable': True,
                         },
                     )
-                if not sched_ok:
-                    return record
-
-            if local_gating:
+                if not acquired:
+                    return self.executor.defer_local_gpu_queue(record, waiting_reason='engine_slot')
+            elif local_gating:
                 try:
                     acquired = self.executor.acquire_local_gpu(
                         record.video_task_id,
@@ -686,8 +685,30 @@ class ProcessingExecutor:
                         },
                     )
                 if not acquired:
-                    record = self.executor.rollback_unstarted_scheduler_grant(record)
                     return self.executor.defer_local_gpu_queue(record)
+
+            if self.executor.scheduler.enabled:
+                inherited = (record.provider_state or {}).get('_inherited_lease')
+                try:
+                    sched_ok, record, grant_headers = self.executor.acquire_scheduler_grant(
+                        record,
+                        self.service,
+                        runtime_url=url,
+                        runtime_headers=headers,
+                        inherited_lease=inherited if isinstance(inherited, dict) else None,
+                        bind_immediately=True,
+                    )
+                except LeaseBusy:
+                    return self._fail_record(
+                        record,
+                        {
+                            'code': 'gpu_busy',
+                            'message': MESSAGES['gpu_busy'],
+                            'retryable': True,
+                        },
+                    )
+                if not sched_ok:
+                    return record
 
             if self.executor.scheduler.enabled:
                 record, grant_headers = self.executor.ensure_scheduler_target_bound(
@@ -813,7 +834,7 @@ class ProcessingExecutor:
             runtime_metrics=metrics,
         )
         if self.executor.stage_slot.is_task_settled(updated):
-            self.executor.stage_slot.release(updated.video_task_id)
+            self.executor.release_local_slots(updated.video_task_id)
             updated = self.executor.maybe_release_scheduler_lease(updated)
         return updated
 
@@ -915,7 +936,7 @@ class ProcessingExecutor:
             provider_state=provider_state,
         )
         if worker_settled:
-            self.executor.stage_slot.release(updated.video_task_id)
+            self.executor.release_local_slots(updated.video_task_id)
             updated = self.executor.maybe_release_scheduler_lease(updated)
         return updated
 
@@ -966,12 +987,12 @@ class ProcessingExecutor:
                             provider_state[key] = body[key]
                     record = self.tasks.update(record, provider_state=provider_state)
                     if provider_state.get('worker_settled') is True:
-                        self.executor.stage_slot.release(record.video_task_id)
+                        self.executor.release_local_slots(record.video_task_id)
                         record = self.executor.maybe_release_scheduler_lease(record)
                 elif poll.status_code == 404:
                     provider_state = {**(record.provider_state or {}), 'worker_settled': True}
                     record = self.tasks.update(record, provider_state=provider_state)
-                    self.executor.stage_slot.release(record.video_task_id)
+                    self.executor.release_local_slots(record.video_task_id)
                     record = self.executor.maybe_release_scheduler_lease(record)
             except (httpx.HTTPError, ValueError, TypeError):
                 pass

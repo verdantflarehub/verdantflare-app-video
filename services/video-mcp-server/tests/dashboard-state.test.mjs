@@ -605,3 +605,17 @@ test('Google Flow keeps its membership name, icon and generated video preview', 
   assert.equal(view.run(`taskPrompt(${task})`), 'scene');
   assert.equal(view.run(`taskResolution(${task})`), '');
 });
+
+test('engine_slot and legacy gpu_stage_slot map to distinct labels instead of VRAM admission', () => {
+  const view = setup();
+  const engineSlotTask = JSON.stringify({
+    status: 'queued',
+    gpu_queue: { waiting_reason: 'engine_slot', blocking_reason: 'none' },
+  });
+  const legacySlotTask = JSON.stringify({
+    status: 'queued',
+    gpu_queue: { waiting_reason: 'gpu_stage_slot', blocking_reason: 'none' },
+  });
+  assert.equal(view.run(`gpuQueueReasonText(${engineSlotTask})`), '等待同引擎执行槽位释放');
+  assert.equal(view.run(`gpuQueueReasonText(${legacySlotTask})`), '等待本地执行槽位释放');
+});

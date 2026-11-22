@@ -81,7 +81,9 @@ class EngineJournal:
     def connect(self):
         import sqlite3
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        db = sqlite3.connect(self.path, timeout=15)
+        db = sqlite3.connect(self.path, timeout=30)
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA busy_timeout=30000")
         db.row_factory = sqlite3.Row
         db.execute("""CREATE TABLE IF NOT EXISTS engine_scale_state (
             service TEXT PRIMARY KEY, generation INTEGER NOT NULL, last_active REAL NOT NULL,

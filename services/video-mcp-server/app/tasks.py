@@ -95,6 +95,8 @@ class TaskStore:
             self.ensure_ready()
             db = sqlite3.connect(self.root / 'coordination.sqlite3', timeout=120)
             try:
+                db.execute('PRAGMA journal_mode=WAL')
+                db.execute('PRAGMA busy_timeout=30000')
                 db.execute('CREATE TABLE IF NOT EXISTS identities (project TEXT, key TEXT, task TEXT, PRIMARY KEY(project,key))')
                 db.execute('BEGIN IMMEDIATE')
                 self._local.connection = db
@@ -364,6 +366,7 @@ class TaskStore:
                     "DELETE FROM idempotency_keys WHERE video_task_id = ?",
                     "DELETE FROM gpu_leases WHERE video_task_id = ?",
                     "DELETE FROM local_gpu_stage_slot WHERE holder_task_id = ?",
+                    "DELETE FROM local_engine_slots WHERE holder_task_id = ?",
                     "DELETE FROM task_titles WHERE task = ?",
                 ):
                     try:

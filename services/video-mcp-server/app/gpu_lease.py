@@ -188,6 +188,7 @@ class GpuCoordinator:
         holder: str,
         deployment: str | None = None,
         enabled: bool = False,
+        scale_enabled: bool | None = None,
         idle_seconds: int = 600,
         queue_seconds: int = 1200,
         ready_seconds: int = 900,
@@ -201,6 +202,7 @@ class GpuCoordinator:
         self.holder = holder
         self.deployment = deployment or None
         self.enabled = enabled
+        self.scale_enabled = enabled if scale_enabled is None else bool(scale_enabled)
         self.idle_seconds = idle_seconds
         self.queue_seconds = queue_seconds
         self.ready_seconds = ready_seconds
@@ -217,15 +219,46 @@ class GpuCoordinator:
         return LEASES[self.role]
 
     @classmethod
-    def from_environment(cls) -> "GpuCoordinator":
+    def from_environment(cls, *, scheduler_enabled: bool | None = None) -> "GpuCoordinator":
+        sched_on = (
+            bool(os.environ.get("STATION_GPU_SCHEDULER_URL", "").strip())
+            if scheduler_enabled is None
+            else bool(scheduler_enabled)
+        )
         role = os.environ.get("GPU_TASK_ROLE", "").strip()
-        if role not in CONFLICTS:
-            return cls(api=None, role="", holder="", enabled=False)
         namespace = os.environ.get("GPU_TASK_NAMESPACE", "").strip()
         namespace_file = Path("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
         if not namespace and namespace_file.is_file():
             namespace = namespace_file.read_text(encoding="utf-8").strip()
         namespace = namespace or "verdantflare-app"
+        idle_seconds = int(os.environ.get("GPU_IDLE_SECONDS", "600"))
+        queue_seconds = int(os.environ.get("GPU_QUEUE_SECONDS", "1200"))
+        ready_seconds = int(os.environ.get("GPU_READY_SECONDS", "900"))
+        lease_seconds = int(os.environ.get("GPU_LEASE_SECONDS", "90"))
+        if sched_on:
+            if role:
+                logging.getLogger(__name__).warning(
+                    "Ignoring legacy GPU_TASK_ROLE=%s because Station GPU scheduler (:5056) is active",
+                    role,
+                )
+            has_k8s = (
+                Path("/var/run/secrets/kubernetes.io/serviceaccount/token").is_file()
+                or bool(os.environ.get("KUBERNETES_SERVICE_HOST", "").strip())
+            )
+            return cls(
+                api=K8sApi(namespace) if has_k8s else None,
+                role="",
+                holder="",
+                deployment=None,
+                enabled=False,
+                scale_enabled=has_k8s,
+                idle_seconds=idle_seconds,
+                queue_seconds=queue_seconds,
+                ready_seconds=ready_seconds,
+                lease_seconds=lease_seconds,
+            )
+        if role not in CONFLICTS:
+            return cls(api=None, role="", holder="", enabled=False, scale_enabled=False)
         holder = os.environ.get("GPU_TASK_HOLDER", "").strip() or f"{role}/{os.environ.get('HOSTNAME', 'local')}"
         deployment = os.environ.get("GPU_TASK_DEPLOYMENT", "").strip() or None
         return cls(
@@ -234,10 +267,11 @@ class GpuCoordinator:
             holder=holder,
             deployment=deployment,
             enabled=True,
-            idle_seconds=int(os.environ.get("GPU_IDLE_SECONDS", "600")),
-            queue_seconds=int(os.environ.get("GPU_QUEUE_SECONDS", "1200")),
-            ready_seconds=int(os.environ.get("GPU_READY_SECONDS", "900")),
-            lease_seconds=int(os.environ.get("GPU_LEASE_SECONDS", "90")),
+            scale_enabled=True,
+            idle_seconds=idle_seconds,
+            queue_seconds=queue_seconds,
+            ready_seconds=ready_seconds,
+            lease_seconds=lease_seconds,
         )
 
     def peer_holder(self) -> str | None:
@@ -436,12 +470,20 @@ class LocalGpuStageSlot:
         self._monotonic = monotonic or time.monotonic
 
     @classmethod
-    def from_environment(cls, tasks) -> "LocalGpuStageSlot":
+    def from_environment(cls, tasks, *, scheduler_enabled: bool | None = None) -> "LocalGpuStageSlot":
+        sched_on = (
+            bool(os.environ.get("STATION_GPU_SCHEDULER_URL", "").strip())
+            if scheduler_enabled is None
+            else bool(scheduler_enabled)
+        )
+        queue_seconds = int(os.environ.get("GPU_QUEUE_SECONDS", "1200"))
+        if sched_on:
+            return cls(tasks, enabled=False, queue_seconds=queue_seconds)
         role = os.environ.get("GPU_TASK_ROLE", "").strip()
         return cls(
             tasks,
             enabled=role in CONFLICTS,
-            queue_seconds=int(os.environ.get("GPU_QUEUE_SECONDS", "1200")),
+            queue_seconds=queue_seconds,
         )
 
     @contextmanager
@@ -450,6 +492,9 @@ class LocalGpuStageSlot:
         existing = getattr(self.tasks._local, "connection", None)
         db = existing or sqlite3.connect(self.tasks.db_path, timeout=30)
         try:
+            if existing is None:
+                db.execute("PRAGMA journal_mode=WAL")
+                db.execute("PRAGMA busy_timeout=30000")
             db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS local_gpu_stage_slot (
@@ -596,6 +641,199 @@ class LocalGpuStageSlot:
             db.execute(
                 "UPDATE local_gpu_stage_slot SET holder_task_id = '', service = '', updated_at = ? WHERE slot_id = ?",
                 (time.time(), self.SLOT_ID),
+            )
+
+
+class EngineConcurrencyGate:
+    """Per-engine-instance (service + boot_id) concurrency gate in coordination.sqlite3.
+
+    Unlike the retired node-wide ``LocalGpuStageSlot`` (``local_gpu_5090``), this
+    gate never serializes tasks across different engines or different physical GPUs.
+    """
+
+    def __init__(
+        self,
+        tasks,
+        *,
+        enabled: bool = False,
+        default_limit: int = 1,
+        service_limits: dict[str, int] | None = None,
+        queue_seconds: int = 1200,
+        monotonic=None,
+    ) -> None:
+        self.tasks = tasks
+        self.enabled = enabled
+        self.default_limit = max(1, int(default_limit))
+        self.service_limits = {
+            str(k): max(1, int(v))
+            for k, v in (service_limits or {}).items()
+            if str(k).strip()
+        }
+        self.queue_seconds = queue_seconds
+        self._monotonic = monotonic or time.monotonic
+
+    @classmethod
+    def from_environment(
+        cls,
+        tasks,
+        *,
+        enabled: bool | None = None,
+    ) -> "EngineConcurrencyGate":
+        is_enabled = (
+            bool(os.environ.get("STATION_GPU_SCHEDULER_URL", "").strip())
+            if enabled is None
+            else bool(enabled)
+        )
+        raw_limits = os.environ.get("VIDEO_ENGINE_CONCURRENCY_LIMITS", "").strip()
+        limits: dict[str, int] = {}
+        if raw_limits:
+            try:
+                parsed = json.loads(raw_limits)
+                if isinstance(parsed, dict):
+                    for key, val in parsed.items():
+                        if isinstance(val, int) and val >= 1:
+                            limits[str(key)] = val
+            except (ValueError, TypeError):
+                pass
+        return cls(
+            tasks,
+            enabled=is_enabled,
+            default_limit=1,
+            service_limits=limits,
+            queue_seconds=int(os.environ.get("GPU_QUEUE_SECONDS", "1200")),
+        )
+
+    def limit_for(self, service: str) -> int:
+        return self.service_limits.get(service, self.default_limit)
+
+    @staticmethod
+    def engine_key(service: str, runtime_identity: dict | None = None) -> str:
+        boot_id = ""
+        if isinstance(runtime_identity, dict):
+            boot_id = str(runtime_identity.get("boot_id") or "").strip()
+        return f"{service}:{boot_id or 'default'}"
+
+    @contextmanager
+    def _connection(self):
+        self.tasks.ensure_ready()
+        existing = getattr(self.tasks._local, "connection", None)
+        db = existing or sqlite3.connect(self.tasks.db_path, timeout=30)
+        try:
+            if existing is None:
+                db.execute("PRAGMA journal_mode=WAL")
+                db.execute("PRAGMA busy_timeout=30000")
+            db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS local_engine_slots (
+                    engine_key TEXT NOT NULL,
+                    holder_task_id TEXT NOT NULL,
+                    service TEXT NOT NULL,
+                    acquired_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (engine_key, holder_task_id)
+                )
+                """
+            )
+            if existing is None:
+                db.execute("BEGIN IMMEDIATE")
+            yield db
+            if existing is None:
+                db.commit()
+        except Exception:
+            if existing is None:
+                try:
+                    db.rollback()
+                except sqlite3.Error:
+                    pass
+            raise
+        finally:
+            if existing is None:
+                db.close()
+
+    def _holder_record(self, holder_task_id: str):
+        if not holder_task_id:
+            return None
+        from .tasks import TaskNotFound
+        try:
+            return self.tasks.get(holder_task_id)
+        except (TaskNotFound, ValueError):
+            return None
+
+    def _prune_settled(self, db, key: str) -> list[tuple[str, str]]:
+        rows = db.execute(
+            "SELECT holder_task_id, service FROM local_engine_slots WHERE engine_key = ?",
+            (key,),
+        ).fetchall()
+        active: list[tuple[str, str]] = []
+        for holder_tid, holder_svc in rows:
+            rec = self._holder_record(str(holder_tid))
+            if LocalGpuStageSlot.is_task_settled(rec):
+                db.execute(
+                    "DELETE FROM local_engine_slots WHERE engine_key = ? AND holder_task_id = ?",
+                    (key, str(holder_tid)),
+                )
+            else:
+                active.append((str(holder_tid), str(holder_svc)))
+        return active
+
+    def current_holders(
+        self,
+        service: str,
+        *,
+        runtime_identity: dict | None = None,
+    ) -> list[tuple[str, str]]:
+        if not self.enabled:
+            return []
+        key = self.engine_key(service, runtime_identity)
+        with self._connection() as db:
+            return self._prune_settled(db, key)
+
+    def try_acquire(
+        self,
+        task_id: str,
+        service: str,
+        *,
+        runtime_identity: dict | None = None,
+    ) -> bool:
+        if not self.enabled:
+            return True
+        now = time.time()
+        key = self.engine_key(service, runtime_identity)
+        limit = self.limit_for(service)
+        with self._connection() as db:
+            active = self._prune_settled(db, key)
+            active_ids = {tid for tid, _ in active}
+            if task_id in active_ids:
+                db.execute(
+                    "UPDATE local_engine_slots SET updated_at = ? WHERE engine_key = ? AND holder_task_id = ?",
+                    (now, key, task_id),
+                )
+                return True
+            if len(active_ids) >= limit:
+                return False
+            db.execute(
+                """
+                INSERT INTO local_engine_slots (engine_key, holder_task_id, service, acquired_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(engine_key, holder_task_id) DO UPDATE SET
+                    service = excluded.service,
+                    updated_at = excluded.updated_at
+                """,
+                (key, task_id, service, now, now),
+            )
+            return True
+
+    def release(self, task_id: str | None = None, *, force: bool = False) -> None:
+        if not self.enabled or not task_id:
+            return
+        with self._connection() as db:
+            if not force:
+                holder = self._holder_record(task_id)
+                if not LocalGpuStageSlot.is_task_settled(holder):
+                    return
+            db.execute(
+                "DELETE FROM local_engine_slots WHERE holder_task_id = ?",
+                (task_id,),
             )
 
 

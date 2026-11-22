@@ -63,7 +63,7 @@ class DepthExecutor:
         }
         pstate['worker_settled'] = True
         updated = self.tasks.update(record, status='failed', error=error, provider_state=pstate)
-        self.executor.stage_slot.release(updated.video_task_id, force=True)
+        self.executor.release_local_slots(updated.video_task_id, force=True)
         return self.executor.maybe_release_scheduler_lease(updated)
 
     def _submit(self, record):
@@ -72,24 +72,24 @@ class DepthExecutor:
         acquired = False
         grant_headers = {}
         try:
-            local_gating = bool(self.executor.gpu.enabled or self.executor.stage_slot.enabled)
-            if self.executor.scheduler.enabled:
+            local_gating = bool((not self.executor.scheduler.enabled) and (self.executor.gpu.enabled or self.executor.stage_slot.enabled))
+            if self.executor.engine_gate.enabled:
+                slot_ident = self.executor.probe_runtime_identity(self.url)
                 try:
-                    sched_ok, record, grant_headers = self.executor.acquire_scheduler_grant(
-                        record,
+                    acquired = self.executor.acquire_engine_slot(
+                        record.video_task_id,
                         'depth',
-                        runtime_url=self.url,
-                        bind_immediately=not local_gating,
+                        runtime_identity=slot_ident,
+                        record=record,
                     )
                 except LeaseBusy:
                     return self._fail_record(
                         record,
                         {'code': 'gpu_busy', 'message': MESSAGES['gpu_busy'], 'retryable': True},
                     )
-                if not sched_ok:
-                    return record
-
-            if local_gating:
+                if not acquired:
+                    return self.executor.defer_local_gpu_queue(record, waiting_reason='engine_slot')
+            elif local_gating:
                 try:
                     acquired = self.executor.acquire_local_gpu(record.video_task_id, 'depth', record=record)
                 except LeaseBusy:
@@ -98,8 +98,23 @@ class DepthExecutor:
                         {'code': 'gpu_busy', 'message': MESSAGES['gpu_busy'], 'retryable': True},
                     )
                 if not acquired:
-                    record = self.executor.rollback_unstarted_scheduler_grant(record)
                     return self.executor.defer_local_gpu_queue(record)
+
+            if self.executor.scheduler.enabled:
+                try:
+                    sched_ok, record, grant_headers = self.executor.acquire_scheduler_grant(
+                        record,
+                        'depth',
+                        runtime_url=self.url,
+                        bind_immediately=True,
+                    )
+                except LeaseBusy:
+                    return self._fail_record(
+                        record,
+                        {'code': 'gpu_busy', 'message': MESSAGES['gpu_busy'], 'retryable': True},
+                    )
+                if not sched_ok:
+                    return record
 
             if self.executor.scheduler.enabled:
                 record, grant_headers = self.executor.ensure_scheduler_target_bound(
@@ -143,7 +158,7 @@ class DepthExecutor:
             pstate.setdefault('worker_settled', True)
         updated = self.tasks.update(record, status=status, error=error, provider_state=pstate or None)
         if self.executor.stage_slot.is_task_settled(updated):
-            self.executor.stage_slot.release(updated.video_task_id)
+            self.executor.release_local_slots(updated.video_task_id)
             updated = self.executor.maybe_release_scheduler_lease(updated)
         return updated
 
