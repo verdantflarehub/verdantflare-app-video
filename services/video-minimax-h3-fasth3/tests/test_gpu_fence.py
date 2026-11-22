@@ -99,7 +99,7 @@ class FastH3EpochFenceTest(unittest.TestCase):
 
             def t_reclaim() -> None:
                 barrier.wait()
-                pr = guard.reclaim_and_seal(lease_id="lease-h3-45", fencing_token=45, active_tasks=0, settled=True, identity=ident)
+                pr = guard.reclaim_and_seal(lease_id="lease-h3-45", fencing_token=45, active_tasks=0, settled=True, identity=ident, expected_pod_uid=ident["pod_uid"], expected_container_id=ident["container_id"], expected_boot_id=ident["boot_id"])
                 res["reclaimed"] = bool(pr and pr["reclaimed"])
 
             th1, th2 = threading.Thread(target=t_spawn), threading.Thread(target=t_reclaim)
@@ -107,6 +107,7 @@ class FastH3EpochFenceTest(unittest.TestCase):
             th2.start()
             th1.join()
             th2.join()
+            self.assertEqual(set(res), {"spawned", "reclaimed"})
             self.assertFalse(res.get("spawned") and res.get("reclaimed"))
 
             # Corrupted state file fails closed

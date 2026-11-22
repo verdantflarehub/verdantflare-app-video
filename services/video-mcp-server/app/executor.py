@@ -379,7 +379,10 @@ class VideoExecutor:
             resp = self.client.post(
                 f"{runtime_url.rstrip('/')}/internal/v1/gpu-guard/reclaim",
                 headers=req_headers,
-                json={"lease_id": lease_id, "fencing_token": token},
+                json={"lease_id": lease_id, "fencing_token": token,
+                      "pod_uid": str(lease_doc.get("pod_uid") or ""),
+                      "container_id": str(lease_doc.get("container_id") or ""),
+                      "boot_id": str(lease_doc.get("boot_id") or "")},
                 timeout=10,
             )
             if resp.status_code != 200:
@@ -463,6 +466,8 @@ class VideoExecutor:
         lease_id: str,
         fencing_token: int,
         expected_pod_uid: str,
+        expected_container_id: str = "",
+        expected_boot_id: str = "",
         require_worker_idle: bool = False,
     ) -> tuple[str, dict | None]:
         req_headers = dict(runtime_headers or {})
@@ -472,7 +477,9 @@ class VideoExecutor:
             resp = self.client.post(
                 f"{runtime_url.rstrip('/')}/internal/v1/gpu-guard/reclaim",
                 headers=req_headers,
-                json={"lease_id": lease_id, "fencing_token": int(fencing_token)},
+                json={"lease_id": lease_id, "fencing_token": int(fencing_token),
+                      "pod_uid": expected_pod_uid, "container_id": expected_container_id,
+                      "boot_id": expected_boot_id},
                 timeout=10,
             )
             if resp.status_code not in {200, 409}:
@@ -807,7 +814,9 @@ class VideoExecutor:
                 runtime_headers,
                 lease_id=lease_id,
                 fencing_token=fencing_token,
-                expected_pod_uid=str(live_ident.get("pod_uid") or ""),
+                expected_pod_uid=str(bound_ident.get("pod_uid") or ""),
+                expected_container_id=str(bound_ident.get("container_id") or ""),
+                expected_boot_id=str(bound_ident.get("boot_id") or ""),
                 require_worker_idle=(pstate.get("worker_settled") is False),
             )
             if seal_state != "sealed":
@@ -2612,7 +2621,9 @@ class VideoExecutor:
                                     runtime_headers,
                                     lease_id=lease_id,
                                     fencing_token=fencing_token,
-                                    expected_pod_uid=str(live_ident.get("pod_uid") or ""),
+                                    expected_pod_uid=str(bound_ident.get("pod_uid") or ""),
+                                    expected_container_id=str(bound_ident.get("container_id") or ""),
+                                    expected_boot_id=str(bound_ident.get("boot_id") or ""),
                                     require_worker_idle=(prev_state.get("worker_settled") is False),
                                 )
                                 if seal_state == "sealed":

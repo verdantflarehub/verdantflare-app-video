@@ -15,6 +15,8 @@ import sys
 import threading
 import time
 
+from .fence_scope import ScopedFenceState, gpu_scope
+
 
 PR_SET_CHILD_SUBREAPER = 36
 
@@ -221,6 +223,7 @@ class EpochLeaseFenceGuard:
         fsync_fn=None,
         replace_fn=None,
         fsync_dir_fn=None,
+        legacy_lease_records: list[dict[str, object]] | None = None,
     ) -> None:
         self._policy_env = policy_env
         raw_state = str(state_path).strip() if state_path is not None else os.environ.get("VF_GPU_GUARD_STATE_PATH", "").strip()
@@ -242,6 +245,8 @@ class EpochLeaseFenceGuard:
         self._attempt_index: dict[tuple[str, str, str], tuple[str, str]] = {}
         self._inflight_tasks: dict[str, dict[str, object]] = {}
         self._executing_tasks: set[str] = set()
+        self._scope_state = ScopedFenceState()
+        self._legacy_lease_records = legacy_lease_records
         self._load_state_locked()
 
     def _ensure_healthy_locked(self) -> None:
@@ -309,10 +314,15 @@ class EpochLeaseFenceGuard:
             raw_inflight = payload.get("inflight_tasks", {})
             if not isinstance(raw_inflight, dict):
                 raise ValueError("invalid_inflight_tasks")
+            scopes = ScopedFenceState.load(
+                payload, grants=[*key_grants.values(), *task_grants.values()],
+                revoked=revoked, consumed=consumed, minimum=raw_min,
+                legacy_records=self._legacy_lease_records,
+            )
             cur_pid = os.getpid()
             cur_ticks = _read_proc_starttime_ticks()
             inflight: dict[str, dict[str, object]] = {}
-            needs_repersist = False
+            needs_repersist = payload.get("schema_version", 1) == 1
             for tid, meta in raw_inflight.items():
                 if not isinstance(tid, str) or not isinstance(meta, dict):
                     raise ValueError("invalid_inflight_entry")
@@ -326,6 +336,10 @@ class EpochLeaseFenceGuard:
                     if lid:
                         revoked.add(lid)
                     if tok > 0:
+                        source = scopes.leases.get(lid)
+                        if source is None or source["fencing_token"] != tok:
+                            raise ValueError("orphan_fence_scope_unresolved")
+                        scopes = scopes.advance(lid, tok, source["gpu_uuid"], seal=True)
                         consumed.add(tok)
                         if tok > raw_min:
                             raw_min = tok
@@ -341,6 +355,7 @@ class EpochLeaseFenceGuard:
             self._task_epochs = task_epochs
             self._attempt_index = index
             self._inflight_tasks = inflight
+            self._scope_state = scopes
             if needs_repersist:
                 self._commit_state_locked(
                     min_fencing_token=raw_min,
@@ -352,6 +367,7 @@ class EpochLeaseFenceGuard:
                     task_epochs=task_epochs,
                     attempt_index=index,
                     inflight_tasks=inflight,
+                    scope_state=scopes,
                 )
         except Exception as exc:
             self._corrupted = True
@@ -369,8 +385,10 @@ class EpochLeaseFenceGuard:
         task_epochs: dict[str, int],
         attempt_index: dict[tuple[str, str, str], tuple[str, str]],
         inflight_tasks: dict[str, dict[str, object]],
+        scope_state: ScopedFenceState | None = None,
     ) -> None:
         self._ensure_healthy_locked()
+        scopes = scope_state if scope_state is not None else self._scope_state
         if self._state_path is not None:
             tmp_path = self._state_path.with_name(
                 f"{self._state_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
@@ -383,6 +401,8 @@ class EpochLeaseFenceGuard:
                 }
                 data = json.dumps(
                     {
+                        "schema_version": 2,
+                        "scope_state": scopes.payload(),
                         "min_fencing_token": min_fencing_token,
                         "gpu_epoch": gpu_epoch,
                         "consumed_tokens": sorted(consumed_tokens),
@@ -427,6 +447,31 @@ class EpochLeaseFenceGuard:
         self._task_epochs = task_epochs
         self._attempt_index = attempt_index
         self._inflight_tasks = inflight_tasks
+        self._scope_state = scopes
+
+    def _resolve_scope_locked(self, lease_id, token, *, grant=None, identity=None, expected_pod_uid="", expected_container_id="", expected_boot_id="") -> str:
+        if not lease_id or isinstance(token, bool) or not isinstance(token, int) or token <= 0:
+            raise StaleFenceError("missing_lease_or_token")
+        if grant is not None and (grant.get("lease_id") != lease_id or grant.get("fencing_token") != token):
+            raise StaleFenceError("lease_fence_conflict")
+        previous = self._scope_state.leases.get(lease_id)
+        if previous is not None:
+            if previous["fencing_token"] != token:
+                raise StaleFenceError("lease_fence_conflict")
+            return previous["gpu_uuid"]
+        # An unseen lease may be sealed before dispatch. Only a caller-bound
+        # Pod identity establishes the current physical card; never guess it.
+        ident = identity or {}
+        visible = ident.get("visible_gpu_uuids") or []
+        if (any(is_unknown_identity_value(x) for x in (expected_pod_uid, expected_container_id, expected_boot_id))
+                or expected_pod_uid != ident.get("pod_uid")
+                or normalize_container_id(expected_container_id) != normalize_container_id(str(ident.get("container_id") or ""))
+                or expected_boot_id != ident.get("boot_id") or len(visible) != 1):
+            raise StaleFenceError("fence_scope_unresolved")
+        try:
+            return gpu_scope(visible[0])
+        except ValueError as exc:
+            raise StaleFenceError("fence_scope_unresolved") from exc
 
     @property
     def policy(self) -> str:
@@ -512,6 +557,10 @@ class EpochLeaseFenceGuard:
             for item in (part.strip() for part in gpu_uuid.split(",") if part.strip()):
                 if item not in visible:
                     raise PermissionError("gpu_uuid_mismatch")
+        try:
+            scope = gpu_scope(gpu_uuid)
+        except ValueError as exc:
+            raise PermissionError("invalid_fence_gpu_scope") from exc
 
         expires_epoch = _parse_expires_epoch(expires_raw)
         if expires_raw and expires_epoch is None:
@@ -527,15 +576,18 @@ class EpochLeaseFenceGuard:
                 prev_key, prev_digest = existing
                 if prev_digest != request_digest:
                     raise ValueError("attempt_stage_conflict")
-                return self._key_grants.get(prev_key), prev_key
+                previous = self._key_grants.get(prev_key)
+                if previous is not None and (previous.get("gpu_uuid") != scope or previous.get("lease_id") != lease_id or previous.get("fencing_token") != fencing_token):
+                    raise StaleFenceError("lease_fence_conflict")
+                return previous, prev_key
 
             if key_id in self._key_grants:
                 raise ValueError("idempotency_conflict")
 
             if (
                 lease_id in self._revoked_leases
-                or fencing_token in self._consumed_tokens
-                or fencing_token <= self._min_fencing_token
+                or self._scope_state.consumed(scope, fencing_token)
+                or fencing_token <= self._scope_state.minimum(scope)
             ):
                 raise StaleFenceError("stale_or_revoked_fencing_token")
 
@@ -549,7 +601,7 @@ class EpochLeaseFenceGuard:
                 "pod_uid": pod_uid or local_pod,
                 "container_id": container_id or local_cid,
                 "boot_id": boot_id or local_boot,
-                "gpu_uuid": gpu_uuid,
+                "gpu_uuid": scope,
                 "expires_epoch": expires_epoch,
                 "key_id": key_id,
             }
@@ -577,6 +629,7 @@ class EpochLeaseFenceGuard:
                 task_epochs=dict(self._task_epochs),
                 attempt_index=next_index,
                 inflight_tasks=next_inflight,
+                scope_state=self._scope_state.advance(lease_id, fencing_token, scope, seal=False),
             )
             return grant, None
 
@@ -588,7 +641,7 @@ class EpochLeaseFenceGuard:
                 return False
             lid = str(grant.get("lease_id") or "")
             tok = int(grant.get("fencing_token") or 0)
-            return lid in self._revoked_leases or tok in self._consumed_tokens
+            return lid in self._revoked_leases or self._scope_state.consumed(gpu_scope(grant.get("gpu_uuid")), tok)
 
     def bind_task_id(self, key_id: str, runtime_task_id: str) -> None:
         with self._lock:
@@ -627,8 +680,8 @@ class EpochLeaseFenceGuard:
                 expires_epoch = grant.get("expires_epoch")
                 if (
                     lease_id in self._revoked_leases
-                    or token in self._consumed_tokens
-                    or token < self._min_fencing_token
+                    or self._scope_state.consumed(gpu_scope(grant.get("gpu_uuid")), token)
+                    or token < self._scope_state.minimum(gpu_scope(grant.get("gpu_uuid")))
                 ):
                     raise StaleFenceError("stale_or_revoked_fencing_token")
                 if isinstance(expires_epoch, (int, float)) and expires_epoch <= time.time() and self.policy == "enforce":
@@ -659,6 +712,7 @@ class EpochLeaseFenceGuard:
             next_consumed = set(self._consumed_tokens)
             next_min = self._min_fencing_token
             key_id = ""
+            scopes = self._scope_state
             if grant is not None:
                 lid = str(grant.get("lease_id") or "")
                 tok = int(grant.get("fencing_token") or 0)
@@ -666,6 +720,7 @@ class EpochLeaseFenceGuard:
                 if lid:
                     next_revoked.add(lid)
                 if tok > 0:
+                    scopes = scopes.advance(lid, tok, gpu_scope(grant.get("gpu_uuid")), seal=True)
                     next_consumed.add(tok)
                     if tok > next_min:
                         next_min = tok
@@ -690,6 +745,7 @@ class EpochLeaseFenceGuard:
                 task_epochs=next_task_epochs,
                 attempt_index=dict(self._attempt_index),
                 inflight_tasks=next_inflight,
+                scope_state=scopes,
             )
             return next_task_epochs[task_id]
 
@@ -698,10 +754,11 @@ class EpochLeaseFenceGuard:
             self._ensure_healthy_locked()
             return self._task_epochs.get(task_id)
 
-    def revoke_lease(self, lease_id: str, fencing_token: int) -> list[str]:
+    def revoke_lease(self, lease_id: str, fencing_token: int, *, identity=None, expected_pod_uid="", expected_container_id="", expected_boot_id="") -> list[str]:
         affected: list[str] = []
         with self._lock:
             self._ensure_healthy_locked()
+            scope = self._resolve_scope_locked(lease_id, fencing_token, identity=identity, expected_pod_uid=expected_pod_uid, expected_container_id=expected_container_id, expected_boot_id=expected_boot_id)
             next_revoked = set(self._revoked_leases)
             next_consumed = set(self._consumed_tokens)
             next_min = self._min_fencing_token
@@ -712,7 +769,7 @@ class EpochLeaseFenceGuard:
                 if fencing_token > next_min:
                     next_min = fencing_token
             for tid, grant in self._task_grants.items():
-                if grant.get("lease_id") == lease_id or int(grant.get("fencing_token", 0)) <= fencing_token:
+                if grant.get("lease_id") == lease_id or (grant.get("gpu_uuid") == scope and int(grant.get("fencing_token", 0)) <= fencing_token):
                     affected.append(tid)
             self._commit_state_locked(
                 min_fencing_token=next_min,
@@ -724,6 +781,7 @@ class EpochLeaseFenceGuard:
                 task_epochs=dict(self._task_epochs),
                 attempt_index=dict(self._attempt_index),
                 inflight_tasks=dict(self._inflight_tasks),
+                scope_state=self._scope_state.advance(lease_id, fencing_token, scope, seal=True),
             )
         return affected
 
@@ -736,19 +794,25 @@ class EpochLeaseFenceGuard:
         active_tasks: int = 0,
         settled: bool = True,
         identity: dict[str, object] | None = None,
+        expected_pod_uid: str = "",
+        expected_container_id: str = "",
+        expected_boot_id: str = "",
     ) -> dict[str, object] | None:
         ident = identity or read_runtime_identity()
         with self._lock:
             self._ensure_healthy_locked()
             grant = self._task_grants.get(task_id) if task_id else None
+            if task_id and grant is None and (lease_id or fencing_token):
+                raise StaleFenceError("unknown_task_fence")
             epoch = self._task_epochs.get(task_id or "", 0) or max(1, self._gpu_epoch)
             resolved_lease = lease_id or (str(grant["lease_id"]) if grant else "")
             resolved_token = fencing_token or (int(grant["fencing_token"]) if grant else 0)
             if not resolved_lease and resolved_token <= 0 and grant is None:
                 return None
+            scope = self._resolve_scope_locked(resolved_lease, resolved_token, grant=grant, identity=ident, expected_pod_uid=expected_pod_uid, expected_container_id=expected_container_id, expected_boot_id=expected_boot_id)
             need_commit = (
                 (bool(resolved_lease) and resolved_lease not in self._revoked_leases)
-                or (resolved_token > 0 and resolved_token not in self._consumed_tokens)
+                or (resolved_token > 0 and not self._scope_state.consumed(scope, resolved_token))
                 or self._gpu_epoch == 0
             )
             if need_commit:
@@ -772,6 +836,7 @@ class EpochLeaseFenceGuard:
                     task_epochs=dict(self._task_epochs),
                     attempt_index=dict(self._attempt_index),
                     inflight_tasks=dict(self._inflight_tasks),
+                    scope_state=self._scope_state.advance(resolved_lease, resolved_token, scope, seal=True),
                 )
             effective_active = max(
                 int(active_tasks),
@@ -780,10 +845,10 @@ class EpochLeaseFenceGuard:
             )
             is_sealed = bool(
                 (resolved_lease and resolved_lease in self._revoked_leases)
-                or (resolved_token > 0 and resolved_token in self._consumed_tokens)
+                or (resolved_token > 0 and self._scope_state.consumed(scope, resolved_token))
             )
             is_settled = bool(settled and effective_active == 0)
-            consumed = resolved_token if resolved_token > 0 else self._min_fencing_token
+            consumed = resolved_token if resolved_token > 0 else self._scope_state.minimum(scope)
             return {
                 "reclaimed": bool(is_settled and is_sealed),
                 "active_tasks": int(effective_active),
@@ -808,16 +873,22 @@ class EpochLeaseFenceGuard:
         active_tasks: int = 0,
         settled: bool = True,
         identity: dict[str, object] | None = None,
+        expected_pod_uid: str = "",
+        expected_container_id: str = "",
+        expected_boot_id: str = "",
     ) -> dict[str, object] | None:
         ident = identity or read_runtime_identity()
         with self._lock:
             self._ensure_healthy_locked()
             grant = self._task_grants.get(task_id) if task_id else None
+            if task_id and grant is None and (lease_id or fencing_token):
+                raise StaleFenceError("unknown_task_fence")
             epoch = self._task_epochs.get(task_id or "", 0) or max(1, self._gpu_epoch)
             resolved_lease = lease_id or (str(grant["lease_id"]) if grant else "")
             resolved_token = fencing_token or (int(grant["fencing_token"]) if grant else 0)
             if not resolved_lease and resolved_token <= 0 and grant is None:
                 return None
+            scope = self._resolve_scope_locked(resolved_lease, resolved_token, grant=grant, identity=ident, expected_pod_uid=expected_pod_uid, expected_container_id=expected_container_id, expected_boot_id=expected_boot_id)
             effective_active = max(
                 int(active_tasks),
                 len(self._executing_tasks),
@@ -827,7 +898,7 @@ class EpochLeaseFenceGuard:
             if is_settled:
                 need_commit = (
                     (bool(resolved_lease) and resolved_lease not in self._revoked_leases)
-                    or (resolved_token > 0 and resolved_token not in self._consumed_tokens)
+                    or (resolved_token > 0 and not self._scope_state.consumed(scope, resolved_token))
                     or self._gpu_epoch == 0
                 )
                 if need_commit:
@@ -851,12 +922,13 @@ class EpochLeaseFenceGuard:
                         task_epochs=dict(self._task_epochs),
                         attempt_index=dict(self._attempt_index),
                         inflight_tasks=dict(self._inflight_tasks),
+                        scope_state=self._scope_state.advance(resolved_lease, resolved_token, scope, seal=True),
                     )
             is_sealed = bool(
                 (resolved_lease and resolved_lease in self._revoked_leases)
-                or (resolved_token > 0 and resolved_token in self._consumed_tokens)
+                or (resolved_token > 0 and self._scope_state.consumed(scope, resolved_token))
             )
-            consumed = resolved_token if resolved_token > 0 else self._min_fencing_token
+            consumed = resolved_token if resolved_token > 0 else self._scope_state.minimum(scope)
             return {
                 "reclaimed": bool(is_settled and is_sealed),
                 "active_tasks": int(effective_active),

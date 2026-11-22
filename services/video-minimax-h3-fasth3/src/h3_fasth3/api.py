@@ -683,7 +683,14 @@ def create_app(
         except (TypeError, ValueError):
             raise HTTPException(422, "invalid_fencing_token") from None
         try:
-            affected = fence_guard.revoke_lease(lease_id, fencing_token)
+            affected = fence_guard.revoke_lease(
+                lease_id, fencing_token, identity=identity,
+                expected_pod_uid=str(payload.get("pod_uid") or ""),
+                expected_container_id=str(payload.get("container_id") or ""),
+                expected_boot_id=str(payload.get("boot_id") or ""),
+            )
+        except StaleFenceError as exc:
+            raise HTTPException(409, {"code": str(exc)}) from None
         except FencePersistenceError as exc:
             raise HTTPException(503, {"code": str(exc)}) from None
         for tid in affected:
@@ -701,7 +708,12 @@ def create_app(
                     active_tasks=active_count,
                     settled=(active_count == 0),
                     identity=identity,
+                    expected_pod_uid=str(payload.get("pod_uid") or ""),
+                    expected_container_id=str(payload.get("container_id") or ""),
+                    expected_boot_id=str(payload.get("boot_id") or ""),
                 ) or {}
+        except StaleFenceError as exc:
+            raise HTTPException(409, {"code": str(exc)}) from None
         except FencePersistenceError as exc:
             raise HTTPException(503, {"code": str(exc)}) from None
         is_settled = bool(proof.get("reclaimed"))
@@ -724,7 +736,12 @@ def create_app(
                     active_tasks=active_count,
                     settled=True,
                     identity=identity,
+                    expected_pod_uid=str(payload.get("pod_uid") or ""),
+                    expected_container_id=str(payload.get("container_id") or ""),
+                    expected_boot_id=str(payload.get("boot_id") or ""),
                 )
+        except StaleFenceError as exc:
+            raise HTTPException(409, {"code": str(exc)}) from None
         except FencePersistenceError as exc:
             raise HTTPException(503, {"code": str(exc)}) from None
         if proof is None:
