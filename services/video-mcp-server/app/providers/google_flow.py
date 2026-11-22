@@ -117,8 +117,11 @@ class GoogleFlowAdapter(MembershipAccess):
     def normalize(self, project_id, prompt, model, duration_seconds, aspect_ratio, references,
                   mode=None, resolution=None, quality_profile=None, budget_limit=None, channel_account_id=None,
                   upscale=None):
-        if model not in MODEL_SPECS or quality_profile is not None or resolution is not None or channel_account_id is not None:
+        if model not in MODEL_SPECS or quality_profile is not None or resolution is not None:
             raise ValueError("unsupported_parameter")
+        if channel_account_id is not None:
+            if not isinstance(channel_account_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", channel_account_id):
+                raise ValueError("invalid_channel_account_id")
         spec = MODEL_SPECS[model]
         if upscale is not None:
             if not isinstance(upscale, str) or upscale not in spec.get("upscales", ()):
@@ -176,6 +179,8 @@ class GoogleFlowAdapter(MembershipAccess):
                        video_sources=video_sources, budget_limit=budget)
         if upscale is not None:
             request["upscale"] = upscale
+        if channel_account_id is not None:
+            request["channel_account_id"] = channel_account_id
         return request, "sha256:" + hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
 
     def headers(self, project, actor):
@@ -202,6 +207,8 @@ class GoogleFlowAdapter(MembershipAccess):
         result = dict(model=request["model"], capability="video", parameters=args)
         if request["budget_limit"] is not None:
             result["budget_limit"] = request["budget_limit"]
+        if request.get("channel_account_id"):
+            result["channel_account_id"] = request["channel_account_id"]
         return result
 
     def check(self, request, actor):
