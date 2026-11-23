@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import shutil
+import subprocess
 
 from .artifacts import ArtifactNotFound
 
@@ -47,6 +50,23 @@ def validate_lipsync_request(payload: dict) -> dict:
     return request
 
 
+def _probe_duration_seconds(path) -> float | None:
+    ffprobe_bin = os.environ.get("FFPROBE_BIN") or shutil.which("ffprobe")
+    if not ffprobe_bin:
+        return None
+    try:
+        raw = subprocess.check_output(
+            [ffprobe_bin, "-v", "error", "-show_entries", "format=duration", "-of", "json", str(path)],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=10,
+        )
+        val = float((json.loads(raw).get("format") or {}).get("duration") or 0.0)
+        return val if val > 0 else None
+    except Exception:
+        return None
+
+
 def prepare_request(store, project_id: str, source_video_artifact_id: str, parameters: dict) -> dict:
     source_video = store.get(source_video_artifact_id, project_id)
     audio_id = parameters.get("audio_artifact_id", "")
@@ -63,6 +83,10 @@ def prepare_request(store, project_id: str, source_video_artifact_id: str, param
             raise ValueError(role + "_not_found") from exc
         if size != artifact.size:
             raise ValueError(role + "_integrity_failed")
+    v_dur = _probe_duration_seconds(store.content_path(source_video))
+    a_dur = _probe_duration_seconds(store.content_path(audio))
+    if v_dur is not None and a_dur is not None and abs(v_dur - a_dur) > 2.0 + 1e-6:
+        raise ValueError("duration_mismatch")
     validated = validate_lipsync_request({
         **parameters,
         "project_id": project_id,

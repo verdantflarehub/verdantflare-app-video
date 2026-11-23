@@ -829,8 +829,37 @@ def video_preflight(project_id: str, prompt: str = "",
                     grid_mode: str | None = None,
                     seed: int | None = None,
                     workflow_params: dict[str, object] | None = None,
-                    upscale: str | None = None) -> types.CallToolResult:
+                    upscale: str | None = None,
+                    audio_artifact_id: str | None = None,
+                    inference_steps: int = 20,
+                    guidance_scale: float = 1.5,
+                    audio_mix_mode: str = "driver_wav") -> types.CallToolResult:
     """Validate exact media and parameters and read the selected channel's real pricing and admission."""
+    if route == "lipsync" or mode == "lipsync" or model == "latentsync-1.6" or audio_artifact_id is not None:
+        from .lipsync import prepare_request as prepare_lipsync_request
+        authorize(executor.client, project_id)
+        if not source_artifact_id or not audio_artifact_id:
+            raise ValueError("source video and audio artifact are required")
+        request = prepare_lipsync_request(executor.artifacts, project_id, source_artifact_id, {
+            "audio_artifact_id": audio_artifact_id,
+            "inference_steps": inference_steps,
+            "guidance_scale": guidance_scale,
+            "seed": 1247 if seed is None else seed,
+            "audio_mix_mode": audio_mix_mode,
+        })
+        try:
+            readiness = "ready" if executor.gpu.engine_replicas("lipsync") else "scaled_to_zero"
+        except Exception:
+            readiness = "scaled_to_zero"
+        return _result({
+            **request,
+            "business_type": "video_lipsync",
+            "model_id": "latentsync-1.6",
+            "backend": "latentsync_1_6",
+            "readiness": readiness,
+            "status": "validated",
+            "gpu_verified": False,
+        })
     if route == "character_swap" or mode == "character_swap" or character_image_artifact_id is not None:
         from .character_swap import prepare_request
         authorize(executor.client, project_id)

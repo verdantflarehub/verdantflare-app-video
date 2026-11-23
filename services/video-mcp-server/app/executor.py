@@ -1613,12 +1613,20 @@ class VideoExecutor:
             routes.extend(self.comfyui.capabilities())
         return {"catalog": catalog, "channel_capabilities": catalog.get("channel_capabilities", {}),
                 "default_model": "minimax-h3-ref2va", "default_route": self.runtime_route,
-                "models": [{"model": "minimax-h3-ref2va"}, *dynamic_models],
+                "models": [
+                    {"model": "minimax-h3-ref2va"},
+                    {"model": "latentsync-1.6", "model_id": "latentsync-1.6", "business_type": "video_lipsync",
+                     "routes": ["local"], "channel": "local", "backend": "latentsync_1_6",
+                     "execution_state": "ready", "can_submit": True},
+                    *dynamic_models,
+                ],
                 "model_specification": {"aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
                                         "omni_adaptive": True},
                 "postprocess": {
                     "interpolate": self.delivery.capability(),
                     "regenerate_2k": self.delivery.regenerate_capability(),
+                    "lipsync": {"model_id": "latentsync-1.6", "business_type": "video_lipsync",
+                                "backend": "latentsync_1_6", "configured": True},
                 },
                 "routes": routes, "inline_image_max_bytes": MAX_INLINE_IMAGE_BYTES,
                 "chunk_import": {"max_chunk_bytes": 512 * 1024, "max_file_bytes": MAX_ARTIFACT_BYTES,
