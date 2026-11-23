@@ -32,6 +32,9 @@ def main() -> int:
 
     latentsync_root = Path(args.latentsync_root)
     model_root = Path(args.model_root)
+    ckpt_link = latentsync_root / "checkpoints"
+    if not ckpt_link.exists():
+        ckpt_link.symlink_to(model_root / "checkpoints")
     config = OmegaConf.load(str(latentsync_root / "configs/unet/stage2_512.yaml"))
 
     is_fp16 = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] > 7
