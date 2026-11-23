@@ -41,7 +41,7 @@ SCHEDULER_CONSUMER_SPECS: dict[str, dict[str, object]] = {
     "h3-fasth3": {"consumer_kind": "h3", "stage_id": "generation", "reclaim_mode": "epoch_unload"},
     "h3-singularity": {"consumer_kind": "h3", "stage_id": "generation", "reclaim_mode": "epoch_unload"},
     "character_swap": {"consumer_kind": "video.character_swap", "stage_id": "character_swap", "reclaim_mode": "epoch_unload"},
-    "lipsync": {"consumer_kind": "video.lipsync", "stage_id": "lipsync", "reclaim_mode": "epoch_unload"},
+    "lipsync": {"consumer_kind": "video.regenerate_2k", "stage_id": "lipsync", "reclaim_mode": "epoch_unload"},
     "regenerate_2k": {"consumer_kind": "video.regenerate_2k", "stage_id": "regenerate_2k", "reclaim_mode": "epoch_unload"},
     "h3-latent-upscale": {"consumer_kind": "video.regenerate_2k", "stage_id": "regenerate_2k", "reclaim_mode": "epoch_unload"},
     "interpolate": {"consumer_kind": "rife", "stage_id": "postprocess_rife", "reclaim_mode": "warm_idle_settled"},

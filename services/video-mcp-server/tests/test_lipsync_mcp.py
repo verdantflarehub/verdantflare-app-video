@@ -66,7 +66,7 @@ def test_lipsync_validate_and_prepare_request(tmp_path: Path):
 
 def test_lipsync_scheduler_and_dashboard_presentation():
     spec = SCHEDULER_CONSUMER_SPECS["lipsync"]
-    assert spec["consumer_kind"] == "video.lipsync"
+    assert spec["consumer_kind"] == "video.regenerate_2k"
     assert spec["stage_id"] == "lipsync"
     assert spec["reclaim_mode"] == "epoch_unload"
     assert GpuCoordinator.engine_deployment("lipsync") == "video-lipsync"
