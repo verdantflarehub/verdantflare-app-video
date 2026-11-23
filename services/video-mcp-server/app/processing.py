@@ -640,10 +640,13 @@ class ProcessingExecutor:
                 self.executor._submitting_tasks.add(record.video_task_id)
 
         url, headers, _ = self._runtime_target(record)
+        strip_keys = {'service', 'model', 'postprocess'}
+        if self.service == 'lipsync':
+            strip_keys.add('source_artifact_id')
         payload = {
             k: v
             for k, v in record.request.items()
-            if k not in {'service', 'model', 'postprocess'}
+            if k not in strip_keys
         }
         payload['idempotency_key'] = record.video_task_id
         acquired = False

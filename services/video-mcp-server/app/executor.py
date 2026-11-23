@@ -867,8 +867,10 @@ class VideoExecutor:
                 response = self.client.get(f"{url}/health", headers=headers, timeout=5)
                 data = response.json() if response.status_code == 200 else {}
                 identity = data.get("runtime_identity")
-                profiles = data.get("capabilities", {}).get(service + "_profiles", [])
-                if (data.get("ready") is True and self.processing[service].backend in profiles
+                caps = data.get("capabilities") if isinstance(data.get("capabilities"), dict) else {}
+                profiles = caps.get(service + "_profiles", [])
+                backend = self.processing[service].backend
+                if (data.get("ready") is True and (backend in profiles or caps.get("backend") == backend)
                         and self._has_concrete_runtime_identity(identity)):
                     if self.engine_journal.generation(service) is None:
                         self.recover_ready_engine(service, identity["pod_uid"])
