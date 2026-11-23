@@ -29,7 +29,7 @@ from .channel_errors import MESSAGES, tool_errors
 from .dashboard import Dashboard, _etag_matches, public_admission_reconciliation, public_gpu_queue, public_task
 from .registry import EtcdRegistry
 from .collection import public_collection
-from .tasks import TaskConflict, TaskNotFound, TaskStore
+from .tasks import TaskConflict, TaskNotFound, TaskRecord, TaskStore
 from .delivery import CALLER, normalize as normalize_postprocess, normalize_regenerate_postprocess, authorize
 from .regenerate import ROUTE_QUALITY_PROFILE, is_valid_h3_frame_bucket, resolve_2k_target_geometry, route_quality_profile
 
