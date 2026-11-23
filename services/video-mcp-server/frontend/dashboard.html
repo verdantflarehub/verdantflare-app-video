@@ -60,13 +60,16 @@
 <option value="all">全部项目</option>
 </select></label>
 </div>
+<div class="toolbar-actions">
 <div class="view-switcher">
 <button class="active" data-view="gallery" id="btnViewGallery">
               画廊模式</button><button data-view="table" id="btnViewTable">工单表格</button>
 </div>
+<button class="button" disabled="" id="btnCleanupTasks" type="button">清理</button>
+</div>
 </div>
 <div class="market-filter-row" id="statusFilters">
-<button class="active" data-status="all">全部状态</button><button data-status="queued">⏳ 排队中<span id="metricQueued"> —</span></button><button data-status="running">⚡ 渲染中<span id="metricRunning"> —</span></button><button data-status="succeeded">✓ 已完成<span id="metricCompleted"> —</span></button><button data-status="failed">✕ 失败<span id="metricFailed"> —</span></button><button data-status="cancelled">已取消</button>
+<button class="active" data-status="all">全部状态</button><button data-status="queued">⏳ 排队中<span id="metricQueued"> —</span></button><button data-status="running">⚡ 渲染中<span id="metricRunning"> —</span></button><button data-status="unknown" id="chipUnknown">⚠ 待核对<span id="metricUnknown"> —</span></button><button data-status="succeeded">✓ 已完成<span id="metricCompleted"> —</span></button><button data-status="failed">✕ 失败<span id="metricFailed"> —</span></button><button data-status="cancelled">已取消</button>
 </div>
 <div class="empty" id="emptyState">连接后显示真实任务。</div>
 <div class="model-results grid" id="galleryContainer"></div>
@@ -172,6 +175,76 @@ audio | art_… | rhythm" required="" rows="4"></textarea>
 </div>
 <p id="importMessage" role="status"></p>
 </form>
+</div>
+</div>
+
+<div aria-labelledby="deleteTaskTitle" aria-modal="true" class="modal-backdrop" hidden="" id="deleteTaskModal" role="dialog">
+<div class="modal-window modal-window-sm">
+<div class="modal-head">
+<strong id="deleteTaskTitle">删除任务</strong><button class="button" data-close="deleteTaskModal" type="button">关闭</button>
+</div>
+<div class="dialog-body">
+<p id="deleteTaskDesc">确认删除这个任务吗？此操作不可恢复。</p>
+<div class="actions">
+<button class="button" data-close="deleteTaskModal" type="button">取消</button>
+<button class="button danger" id="btnConfirmDeleteTask" type="button">确认删除</button>
+</div>
+</div>
+</div>
+</div>
+<div aria-labelledby="editTitleHeading" aria-modal="true" class="modal-backdrop" hidden="" id="editTitleModal" role="dialog">
+<div class="modal-window modal-window-sm">
+<div class="modal-head">
+<strong id="editTitleHeading">编辑任务名称</strong><button class="button" data-close="editTitleModal" type="button">关闭</button>
+</div>
+<form class="dialog-body" id="editTitleForm">
+<div class="form-grid">
+<label class="full">任务名称（1–64 字）<input autocomplete="off" id="editTitleInput" maxlength="64" required="" type="text"/></label>
+</div>
+<div class="actions">
+<button class="button" data-close="editTitleModal" type="button">取消</button>
+<button class="button primary" id="btnConfirmEditTitle" type="submit">保存名称</button>
+</div>
+</form>
+</div>
+</div>
+<div aria-labelledby="cleanupTasksTitle" aria-modal="true" class="modal-backdrop" hidden="" id="cleanupTasksModal" role="dialog">
+<div class="modal-window modal-window-sm">
+<div class="modal-head">
+<strong id="cleanupTasksTitle">清理任务</strong><button class="button" data-close="cleanupTasksModal" type="button">关闭</button>
+</div>
+<div class="dialog-body">
+<p class="cleanup-dialog-desc">请选择需要批量统一清理的任务类别：</p>
+<div class="cleanup-options">
+<label class="cleanup-check-card checked-amber" id="cardCheckUnknown">
+<input checked="" id="chkCleanUnknown" type="checkbox"/>
+<div class="cleanup-check-body">
+<div class="cleanup-check-top">
+<span class="cleanup-check-title">待核对 / 超时任务 <span class="cleanup-default-pill">默认勾选</span></span>
+<span class="cleanup-count-badge amber" id="badgeUnknownCount">0 项</span>
+</div>
+<div class="cleanup-check-sub">先向渠道核对结果：若实际已成片则自动追回为「已完成」；若仍卡死、超时或连接断开，直接清理移除。</div>
+</div>
+</label>
+<label class="cleanup-check-card" id="cardCheckFailed">
+<input id="chkCleanFailed" type="checkbox"/>
+<div class="cleanup-check-body">
+<div class="cleanup-check-top">
+<span class="cleanup-check-title">已失败任务</span>
+<span class="cleanup-count-badge danger" id="badgeFailedCount">0 项</span>
+</div>
+<div class="cleanup-check-sub">一并批量清理移除列表中所有「失败」的任务记录，保持任务列表整洁。</div>
+</div>
+</label>
+</div>
+<div class="cleanup-dialog-foot">
+<span class="cleanup-dialog-hint" id="cleanupSelectedSummary">已选 1 类 · 共 0 项待清理</span>
+<div class="actions">
+<button class="button" data-close="cleanupTasksModal" type="button">取消</button>
+<button class="button primary" id="btnConfirmCleanup" type="button">确认清理</button>
+</div>
+</div>
+</div>
 </div>
 </div>
 

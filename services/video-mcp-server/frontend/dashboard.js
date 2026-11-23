@@ -717,6 +717,22 @@ function render(data) {
   $("metricRunning").textContent = data.counts.running;
   $("metricFailed").textContent = data.counts.failed;
   $("metricCompleted").textContent = data.counts.succeeded;
+  const unknownCount = Number(data.counts?.unknown ?? 0);
+  const failedCount = Number(data.counts?.failed ?? 0);
+  latestCounts = {
+    queued: Number(data.counts?.queued ?? 0),
+    running: Number(data.counts?.running ?? 0),
+    succeeded: Number(data.counts?.succeeded ?? 0),
+    failed: failedCount,
+    cancelled: Number(data.counts?.cancelled ?? 0),
+    unknown: unknownCount,
+  };
+  if ($("metricUnknown")) $("metricUnknown").textContent = unknownCount;
+  if ($("chipUnknown")) $("chipUnknown").classList.toggle("amber-chip", unknownCount > 0);
+  if ($("btnCleanupTasks")) {
+    $("btnCleanupTasks").disabled = unknownCount === 0 && failedCount === 0;
+    $("btnCleanupTasks").classList.toggle("amber-cleanup", unknownCount > 0);
+  }
   $("metricLatency").textContent = seconds(data.average_elapsed_seconds);
   const channel = $("filterChannel").value;
   const channels = data.channels || [];
@@ -940,25 +956,170 @@ function closeAllActionMenus() {
     el.classList.remove("menu-open");
   });
 }
+let latestCounts = { queued: 0, running: 0, succeeded: 0, failed: 0, cancelled: 0, unknown: 0 };
+let pendingDeleteTask = null;
+let pendingEditTask = null;
+
+function syncCleanupModalState() {
+  const unknown = Number(latestCounts.unknown || 0);
+  const failed = Number(latestCounts.failed || 0);
+  const chkUnknown = $("chkCleanUnknown");
+  const chkFailed = $("chkCleanFailed");
+  if (!chkUnknown || !chkFailed) return;
+  if ($("badgeUnknownCount")) $("badgeUnknownCount").textContent = `${unknown} 项`;
+  if ($("badgeFailedCount")) $("badgeFailedCount").textContent = `${failed} 项`;
+  if ($("cardCheckUnknown")) $("cardCheckUnknown").classList.toggle("checked-amber", chkUnknown.checked);
+  if ($("cardCheckFailed")) $("cardCheckFailed").classList.toggle("checked-danger", chkFailed.checked);
+  let types = 0;
+  let totalSelected = 0;
+  if (chkUnknown.checked) { types += 1; totalSelected += unknown; }
+  if (chkFailed.checked) { types += 1; totalSelected += failed; }
+  if ($("cleanupSelectedSummary")) {
+    $("cleanupSelectedSummary").textContent =
+      types > 0 ? `已选 ${types} 类 · 共 ${totalSelected} 项待清理` : "请至少勾选一类待清理任务";
+  }
+  if ($("btnConfirmCleanup")) $("btnConfirmCleanup").disabled = totalSelected === 0;
+}
+
+function openCleanupModal() {
+  const unknown = Number(latestCounts.unknown || 0);
+  const failed = Number(latestCounts.failed || 0);
+  if ($("chkCleanUnknown")) $("chkCleanUnknown").checked = unknown > 0;
+  if ($("chkCleanFailed")) $("chkCleanFailed").checked = unknown === 0 && failed > 0;
+  syncCleanupModalState();
+  openModal("cleanupTasksModal");
+}
+
+async function executeCleanupTasks() {
+  const chkUnknown = Boolean($("chkCleanUnknown")?.checked);
+  const chkFailed = Boolean($("chkCleanFailed")?.checked);
+  if (!chkUnknown && !chkFailed) return;
+  const btn = $("btnConfirmCleanup");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "清理中…";
+  }
+  try {
+    const result = await api("/api/tasks/_cleanup/delete", {
+      method: "POST",
+      body: JSON.stringify({ clean_unknown: chkUnknown, clean_failed: chkFailed }),
+    });
+    if (result?.ok !== true) throw new Error("未取得有效清理回执");
+    closeModal("cleanupTasksModal");
+    const removedIds = new Set([
+      ...(Array.isArray(result.cleaned_unknown_task_ids) ? result.cleaned_unknown_task_ids : []),
+      ...(Array.isArray(result.cleaned_failed_task_ids) ? result.cleaned_failed_task_ids : []),
+      ...(Array.isArray(result.cleaned_cancelled_task_ids) ? result.cleaned_cancelled_task_ids : []),
+    ]);
+    if (removedIds.size > 0) {
+      loadedTasks = loadedTasks.filter((t) => !removedIds.has(t.video_task_id));
+    }
+    const parts = [];
+    if (chkUnknown) {
+      const rec = Number(result.recovered_count || 0);
+      const cln = Number(result.cleaned_unknown_count || 0);
+      parts.push(rec > 0 ? `追回 ${rec} 项、清理 ${cln} 项待核对/超时任务` : `${cln} 项待核对/超时任务`);
+    }
+    if (chkFailed) {
+      parts.push(`${Number(result.cleaned_failed_count || 0)} 项已失败任务`);
+    }
+    if (Number(result.skipped_count || 0) > 0) {
+      parts.push(`跳过 ${Number(result.skipped_count)} 项取消确认中任务`);
+    }
+    notice(`已统一清理：${parts.join(" + ")}`);
+    await refresh();
+  } catch (error) {
+    notice(`清理失败：${error.message || "请稍后重试。"}`, true);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "确认清理";
+    }
+  }
+}
+
+async function confirmDeleteTask() {
+  if (!pendingDeleteTask) return;
+  const { id, name } = pendingDeleteTask;
+  const btn = $("btnConfirmDeleteTask");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "删除中…";
+  }
+  try {
+    await api(`/api/tasks/${encodeURIComponent(id)}/delete`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    closeModal("deleteTaskModal");
+    pendingDeleteTask = null;
+    loadedTasks = loadedTasks.filter((t) => t.video_task_id !== id);
+    notice(`已删除任务：${name}`);
+    await refresh();
+  } catch (error) {
+    closeModal("deleteTaskModal");
+    pendingDeleteTask = null;
+    notice(error.message || "删除失败，请稍后重试。", true);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "确认删除";
+    }
+  }
+}
+
+async function confirmEditTaskTitle(event) {
+  event.preventDefault();
+  if (!pendingEditTask) return;
+  const { id, current, revision } = pendingEditTask;
+  const trimmed = ($("editTitleInput")?.value || "").trim();
+  if (!trimmed || trimmed === current) {
+    closeModal("editTitleModal");
+    pendingEditTask = null;
+    return;
+  }
+  const btn = $("btnConfirmEditTitle");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "保存中…";
+  }
+  try {
+    await api(`/api/tasks/${encodeURIComponent(id)}/title`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: trimmed,
+        expected_title_revision: revision,
+      }),
+    });
+    closeModal("editTitleModal");
+    pendingEditTask = null;
+    notice(`已更新任务名称：${trimmed}`);
+    await refresh();
+  } catch (error) {
+    notice(error.message || "更新名称失败，请稍后重试。", true);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "保存名称";
+    }
+  }
+}
+
 async function handleTaskAction(action, id, ratingAction) {
   if (!id) return;
   const task = loadedTasks.find((t) => t.video_task_id === id);
   try {
     if (action === "edit") {
       const current = task ? taskDisplayName(task) : "";
-      const nextTitle = window.prompt("编辑任务名称（1–64 字）：", current);
-      if (nextTitle == null) return;
-      const trimmed = nextTitle.trim();
-      if (!trimmed || trimmed === current) return;
-      await api(`/api/tasks/${encodeURIComponent(id)}/title`, {
-        method: "POST",
-        body: JSON.stringify({
-          title: trimmed,
-          expected_title_revision: Number(task?.title_revision ?? 0),
-        }),
-      });
-      notice(`已更新任务名称：${trimmed}`);
-      await refresh();
+      pendingEditTask = {
+        id,
+        current,
+        revision: Number(task?.title_revision ?? 0),
+      };
+      if ($("editTitleInput")) $("editTitleInput").value = current;
+      openModal("editTitleModal");
+      $("editTitleInput")?.focus?.();
+      $("editTitleInput")?.select?.();
     } else if (action === "toggle-nsfw") {
       const nextAction =
         ratingAction || (task?.content_rating === "nsfw" ? "clear" : "mark");
@@ -974,19 +1135,22 @@ async function handleTaskAction(action, id, ratingAction) {
       await refresh();
     } else if (action === "delete") {
       const name = task ? taskDisplayName(task) : id;
-      if (!window.confirm(`确认删除任务「${name}」吗？此操作不可恢复。`)) return;
-      await api(`/api/tasks/${encodeURIComponent(id)}/delete`, {
-        method: "POST",
-        body: JSON.stringify({}),
-      });
-      loadedTasks = loadedTasks.filter((t) => t.video_task_id !== id);
-      notice(`已删除任务：${name}`);
-      await refresh();
+      pendingDeleteTask = { id, name };
+      if ($("deleteTaskDesc")) {
+        $("deleteTaskDesc").textContent = `确认删除任务「${name}」吗？此操作不可恢复。`;
+      }
+      openModal("deleteTaskModal");
     }
   } catch (error) {
     notice(error.message || "操作失败，请稍后重试。", true);
   }
 }
+$("btnCleanupTasks")?.addEventListener?.("click", openCleanupModal);
+$("chkCleanUnknown")?.addEventListener?.("change", syncCleanupModalState);
+$("chkCleanFailed")?.addEventListener?.("change", syncCleanupModalState);
+$("btnConfirmCleanup")?.addEventListener?.("click", executeCleanupTasks);
+$("btnConfirmDeleteTask")?.addEventListener?.("click", confirmDeleteTask);
+$("editTitleForm")?.addEventListener?.("submit", confirmEditTaskTitle);
 document.addEventListener("click", (event) => {
   const retryBtn = event.target?.closest?.("button[data-thumb-retry]");
   if (retryBtn) {

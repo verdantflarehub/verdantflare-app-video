@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import contextvars
+import json
 import logging
+import os
 import subprocess
 import tempfile
 import threading
@@ -86,6 +88,62 @@ class ContentRatingUpdate(BaseModel):
     action: str
     reason: str | None = None
     note: str | None = None
+
+
+_CLEANUP_TIMEOUT_SECONDS_DEFAULT = 3600.0
+_CLEANUP_UNKNOWN_STAGES = frozenset({"submission_unknown", "collect_retry", "canceling"})
+_CLEANUP_UNKNOWN_ERROR_CODES = frozenset({
+    "submission_unknown",
+    "cancel_requested",
+    "higgsfield_recovery_pending",
+    "channel_unavailable",
+})
+
+
+def _cleanup_timeout_seconds() -> float:
+    raw = os.getenv("VIDEO_TASK_CLEANUP_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return _CLEANUP_TIMEOUT_SECONDS_DEFAULT
+    try:
+        value = float(raw)
+        return value if value > 0 else _CLEANUP_TIMEOUT_SECONDS_DEFAULT
+    except ValueError:
+        return _CLEANUP_TIMEOUT_SECONDS_DEFAULT
+
+
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC)
+    except ValueError:
+        return None
+
+
+def _is_cleanup_unknown_record(
+    record: TaskRecord,
+    *,
+    now: datetime | None = None,
+    timeout_seconds: float | None = None,
+) -> bool:
+    if record.status in {"succeeded", "failed", "cancelled"}:
+        return False
+    if record.runtime_stage in _CLEANUP_UNKNOWN_STAGES:
+        return True
+    err_code = (record.error or {}).get("code") if isinstance(record.error, dict) else None
+    if err_code in _CLEANUP_UNKNOWN_ERROR_CODES:
+        return True
+    if record.status in {"queued", "running"}:
+        threshold = _cleanup_timeout_seconds() if timeout_seconds is None else timeout_seconds
+        ref_dt = _parse_iso_datetime(record.updated_at) or _parse_iso_datetime(record.created_at)
+        if ref_dt is not None:
+            current = now or datetime.now(UTC)
+            if (current - ref_dt).total_seconds() >= threshold:
+                return True
+    return False
 
 
 def task_channel(record):
@@ -615,12 +673,17 @@ class Dashboard:
                     matched.append(r)
             filtered = matched
 
-        counts = {s: 0 for s in ("queued", "running", "succeeded", "failed", "cancelled")}
+        now = datetime.now(UTC)
+        counts = {s: 0 for s in ("queued", "running", "succeeded", "failed", "cancelled", "unknown")}
         for r in filtered:
             if r.status in counts:
                 counts[r.status] += 1
+            if _is_cleanup_unknown_record(r, now=now):
+                counts["unknown"] += 1
 
-        if status_filter != "all":
+        if status_filter == "unknown":
+            filtered = [r for r in filtered if _is_cleanup_unknown_record(r, now=now)]
+        elif status_filter != "all":
             filtered = [r for r in filtered if r.status == status_filter]
 
         elapsed = []
@@ -846,6 +909,120 @@ class Dashboard:
         except Exception:
             pass
 
+    def cleanup_tasks(
+        self,
+        request: Request,
+        *,
+        clean_unknown: bool = True,
+        clean_failed: bool = False,
+        clean_cancelled: bool = False,
+    ) -> dict[str, Any]:
+        tasks_store, _, _ = self._stores(request)
+        authorized_records = self._filter_authorized_records(self.records(tasks_store))
+        now = datetime.now(UTC)
+        recovered_ids: list[str] = []
+        cleaned_unknown_ids: list[str] = []
+        cleaned_failed_ids: list[str] = []
+        cleaned_cancelled_ids: list[str] = []
+        skipped_ids: list[str] = []
+
+        if clean_unknown:
+            unknown_records = [r for r in authorized_records if _is_cleanup_unknown_record(r, now=now)]
+            still_unknown: list[TaskRecord] = []
+            for rec in unknown_records:
+                current = rec
+                if tasks_store is self.executor.tasks and rec.runtime_stage != "canceling":
+                    try:
+                        self.executor.status(rec.video_task_id)
+                    except Exception:
+                        pass
+                    try:
+                        current = tasks_store.get(rec.video_task_id)
+                    except TaskNotFound:
+                        continue
+                if current.status == "succeeded":
+                    recovered_ids.append(current.video_task_id)
+                else:
+                    still_unknown.append(current)
+
+            for rec in still_unknown:
+                if rec.service == "comfyui" and rec.status not in {"succeeded", "failed", "cancelled"}:
+                    settled = self.executor.comfyui.cancel(rec) if tasks_store is self.executor.tasks else rec
+                    if settled.status not in {"succeeded", "failed", "cancelled"}:
+                        skipped_ids.append(rec.video_task_id)
+                        continue
+                try:
+                    tasks_store.delete_task(rec.video_task_id)
+                    cleaned_unknown_ids.append(rec.video_task_id)
+                except TaskNotFound:
+                    pass
+                except Exception:
+                    skipped_ids.append(rec.video_task_id)
+
+        if clean_failed:
+            for rec in authorized_records:
+                if rec.status != "failed":
+                    continue
+                try:
+                    tasks_store.delete_task(rec.video_task_id)
+                    cleaned_failed_ids.append(rec.video_task_id)
+                except TaskNotFound:
+                    pass
+                except Exception:
+                    skipped_ids.append(rec.video_task_id)
+
+        if clean_cancelled:
+            for rec in authorized_records:
+                if rec.status != "cancelled":
+                    continue
+                try:
+                    tasks_store.delete_task(rec.video_task_id)
+                    cleaned_cancelled_ids.append(rec.video_task_id)
+                except TaskNotFound:
+                    pass
+                except Exception:
+                    skipped_ids.append(rec.video_task_id)
+
+        return {
+            "ok": True,
+            "recovered_count": len(recovered_ids),
+            "cleaned_unknown_count": len(cleaned_unknown_ids),
+            "cleaned_failed_count": len(cleaned_failed_ids),
+            "cleaned_cancelled_count": len(cleaned_cancelled_ids),
+            "skipped_count": len(skipped_ids),
+            "recovered_task_ids": recovered_ids,
+            "cleaned_unknown_task_ids": cleaned_unknown_ids,
+            "cleaned_failed_task_ids": cleaned_failed_ids,
+            "cleaned_cancelled_task_ids": cleaned_cancelled_ids,
+            "skipped_task_ids": skipped_ids,
+        }
+
+    async def _handle_cleanup(self, request: Request) -> Response:
+        raw = await request.body()
+        if raw:
+            try:
+                body = json.loads(raw)
+            except Exception:
+                return JSONResponse({"error": "invalid_json"}, status_code=400)
+            if not isinstance(body, dict):
+                return JSONResponse({"error": "invalid_json"}, status_code=400)
+        else:
+            body = {}
+        clean_unknown = bool(body.get("clean_unknown", True))
+        clean_failed = bool(body.get("clean_failed", False))
+        clean_cancelled = bool(body.get("clean_cancelled", False))
+        if not clean_unknown and not clean_failed and not clean_cancelled:
+            return JSONResponse({"error": "empty_cleanup_selection"}, status_code=400)
+        result = await run_in_threadpool(
+            lambda: self.cleanup_tasks(
+                request,
+                clean_unknown=clean_unknown,
+                clean_failed=clean_failed,
+                clean_cancelled=clean_cancelled,
+            )
+        )
+        return JSONResponse(result)
+
     async def endpoint(self, request: Request):
         try:
             action = request.url.path
@@ -884,8 +1061,12 @@ class Dashboard:
                                     headers=cache_headers)
             elif request.method == "GET":
                 value = await run_in_threadpool(self.detail, request.path_params["task_id"], request)
+            elif action == "/api/tasks/cleanup" and request.method == "POST":
+                return await self._handle_cleanup(request)
             elif request.method == "DELETE" or action.endswith("/delete"):
                 task_id = request.path_params["task_id"]
+                if task_id == "_cleanup":
+                    return await self._handle_cleanup(request)
                 def _delete():
                     tasks_store, _, _ = self._stores(request)
                     rec = tasks_store.get(task_id)
@@ -1087,6 +1268,8 @@ class Dashboard:
                 Route("/video/api/tasks", self.endpoint, methods=["GET", "POST"]),
                 Route("/api/tasks/stats", self.endpoint, methods=["GET"]),
                 Route("/video/api/tasks/stats", self.endpoint, methods=["GET"]),
+                Route("/api/tasks/cleanup", self.endpoint, methods=["POST"]),
+                Route("/video/api/tasks/cleanup", self.endpoint, methods=["POST"]),
                 Route("/api/tasks/{task_id:str}", self.endpoint, methods=["GET", "DELETE"]),
                 Route("/video/api/tasks/{task_id:str}", self.endpoint, methods=["GET", "DELETE"]),
                 Route("/api/tasks/{task_id:str}/delete", self.endpoint, methods=["POST"]),

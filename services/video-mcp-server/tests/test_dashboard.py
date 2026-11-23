@@ -469,4 +469,96 @@ class DashboardTest(unittest.TestCase):
             },
         )
 
+    def test_cleanup_unknown_timeout_and_failed_tasks(self):
+        from datetime import UTC, datetime, timedelta
+        from app.tasks import TaskNotFound
+
+        stuck = self.tasks.update(
+            self.tasks.create(
+                project_id="demo", idempotency_key="cleanup-stuck", request={"prompt": "stuck"},
+                input_digest="d1", runtime_task_id="rt1", status="running",
+            ),
+            runtime_stage="submission_unknown",
+        )
+        recoverable = self.tasks.update(
+            self.tasks.create(
+                project_id="demo", idempotency_key="cleanup-recover", request={"prompt": "recover"},
+                input_digest="d2", runtime_task_id="rt2", status="running",
+            ),
+            runtime_stage="submission_unknown",
+        )
+        timed_out = self.tasks.update(
+            self.tasks.create(
+                project_id="demo", idempotency_key="cleanup-timeout", request={"prompt": "timeout"},
+                input_digest="d3", runtime_task_id="rt3", status="running",
+            ),
+            runtime_stage="running",
+        )
+        old_ts = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
+        # Re-stamp updated_at directly on disk since update() refreshes updated_at to now.
+        path = self.tasks.root / f"{timed_out.video_task_id}.json"
+        import json as _json
+        raw = _json.loads(path.read_text(encoding="utf-8"))
+        raw["created_at"] = old_ts
+        raw["updated_at"] = old_ts
+        path.write_text(_json.dumps(raw), encoding="utf-8")
+
+        healthy = self.tasks.update(
+            self.tasks.create(
+                project_id="demo", idempotency_key="cleanup-healthy", request={"prompt": "healthy"},
+                input_digest="d4", runtime_task_id="rt4", status="running",
+            ),
+            runtime_stage="running",
+        )
+        failed = self.tasks.create(
+            project_id="demo", idempotency_key="cleanup-failed", request={"prompt": "failed"},
+            input_digest="d5", runtime_task_id="rt5", status="failed",
+        )
+        succeeded = self.tasks.create(
+            project_id="demo", idempotency_key="cleanup-ok", request={"prompt": "ok"},
+            input_digest="d6", runtime_task_id="rt6", status="succeeded",
+        )
+
+        snap = self.client.get("/api/dashboard?status=unknown", headers=self.headers).json()
+        self.assertEqual(snap["counts"]["unknown"], 3)
+        self.assertEqual(snap["counts"]["failed"], 1)
+        self.assertEqual({t["video_task_id"] for t in snap["tasks"]}, {stuck.video_task_id, recoverable.video_task_id, timed_out.video_task_id})
+
+        def fake_status(task_id):
+            rec = self.tasks.get(task_id)
+            if task_id == recoverable.video_task_id:
+                return self.tasks.update(rec, status="succeeded", runtime_stage="completed")
+            return rec
+
+        with mock.patch.object(self.executor, "status", side_effect=fake_status):
+            res = self.client.post(
+                "/api/tasks/_cleanup/delete",
+                headers=self.headers,
+                json={"clean_unknown": True, "clean_failed": True},
+            )
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["recovered_task_ids"], [recoverable.video_task_id])
+        self.assertEqual(set(body["cleaned_unknown_task_ids"]), {stuck.video_task_id, timed_out.video_task_id})
+        self.assertEqual(body["cleaned_failed_task_ids"], [failed.video_task_id])
+
+        # Recovered, healthy running, and succeeded tasks remain; stuck, timed_out, failed are removed.
+        self.assertEqual(self.tasks.get(recoverable.video_task_id).status, "succeeded")
+        self.assertEqual(self.tasks.get(healthy.video_task_id).status, "running")
+        self.assertEqual(self.tasks.get(succeeded.video_task_id).status, "succeeded")
+        for deleted_id in (stuck.video_task_id, timed_out.video_task_id, failed.video_task_id):
+            with self.assertRaises(TaskNotFound):
+                self.tasks.get(deleted_id)
+
+    def test_cleanup_rejects_empty_selection(self):
+        res = self.client.post(
+            "/api/tasks/cleanup",
+            headers=self.headers,
+            json={"clean_unknown": False, "clean_failed": False},
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.json()["error"], "empty_cleanup_selection")
+
+
 

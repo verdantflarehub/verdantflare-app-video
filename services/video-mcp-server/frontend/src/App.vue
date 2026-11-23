@@ -56,6 +56,13 @@ const sentinelRef = ref<HTMLElement | null>(null)
 const thumbUrls = ref<Record<string, string>>({})
 const thumbErrors = ref<Record<string, boolean>>({})
 const openMenuId = ref<string | null>(null)
+const pendingDelete = ref<Task | null>(null)
+const pendingEdit = ref<Task | null>(null)
+const editTitleValue = ref('')
+const showCleanupModal = ref(false)
+const cleanUnknown = ref(true)
+const cleanFailed = ref(false)
+const actionBusy = ref(false)
 const thumbInFlight = new Set<string>()
 let scrollObserver: IntersectionObserver | null = null
 
@@ -298,13 +305,21 @@ function toggleMenu(task: Task) {
 function closeMenu() {
   openMenuId.value = null
 }
-async function editTaskTitle(task: Task) {
+function editTaskTitle(task: Task) {
   closeMenu()
+  pendingEdit.value = task
+  editTitleValue.value = task.title || '视频任务'
+}
+async function submitEditTitle() {
+  const task = pendingEdit.value
+  if (!task || actionBusy.value) return
   const current = task.title || '视频任务'
-  const nextTitle = window.prompt('编辑任务名称（1–64 字）：', current)
-  if (nextTitle == null) return
-  const trimmed = nextTitle.trim()
-  if (!trimmed || trimmed === current) return
+  const trimmed = editTitleValue.value.trim()
+  if (!trimmed || trimmed === current) {
+    pendingEdit.value = null
+    return
+  }
+  actionBusy.value = true
   try {
     const response = await fetch(`${base}/api/tasks/${encodeURIComponent(task.video_task_id)}/title`, {
       method: 'POST',
@@ -312,9 +327,12 @@ async function editTaskTitle(task: Task) {
       body: JSON.stringify({ title: trimmed }),
     })
     if (!response.ok) throw new Error(`请求失败（${response.status}）`)
+    pendingEdit.value = null
     await load()
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '更新名称失败'
+  } finally {
+    actionBusy.value = false
   }
 }
 async function toggleTaskNsfw(task: Task) {
@@ -333,10 +351,14 @@ async function toggleTaskNsfw(task: Task) {
     error.value = cause instanceof Error ? cause.message : '更新分级失败'
   }
 }
-async function deleteTask(task: Task) {
+function deleteTask(task: Task) {
   closeMenu()
-  const name = task.title || task.video_task_id
-  if (!window.confirm(`确认删除任务「${name}」吗？此操作不可恢复。`)) return
+  pendingDelete.value = task
+}
+async function confirmDeleteTask() {
+  const task = pendingDelete.value
+  if (!task || actionBusy.value) return
+  actionBusy.value = true
   try {
     const response = await fetch(`${base}/api/tasks/${encodeURIComponent(task.video_task_id)}/delete`, {
       method: 'POST',
@@ -344,10 +366,41 @@ async function deleteTask(task: Task) {
       body: JSON.stringify({}),
     })
     if (!response.ok) throw new Error(`请求失败（${response.status}）`)
+    pendingDelete.value = null
     tasks.value = tasks.value.filter((t) => t.video_task_id !== task.video_task_id)
     await load()
   } catch (cause) {
+    pendingDelete.value = null
     error.value = cause instanceof Error ? cause.message : '删除任务失败'
+  } finally {
+    actionBusy.value = false
+  }
+}
+const canCleanup = computed(() => (counts.value.unknown || 0) > 0 || (counts.value.failed || 0) > 0)
+const cleanupSelectedCount = computed(() => (cleanUnknown.value ? (counts.value.unknown || 0) : 0) + (cleanFailed.value ? (counts.value.failed || 0) : 0))
+function openCleanupModal() {
+  const u = counts.value.unknown || 0
+  const f = counts.value.failed || 0
+  cleanUnknown.value = u > 0
+  cleanFailed.value = u === 0 && f > 0
+  showCleanupModal.value = true
+}
+async function confirmCleanup() {
+  if (actionBusy.value || (!cleanUnknown.value && !cleanFailed.value)) return
+  actionBusy.value = true
+  try {
+    const response = await fetch(`${base}/api/tasks/_cleanup/delete`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token.value}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clean_unknown: cleanUnknown.value, clean_failed: cleanFailed.value }),
+    })
+    if (!response.ok) throw new Error(`请求失败（${response.status}）`)
+    showCleanupModal.value = false
+    await load()
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : '清理任务失败'
+  } finally {
+    actionBusy.value = false
   }
 }
 function saveToken() { localStorage.setItem(tokenKey, token.value); load() }
@@ -369,7 +422,10 @@ onBeforeUnmount(() => {
   <div class="workspace"><aside class="workspace-nav" aria-label="业务导航"><p>WORKSPACE</p><button v-for="item in [['tasks','01 / TASKS'],['models','02 / MODELS'],['mcp','03 / MCP']]" :key="item[0]" class="nav-link" :class="{ selected: active === item[0] }" @click="active = item[0] as typeof active">{{ item[1] }}</button></aside>
     <main class="market-page">
       <section v-if="!token" class="market-wrap business-section"><h1>连接 Video MCP</h1><p class="business-muted">使用工作区 Token 读取真实任务、模型和服务状态。</p><form class="token-form" @submit.prevent="saveToken"><input data-testid="token-input" v-model="token" type="password" autocomplete="off" placeholder="Video MCP Token" required /><button data-testid="connect-token" class="button primary">连接</button></form></section>
-      <section v-else-if="active === 'tasks'" data-testid="tasks-view" class="market-wrap business-section"><h1>任务</h1><p class="business-muted">视频生成与处理任务 · {{ total }} 条</p><div class="market-toolbar"><label class="market-search"><span>任务 / 项目 / Prompt</span><input data-testid="task-search" v-model="query" type="search" placeholder="搜索任务编号、提示词或项目…" /></label><label><span>渠道</span><select data-testid="channel-filter" v-model="channel"><option value="all">全部渠道</option><option v-for="item in channels" :key="item.id" :value="item.id">{{ item.label }}</option></select></label><label><span>所属项目</span><select data-testid="project-filter" v-model="project"><option value="all">全部项目</option><option v-for="item in projects" :key="item.id" :value="item.id">{{ item.label }}</option></select></label></div><div class="market-filter-row"><button v-for="item in [['all','全部状态'],['queued','⏳ 排队中'],['running','⚡ 渲染中'],['succeeded','✓ 已完成'],['failed','✕ 失败'],['cancelled','已取消']]" :key="item[0]" :class="{ active: status === item[0] }" @click="status = item[0]">{{ item[1] }} <span v-if="item[0] !== 'all'">{{ counts[item[0]] || 0 }}</span></button></div><p v-if="loading" class="empty">正在读取任务…</p><p v-else-if="error" class="empty">{{ error }} <button class="button" @click="load">重试</button></p><p v-else-if="!filtered.length" class="empty">暂无符合条件的任务。</p><div v-else class="model-results grid"><article v-for="task in filtered" :key="task.video_task_id" data-testid="task-card" class="model-card" :class="{ 'menu-open': openMenuId === task.video_task_id }" role="link" tabindex="0" :aria-label="`查看 ${task.title || '视频任务'}`" @click="openTask(task)" @keydown.enter="openTask(task)"><div class="card-thumb-wrap"><img v-if="thumbUrls[task.video_task_id]" :src="thumbUrls[task.video_task_id]" alt="生成视频首帧" class="card-thumb-img" /><span v-else class="thumb-placeholder" :class="{ 'thumb-error': thumbErrors[task.video_task_id] }"><span>{{ thumbStatusText(task) }}</span><button v-if="thumbErrors[task.video_task_id]" type="button" class="button thumb-retry-btn" @click.stop="fetchThumbnail(task, true)">重试首帧</button></span><div class="task-identity generation-identity" :title="`${modelName(task)} × ${routeName(task)}`"><strong class="identity-model">{{ modelName(task) }}</strong><span class="identity-separator" aria-hidden="true">×</span><strong class="identity-channel"><svg v-if="task.service === 'google-flow'" class="channel-logo" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" fill="none"><rect width="24" height="24" rx="6" fill="#1a73e8"/><path d="M5 15c3-7 5-7 7 0s4 6 7-1" stroke="white" stroke-width="2" stroke-linecap="round"/></svg><i v-else-if="task.presentation?.channel_icon === 'higgsfield'" class="channel-logo" aria-hidden="true" v-html="higgsfieldLogo" /><svg v-else-if="isLocalIcon(task)" class="channel-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg><svg v-else-if="isFalChannel(task)" class="channel-logo" width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect width="24" height="24" rx="6" fill="#6C3AED"/><path d="M8.5 7H15.5M8.5 12H13.5M8.5 7V17" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="15.5" cy="15.5" r="1.8" fill="#4CE39A"/></svg>{{ routeName(task) }}</strong></div><span class="card-badges"><span v-if="task.content_rating === 'nsfw'" class="badge-tag badge-nsfw" data-rating="nsfw">18+</span><span class="badge-status" :class="[task.status, { draining: isDrainingQueue(task) }]">{{ statusLabel(task) }}</span></span><div class="card-times"><span>{{ date(task.created_at) }}</span><span>总耗时 {{ duration(task) }}</span></div></div><div class="card-body"><div><div class="card-title-row">{{ task.title || '视频任务' }}</div><p class="card-prompt">{{ generation.has(task.service) ? (task.prompt || '未提供提示词') : operations[task.service] || '视频处理' }}</p><p v-if="queueReasonText(task)" class="card-queue-reason" data-testid="card-queue-reason">阻塞原因：{{ queueReasonText(task) }}</p></div><div class="card-footer"><div class="model-tags"><span v-if="task.presentation?.generation_code" class="generation-type" tabindex="0" :title="task.presentation.generation_label" :data-tooltip="task.presentation.generation_label" :aria-label="`${task.presentation.generation_code} · ${task.presentation.generation_label}`">{{ task.presentation.generation_code }}</span><span v-if="generation.has(task.service) && taskResolution(task)">{{ taskResolution(task) }}</span><span v-if="generation.has(task.service) && task.aspect_ratio">{{ task.aspect_ratio }}</span><span v-if="taskDuration(task)">{{ taskDuration(task) }}</span><span v-if="generation.has(task.service)">{{ taskFps(task) }}</span></div><div class="card-more-wrap"><button type="button" class="card-more-btn" :data-menu-toggle="task.video_task_id" aria-label="更多操作" aria-haspopup="menu" :aria-expanded="openMenuId === task.video_task_id ? 'true' : 'false'" @click.stop="toggleMenu(task)">···</button><div v-if="openMenuId === task.video_task_id" class="card-action-menu open" role="menu" :data-menu-for="task.video_task_id" @click.stop><button type="button" class="card-action-item" role="menuitem" data-task-action="edit" :data-task-id="task.video_task_id" @click.stop="editTaskTitle(task)">编辑</button><button type="button" class="card-action-item" role="menuitem" data-task-action="toggle-nsfw" :data-task-id="task.video_task_id" :data-rating-action="task.content_rating === 'nsfw' ? 'clear' : 'mark'" @click.stop="toggleTaskNsfw(task)">{{ task.content_rating === 'nsfw' ? '移除 18+ 标记' : '标记为 18+ (NSFW)' }}</button><button type="button" class="card-action-item danger" role="menuitem" data-task-action="delete" :data-task-id="task.video_task_id" @click.stop="deleteTask(task)">删除</button></div></div></div></div></article></div><div ref="sentinelRef" class="market-filter-row"><span v-if="loadingMore">正在加载更多任务…（已加载 {{ filtered.length }} / 共 {{ total }} 条）</span><template v-else-if="loadMoreError"><span>加载更多失败：{{ loadMoreError }}（已保留 {{ filtered.length }} / 共 {{ total }} 条）</span><button class="button" @click="loadMore">重试加载</button></template><template v-else-if="hasMore"><span>已加载 {{ filtered.length }} / 共 {{ total }} 条</span><button class="button" @click="loadMore">加载更多</button></template><span v-else-if="total > 0">已加载全部 {{ total }} 条任务</span></div></section>
+      <section v-else-if="active === 'tasks'" data-testid="tasks-view" class="market-wrap business-section"><h1>任务</h1><p class="business-muted">视频生成与处理任务 · {{ total }} 条</p><div class="market-toolbar"><label class="market-search"><span>任务 / 项目 / Prompt</span><input data-testid="task-search" v-model="query" type="search" placeholder="搜索任务编号、提示词或项目…" /></label><label><span>渠道</span><select data-testid="channel-filter" v-model="channel"><option value="all">全部渠道</option><option v-for="item in channels" :key="item.id" :value="item.id">{{ item.label }}</option></select></label><label><span>所属项目</span><select data-testid="project-filter" v-model="project"><option value="all">全部项目</option><option v-for="item in projects" :key="item.id" :value="item.id">{{ item.label }}</option></select></label><button type="button" class="button" :class="{ 'amber-cleanup': (counts.unknown || 0) > 0 }" :disabled="!canCleanup" @click="openCleanupModal">清理</button></div><div class="market-filter-row"><button v-for="item in [['all','全部状态'],['queued','⏳ 排队中'],['running','⚡ 渲染中'],['unknown','⚠ 待核对'],['succeeded','✓ 已完成'],['failed','✕ 失败'],['cancelled','已取消']]" :key="item[0]" :class="{ active: status === item[0], 'amber-chip': item[0] === 'unknown' && (counts.unknown || 0) > 0 }" @click="status = item[0]">{{ item[1] }} <span v-if="item[0] !== 'all'">{{ counts[item[0]] || 0 }}</span></button></div><p v-if="loading" class="empty">正在读取任务…</p><p v-else-if="error" class="empty">{{ error }} <button class="button" @click="load">重试</button></p><p v-else-if="!filtered.length" class="empty">暂无符合条件的任务。</p><div v-else class="model-results grid"><article v-for="task in filtered" :key="task.video_task_id" data-testid="task-card" class="model-card" :class="{ 'menu-open': openMenuId === task.video_task_id }" role="link" tabindex="0" :aria-label="`查看 ${task.title || '视频任务'}`" @click="openTask(task)" @keydown.enter="openTask(task)"><div class="card-thumb-wrap"><img v-if="thumbUrls[task.video_task_id]" :src="thumbUrls[task.video_task_id]" alt="生成视频首帧" class="card-thumb-img" /><span v-else class="thumb-placeholder" :class="{ 'thumb-error': thumbErrors[task.video_task_id] }"><span>{{ thumbStatusText(task) }}</span><button v-if="thumbErrors[task.video_task_id]" type="button" class="button thumb-retry-btn" @click.stop="fetchThumbnail(task, true)">重试首帧</button></span><div class="task-identity generation-identity" :title="`${modelName(task)} × ${routeName(task)}`"><strong class="identity-model">{{ modelName(task) }}</strong><span class="identity-separator" aria-hidden="true">×</span><strong class="identity-channel"><svg v-if="task.service === 'google-flow'" class="channel-logo" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" fill="none"><rect width="24" height="24" rx="6" fill="#1a73e8"/><path d="M5 15c3-7 5-7 7 0s4 6 7-1" stroke="white" stroke-width="2" stroke-linecap="round"/></svg><i v-else-if="task.presentation?.channel_icon === 'higgsfield'" class="channel-logo" aria-hidden="true" v-html="higgsfieldLogo" /><svg v-else-if="isLocalIcon(task)" class="channel-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg><svg v-else-if="isFalChannel(task)" class="channel-logo" width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect width="24" height="24" rx="6" fill="#6C3AED"/><path d="M8.5 7H15.5M8.5 12H13.5M8.5 7V17" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="15.5" cy="15.5" r="1.8" fill="#4CE39A"/></svg>{{ routeName(task) }}</strong></div><span class="card-badges"><span v-if="task.content_rating === 'nsfw'" class="badge-tag badge-nsfw" data-rating="nsfw">18+</span><span class="badge-status" :class="[task.status, { draining: isDrainingQueue(task) }]">{{ statusLabel(task) }}</span></span><div class="card-times"><span>{{ date(task.created_at) }}</span><span>总耗时 {{ duration(task) }}</span></div></div><div class="card-body"><div><div class="card-title-row">{{ task.title || '视频任务' }}</div><p class="card-prompt">{{ generation.has(task.service) ? (task.prompt || '未提供提示词') : operations[task.service] || '视频处理' }}</p><p v-if="queueReasonText(task)" class="card-queue-reason" data-testid="card-queue-reason">阻塞原因：{{ queueReasonText(task) }}</p></div><div class="card-footer"><div class="model-tags"><span v-if="task.presentation?.generation_code" class="generation-type" tabindex="0" :title="task.presentation.generation_label" :data-tooltip="task.presentation.generation_label" :aria-label="`${task.presentation.generation_code} · ${task.presentation.generation_label}`">{{ task.presentation.generation_code }}</span><span v-if="generation.has(task.service) && taskResolution(task)">{{ taskResolution(task) }}</span><span v-if="generation.has(task.service) && task.aspect_ratio">{{ task.aspect_ratio }}</span><span v-if="taskDuration(task)">{{ taskDuration(task) }}</span><span v-if="generation.has(task.service)">{{ taskFps(task) }}</span></div><div class="card-more-wrap"><button type="button" class="card-more-btn" :data-menu-toggle="task.video_task_id" aria-label="更多操作" aria-haspopup="menu" :aria-expanded="openMenuId === task.video_task_id ? 'true' : 'false'" @click.stop="toggleMenu(task)">···</button><div v-if="openMenuId === task.video_task_id" class="card-action-menu open" role="menu" :data-menu-for="task.video_task_id" @click.stop><button type="button" class="card-action-item" role="menuitem" data-task-action="edit" :data-task-id="task.video_task_id" @click.stop="editTaskTitle(task)">编辑</button><button type="button" class="card-action-item" role="menuitem" data-task-action="toggle-nsfw" :data-task-id="task.video_task_id" :data-rating-action="task.content_rating === 'nsfw' ? 'clear' : 'mark'" @click.stop="toggleTaskNsfw(task)">{{ task.content_rating === 'nsfw' ? '移除 18+ 标记' : '标记为 18+ (NSFW)' }}</button><button type="button" class="card-action-item danger" role="menuitem" data-task-action="delete" :data-task-id="task.video_task_id" @click.stop="deleteTask(task)">删除</button></div></div></div></div></article></div><div ref="sentinelRef" class="market-filter-row"><span v-if="loadingMore">正在加载更多任务…（已加载 {{ filtered.length }} / 共 {{ total }} 条）</span><template v-else-if="loadMoreError"><span>加载更多失败：{{ loadMoreError }}（已保留 {{ filtered.length }} / 共 {{ total }} 条）</span><button class="button" @click="loadMore">重试加载</button></template><template v-else-if="hasMore"><span>已加载 {{ filtered.length }} / 共 {{ total }} 条</span><button class="button" @click="loadMore">加载更多</button></template><span v-else-if="total > 0">已加载全部 {{ total }} 条任务</span></div></section>
+      <div v-if="pendingDelete" class="modal-backdrop" role="dialog" aria-modal="true"><div class="modal-window modal-window-sm"><div class="modal-head"><strong>删除任务</strong><button type="button" class="button" @click="pendingDelete = null">关闭</button></div><div class="dialog-body"><p>确认删除任务「{{ pendingDelete.title || pendingDelete.video_task_id }}」吗？此操作不可恢复。</p><div class="actions"><button type="button" class="button" @click="pendingDelete = null">取消</button><button type="button" class="button danger" :disabled="actionBusy" @click="confirmDeleteTask">{{ actionBusy ? '删除中…' : '确认删除' }}</button></div></div></div></div>
+      <div v-if="pendingEdit" class="modal-backdrop" role="dialog" aria-modal="true"><div class="modal-window modal-window-sm"><div class="modal-head"><strong>编辑任务名称</strong><button type="button" class="button" @click="pendingEdit = null">关闭</button></div><form class="dialog-body" @submit.prevent="submitEditTitle"><div class="form-grid"><label class="full">任务名称（1–64 字）<input v-model="editTitleValue" maxlength="64" required /></label></div><div class="actions"><button type="button" class="button" @click="pendingEdit = null">取消</button><button type="submit" class="button primary" :disabled="actionBusy">{{ actionBusy ? '保存中…' : '保存名称' }}</button></div></form></div></div>
+      <div v-if="showCleanupModal" class="modal-backdrop" role="dialog" aria-modal="true"><div class="modal-window modal-window-sm"><div class="modal-head"><strong>清理任务</strong><button type="button" class="button" @click="showCleanupModal = false">关闭</button></div><div class="dialog-body"><p class="cleanup-dialog-desc">请选择需要批量统一清理的任务类别：</p><div class="cleanup-options"><label class="cleanup-check-card" :class="{ 'checked-amber': cleanUnknown }"><input v-model="cleanUnknown" type="checkbox" /><div class="cleanup-check-body"><div class="cleanup-check-top"><span class="cleanup-check-title">待核对 / 超时任务 <span class="cleanup-default-pill">默认勾选</span></span><span class="cleanup-count-badge amber">{{ counts.unknown || 0 }} 项</span></div><div class="cleanup-check-sub">先向渠道核对结果：若实际已成片则自动追回为「已完成」；若仍卡死、超时或连接断开，直接清理移除。</div></div></label><label class="cleanup-check-card" :class="{ 'checked-danger': cleanFailed }"><input v-model="cleanFailed" type="checkbox" /><div class="cleanup-check-body"><div class="cleanup-check-top"><span class="cleanup-check-title">已失败任务</span><span class="cleanup-count-badge danger">{{ counts.failed || 0 }} 项</span></div><div class="cleanup-check-sub">一并批量清理移除列表中所有「失败」的任务记录。</div></div></label></div><div class="cleanup-dialog-foot"><span class="cleanup-dialog-hint">共 {{ cleanupSelectedCount }} 项待清理</span><div class="actions"><button type="button" class="button" @click="showCleanupModal = false">取消</button><button type="button" class="button primary" :disabled="actionBusy || cleanupSelectedCount === 0" @click="confirmCleanup">{{ actionBusy ? '清理中…' : '确认清理' }}</button></div></div></div></div></div>
       <section v-else-if="active === 'models'" data-testid="models-view" class="market-wrap business-section"><h1>模型</h1><p class="business-muted">按模型或渠道查看用途、规格与资料状态。</p><ModelCatalog :token="token" :base="base" /></section>
       <section v-else data-testid="mcp-view" class="market-wrap business-section"><h1>MCP 服务</h1><p class="business-muted">连接状态：{{ connected ? '已连接' : '未知' }}</p><div class="business-card"><h3>Video MCP Server</h3><p>任务接入、编排、Artifact 和服务观测</p></div></section>
     </main>

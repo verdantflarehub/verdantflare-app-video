@@ -1245,5 +1245,26 @@ html[data-page="task"] [data-action="dispatch"] { display: none !important; }
 .form-grid label.postprocess-check input[type="checkbox"]{width:16px;height:16px;padding:0;margin:0;flex:none;accent-color:var(--green)}
 .form-grid label.postprocess-grid-select{margin:0;font-size:12px}
 .form-grid label.postprocess-grid-select select{padding:8px 10px;font-size:12px}
+.toolbar-actions{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
+.modal-window-sm{max-width:480px}
+.button.danger{border-color:rgba(255,101,112,0.52);background:rgba(255,101,112,0.18);color:var(--rose)}
+.button.danger:hover{border-color:var(--rose);background:rgba(255,101,112,0.28)}
+.button.amber-cleanup,.market-filter-row button.amber-chip{border-color:rgba(216,154,69,0.55);color:var(--amber)}
+.cleanup-dialog-desc{margin:0 0 12px;color:var(--muted);font-size:13px}
+.cleanup-options{display:flex;flex-direction:column;gap:10px;margin-bottom:16px}
+.cleanup-check-card{display:flex;align-items:flex-start;gap:10px;padding:12px;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,0.02);cursor:pointer;transition:border-color 0.16s ease,background 0.16s ease}
+.cleanup-check-card input[type="checkbox"]{width:16px;height:16px;margin-top:2px;flex:none;accent-color:var(--green)}
+.cleanup-check-card.checked-amber{border-color:rgba(216,154,69,0.65);background:rgba(216,154,69,0.08)}
+.cleanup-check-card.checked-danger{border-color:rgba(255,101,112,0.6);background:rgba(255,101,112,0.08)}
+.cleanup-check-body{flex:1;min-width:0}
+.cleanup-check-top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px}
+.cleanup-check-title{font-size:13px;font-weight:600;color:var(--paper)}
+.cleanup-default-pill{margin-left:6px;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:600;background:rgba(216,154,69,0.2);color:var(--amber)}
+.cleanup-count-badge{padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+.cleanup-count-badge.amber{background:rgba(216,154,69,0.18);color:var(--amber)}
+.cleanup-count-badge.danger{background:rgba(255,101,112,0.18);color:var(--rose)}
+.cleanup-check-sub{font-size:12px;line-height:1.45;color:var(--muted)}
+.cleanup-dialog-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.cleanup-dialog-hint{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
 
 
