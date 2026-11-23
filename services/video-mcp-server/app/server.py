@@ -1114,7 +1114,11 @@ def video_cancel(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
         executor.higgsfield.authorize_record(existing)
     if existing.service == "fal":
         executor.fal.authorize_record(existing)
-    record = executor.cancel_generation(existing) if t_store is executor.tasks else existing
+    if existing.service == "lipsync" and t_store is executor.tasks:
+        authorize(executor.client, existing.project_id)
+        record = executor.processing["lipsync"].cancel(tid)
+    else:
+        record = executor.cancel_generation(existing) if t_store is executor.tasks else existing
     return _result({
         **titles.project(t_store, record),
         "task_id": record.video_task_id,
