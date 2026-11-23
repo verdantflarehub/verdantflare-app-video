@@ -249,9 +249,9 @@ def run_lipsync(
     t_inf0 = time.monotonic()
     cmd = [
         sys.executable,
-        "-m", "scripts.inference",
-        "--unet_config_path", str(latentsync_root / "configs/unet/stage2_512.yaml"),
-        "--inference_ckpt_path", str(model_root / "checkpoints/latentsync_unet.pt"),
+        "-m", "video_lipsync.infer_runner",
+        "--latentsync_root", str(latentsync_root),
+        "--model_root", str(model_root),
         "--inference_steps", str(request["inference_steps"]),
         "--guidance_scale", str(request["guidance_scale"]),
         "--seed", str(request["seed"]),
@@ -259,6 +259,7 @@ def run_lipsync(
         "--video_path", str(video_path),
         "--audio_path", str(audio_path),
         "--video_out_path", str(raw_out),
+        "--temp_dir", str(task_dir / "temp"),
     ]
     env = os.environ.copy()
     env["PYTHONPATH"] = f"{latentsync_root}:{env.get('PYTHONPATH', '')}"
