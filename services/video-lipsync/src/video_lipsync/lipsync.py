@@ -57,7 +57,8 @@ def resolve_artifact_path(
 
     if meta.get("project_id") != project_id:
         raise RuntimeErrorCode(not_found_code)
-    if meta.get("kind") != expected_kind:
+    media_type = str(meta.get("media_type") or "").lower()
+    if meta.get("kind") != expected_kind and not media_type.startswith(f"{expected_kind}/"):
         raise RuntimeErrorCode("invalid_source_media" if expected_kind == "video" else "invalid_audio_media")
 
     filename = meta.get("filename") or ("content.mp4" if expected_kind == "video" else "content.wav")
@@ -134,14 +135,23 @@ def probe_video_file(path: Path) -> dict:
         raise RuntimeErrorCode("duration_out_of_range")
 
     astreams = [s for s in info.get("streams") or [] if s.get("codec_type") == "audio"]
+    raw_frames = vs.get("nb_frames")
+    frames = int(raw_frames) if (raw_frames and str(raw_frames).isdigit() and int(raw_frames) > 0) else max(1, round(duration * float(r_fps)))
+    fps_str = f"{r_fps.numerator}/{r_fps.denominator}"
+    vcodec = str(vs.get("codec_name") or "")
     return {
         "width": w,
         "height": h,
+        "frames": frames,
         "fps_num": r_fps.numerator,
         "fps_den": r_fps.denominator,
-        "fps_str": f"{r_fps.numerator}/{r_fps.denominator}",
+        "fps_str": fps_str,
+        "frame_rate": fps_str,
+        "codec": vcodec,
+        "video_codec": vcodec,
         "duration_seconds": round(duration, 6),
         "has_audio": len(astreams) > 0,
+        "audio": len(astreams) > 0,
         "audio_codec": astreams[0].get("codec_name") if astreams else None,
     }
 
@@ -253,7 +263,36 @@ def run_lipsync(
     env = os.environ.copy()
     env["PYTHONPATH"] = f"{latentsync_root}:{env.get('PYTHONPATH', '')}"
     env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-    proc = subprocess.run(cmd, cwd=str(latentsync_root), env=env, check=False)
+
+    import threading
+    vram_stats = {"peak_used_mib": 0, "min_free_mib": free_vram_mib_before}
+    stop_sample = threading.Event()
+
+    def _sample_vram():
+        while not stop_sample.wait(1.0):
+            try:
+                out = subprocess.check_output(
+                    ["nvidia-smi", "--query-gpu=memory.used,memory.free", "--format=csv,noheader,nounits"],
+                    text=True,
+                    timeout=3,
+                ).strip()
+                if out:
+                    u_s, f_s = [p.strip() for p in out.splitlines()[0].split(",")[:2]]
+                    u_v, f_v = int(float(u_s)), int(float(f_s))
+                    if u_v > vram_stats["peak_used_mib"]:
+                        vram_stats["peak_used_mib"] = u_v
+                    if f_v < vram_stats["min_free_mib"]:
+                        vram_stats["min_free_mib"] = f_v
+            except Exception:
+                pass
+
+    sampler = threading.Thread(target=_sample_vram, daemon=True)
+    sampler.start()
+    try:
+        proc = subprocess.run(cmd, cwd=str(latentsync_root), env=env, check=False)
+    finally:
+        stop_sample.set()
+        sampler.join(timeout=2.0)
     if proc.returncode != 0 or not raw_out.is_file():
         raise RuntimeErrorCode("inference_failed")
     inference_seconds = round(time.monotonic() - t_inf0, 3)
@@ -359,5 +398,8 @@ def run_lipsync(
             "runtime_total_seconds": total_seconds,
             "gpu_uuid": gpu_uuid,
             "free_vram_mib_before": free_vram_mib_before,
+            "gpu_peak_vram_mib": vram_stats["peak_used_mib"],
+            "gpu_min_free_vram_mib": vram_stats["min_free_mib"],
+            "gpu_peak_reserved_bytes": vram_stats["peak_used_mib"] * 1024 * 1024,
         },
     }
