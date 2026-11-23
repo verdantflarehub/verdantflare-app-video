@@ -1,5 +1,6 @@
 """Read project labels with the current Studio identity; never cache across callers."""
 import os
+import threading
 import time
 from collections import Counter
 
@@ -12,6 +13,12 @@ CATEGORIES = {
     'ai_short_drama': '短剧制作', 'creative_video': '创意视频制作',
 }
 
+_CACHE_LOCK = threading.Lock()
+_CACHE_TTL_SECONDS = 20.0
+_CACHE_MAX_ENTRIES = 64
+# Strictly keyed by (user_id, organization_id, url, tuple(ids)) — never shared across callers.
+_CALLER_METADATA_CACHE: dict[tuple[str, str, str, tuple[str, ...]], tuple[float, dict[str, tuple[str, str]]]] = {}
+
 
 def project_options(client, project_ids):
     ids = sorted(set(project_ids))
@@ -20,34 +27,49 @@ def project_options(client, project_ids):
     url = os.environ.get('VIDEO_PROJECT_SERVICE_URL', '').rstrip('/')
     token = os.environ.get('VIDEO_PROJECT_SERVICE_TOKEN', '')
     if ids and isinstance(actor, dict) and all(actor.get(k) for k in ('user_id', 'organization_id')) and url and token:
-        cursor, seen = '', set()
-        deadline = time.monotonic() + 8
-        try:
-            for _ in range(100):
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                # Project rejects explicit empty optional fields; omitted require_write defaults to false.
-                body = {'limit': 100}
-                if cursor:
-                    body['cursor'] = cursor
-                response = client.post(url + '/internal/v1/project/list', headers={
-                    'Authorization': 'Bearer ' + token, 'X-User-Id': actor['user_id'],
-                    'X-Organization-Id': actor['organization_id'], 'X-Request-Id': request_id(),
-                }, json=body, timeout=min(5, remaining))
-                response.raise_for_status()
-                data = response.json()
-                for item in data.get('items', []):
-                    if isinstance(item, dict) and item.get('project_id') in ids:
-                        name, category = item.get('name'), item.get('category')
-                        if isinstance(name, str) and name.strip() and isinstance(category, str):
-                            metadata[item['project_id']] = (name.strip(), category)
-                cursor = data.get('next_cursor')
-                if not cursor or not isinstance(cursor, str) or cursor in seen or len(metadata) == len(ids):
-                    break
-                seen.add(cursor)
-        except (httpx.HTTPError, ValueError, TypeError, AttributeError):
-            metadata = {}
+        cache_key = (str(actor['user_id']), str(actor['organization_id']), url, tuple(ids))
+        now = time.monotonic()
+        with _CACHE_LOCK:
+            cached = _CALLER_METADATA_CACHE.get(cache_key)
+        if cached is not None and cached[0] > now:
+            metadata = dict(cached[1])
+        else:
+            cursor, seen = '', set()
+            deadline = now + 3.5
+            ok = False
+            try:
+                for _ in range(100):
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    # Project rejects explicit empty optional fields; omitted require_write defaults to false.
+                    body = {'limit': 100}
+                    if cursor:
+                        body['cursor'] = cursor
+                    response = client.post(url + '/internal/v1/project/list', headers={
+                        'Authorization': 'Bearer ' + token, 'X-User-Id': actor['user_id'],
+                        'X-Organization-Id': actor['organization_id'], 'X-Request-Id': request_id(),
+                    }, json=body, timeout=min(2.5, remaining))
+                    response.raise_for_status()
+                    data = response.json()
+                    for item in data.get('items', []):
+                        if isinstance(item, dict) and item.get('project_id') in ids:
+                            name, category = item.get('name'), item.get('category')
+                            if isinstance(name, str) and name.strip() and isinstance(category, str):
+                                metadata[item['project_id']] = (name.strip(), category)
+                    cursor = data.get('next_cursor')
+                    if not cursor or not isinstance(cursor, str) or cursor in seen or len(metadata) == len(ids):
+                        ok = True
+                        break
+                    seen.add(cursor)
+            except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+                metadata = {}
+                ok = False
+            if ok and metadata:
+                with _CACHE_LOCK:
+                    if len(_CALLER_METADATA_CACHE) >= _CACHE_MAX_ENTRIES:
+                        _CALLER_METADATA_CACHE.clear()
+                    _CALLER_METADATA_CACHE[cache_key] = (time.monotonic() + _CACHE_TTL_SECONDS, dict(metadata))
     options = []
     for index, project_id in enumerate(ids, 1):
         title, category = metadata.get(project_id, (f'历史项目 {index}（名称不可用）', ''))

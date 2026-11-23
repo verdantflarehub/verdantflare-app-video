@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sqlite3
+import threading
 from typing import Any, Mapping
 import uuid
 
@@ -114,6 +115,8 @@ class ContentRatingStore:
     def __init__(self, db_path: Path, domain: str = "video") -> None:
         self.db_path = db_path
         self.domain = domain
+        self._ready = False
+        self._ready_lock = threading.Lock()
 
     def _get_conn(self) -> sqlite3.Connection:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -127,9 +130,15 @@ class ContentRatingStore:
         return conn
 
     def ensure_ready(self) -> None:
-        with self._get_conn() as conn:
-            conn.execute("PRAGMA journal_mode=WAL;")
-            conn.executescript(CONTENT_RATING_SCHEMA_SQL)
+        if self._ready and self.db_path.exists():
+            return
+        with self._ready_lock:
+            if self._ready and self.db_path.exists():
+                return
+            with self._get_conn() as conn:
+                conn.execute("PRAGMA journal_mode=WAL;")
+                conn.executescript(CONTENT_RATING_SCHEMA_SQL)
+            self._ready = True
 
     def _row_to_dict(self, row: sqlite3.Row | None) -> dict[str, Any]:
         if row is None:
@@ -180,6 +189,48 @@ class ContentRatingStore:
         rec = self.get(version_id, task_id=task_id)
         return rec.get("rating") == "nsfw"
 
+    def load_all_ratings(self) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+        """Load all content ratings in a single query for bulk list filtering and UI projection."""
+        self.ensure_ready()
+        by_version: dict[str, dict[str, Any]] = {}
+        by_task: dict[str, dict[str, Any]] = {}
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM content_ratings ORDER BY rated_at DESC"
+            ).fetchall()
+            for row in rows:
+                rec = self._row_to_dict(row)
+                vid = rec.get("version_id")
+                if vid and vid not in by_version:
+                    by_version[vid] = rec
+                tid = rec.get("task_id")
+                if tid and tid not in by_task:
+                    by_task[tid] = rec
+        return by_version, by_task
+
+    @staticmethod
+    def format_ui_fields(rec: dict[str, Any] | None, *, can_write: bool = True) -> dict[str, Any]:
+        data = rec if rec is not None else default_unrated_dict()
+        rating = data.get("rating", "unrated")
+        return {
+            "content_rating": {
+                "rating": rating,
+                "source": data.get("source"),
+                "rubric_version": data.get("rubric_version"),
+                "evaluator_model": data.get("evaluator_model"),
+                "reasons": data.get("reasons", []),
+                "reason": data.get("reason"),
+                "rated_by": data.get("rated_by"),
+                "rated_at": data.get("rated_at"),
+                "human_cleared": bool(data.get("human_cleared", False)),
+                "cleared_by": data.get("cleared_by"),
+                "cleared_at": data.get("cleared_at"),
+                "clear_note": data.get("clear_note"),
+            },
+            "can_clear_rating": bool(can_write and rating == "nsfw"),
+            "can_mark_rating": bool(can_write and rating != "nsfw"),
+        }
+
     def ui_fields(
         self,
         version_id: str | None = None,
@@ -188,25 +239,7 @@ class ContentRatingStore:
         can_write: bool = True,
     ) -> dict[str, Any]:
         rec = self.get(version_id, task_id=task_id)
-        rating = rec.get("rating", "unrated")
-        return {
-            "content_rating": {
-                "rating": rating,
-                "source": rec.get("source"),
-                "rubric_version": rec.get("rubric_version"),
-                "evaluator_model": rec.get("evaluator_model"),
-                "reasons": rec.get("reasons", []),
-                "reason": rec.get("reason"),
-                "rated_by": rec.get("rated_by"),
-                "rated_at": rec.get("rated_at"),
-                "human_cleared": bool(rec.get("human_cleared", False)),
-                "cleared_by": rec.get("cleared_by"),
-                "cleared_at": rec.get("cleared_at"),
-                "clear_note": rec.get("clear_note"),
-            },
-            "can_clear_rating": bool(can_write and rating == "nsfw"),
-            "can_mark_rating": bool(can_write and rating != "nsfw"),
-        }
+        return self.format_ui_fields(rec, can_write=can_write)
 
     def rate_content(
         self,

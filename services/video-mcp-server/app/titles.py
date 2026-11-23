@@ -37,14 +37,21 @@ def fallback(record):
 
 
 @contextmanager
-def connection(store):
+def connection(store, *, readonly: bool = False):
     store.ensure_ready()
     existing = getattr(store._local, 'connection', None)
     db = existing or sqlite3.connect(store.root / 'coordination.sqlite3', timeout=15)
     try:
-        db.execute('CREATE TABLE IF NOT EXISTS task_titles (task TEXT PRIMARY KEY, title TEXT NOT NULL, source TEXT NOT NULL, revision INTEGER NOT NULL, updated_at TEXT NOT NULL)')
+        if not getattr(store, '_titles_table_ready', False) or not (store.root / 'coordination.sqlite3').exists():
+            db.execute('CREATE TABLE IF NOT EXISTS task_titles (task TEXT PRIMARY KEY, title TEXT NOT NULL, source TEXT NOT NULL, revision INTEGER NOT NULL, updated_at TEXT NOT NULL)')
+            if existing is None:
+                db.commit()
+            try:
+                store._titles_table_ready = True
+            except AttributeError:
+                pass
         yield db
-        if existing is None:
+        if existing is None and not readonly:
             db.commit()
     finally:
         if existing is None:
@@ -52,10 +59,25 @@ def connection(store):
 
 
 def project(store, record):
-    with connection(store) as db:
+    with connection(store, readonly=True) as db:
         row = db.execute('SELECT title,source,revision,updated_at FROM task_titles WHERE task=?', (record.video_task_id,)).fetchone()
     return dict(zip(('title', 'title_source', 'title_revision', 'title_updated_at'), row)) if row else {
         'title': fallback(record), 'title_source': 'fallback', 'title_revision': 0, 'title_updated_at': None}
+
+
+def project_batch(store, records):
+    if not records:
+        return {}
+    rows_by_task = {}
+    with connection(store, readonly=True) as db:
+        for row in db.execute('SELECT task,title,source,revision,updated_at FROM task_titles').fetchall():
+            rows_by_task[row[0]] = dict(zip(('title', 'title_source', 'title_revision', 'title_updated_at'), row[1:]))
+    result = {}
+    for record in records:
+        found = rows_by_task.get(record.video_task_id)
+        result[record.video_task_id] = found if found is not None else {
+            'title': fallback(record), 'title_source': 'fallback', 'title_revision': 0, 'title_updated_at': None}
+    return result
 
 
 def initialize(store, record):

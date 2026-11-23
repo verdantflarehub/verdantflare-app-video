@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import contextvars
 import logging
 import subprocess
 import tempfile
@@ -188,7 +190,7 @@ def public_admission_reconciliation(record):
     return {k: raw[k] for k in allowed if k in raw}
 
 
-def public_task(record, store=None, ratings_store=None, catalog=None):
+def public_task(record, store=None, ratings_store=None, catalog=None, *, naming=None, ui_fields=None):
     record = TaskStore.with_timing(record)
     model = record.request.get("model")
     if not model:
@@ -200,8 +202,10 @@ def public_task(record, store=None, ratings_store=None, catalog=None):
             "depth": "video-depth-anything",
             "h3-latent-upscale": "h3-latent-upscaler",
         }.get(record.service)
-    naming = titles.project(store, record) if store is not None else {'title': titles.fallback(record), 'title_source': 'fallback', 'title_revision': 0, 'title_updated_at': None}
-    ui_fields = store.record_ui_fields(record, ratings_store, can_write=True) if store is not None else {"content_rating": "unrated", "can_clear_rating": False, "can_mark_rating": True}
+    if naming is None:
+        naming = titles.project(store, record) if store is not None else {'title': titles.fallback(record), 'title_source': 'fallback', 'title_revision': 0, 'title_updated_at': None}
+    if ui_fields is None:
+        ui_fields = store.record_ui_fields(record, ratings_store, can_write=True) if store is not None else {"content_rating": "unrated", "can_clear_rating": False, "can_mark_rating": True}
     sanitized_delivery = (
         {k: v for k, v in record.delivery.items() if not str(k).startswith("_")}
         if isinstance(record.delivery, dict)
@@ -288,6 +292,10 @@ class Dashboard:
         self._ffmpeg_sem = threading.Semaphore(2)
         self._records_cache_lock = threading.RLock()
         self._records_cache: dict[Path, tuple[int, int, TaskRecord]] = {}
+        self._label_catalog_lock = threading.Lock()
+        self._label_catalog: dict | None = None
+        self._label_catalog_until: float = 0.0
+        self._label_catalog_refreshing: bool = False
         self.services = {"h3": "unknown", "h3-sol": "not_connected", "fal": "not_connected", "mcp": "ready"}
         self.sync_errors = 0
         self.synced_at = None
@@ -300,13 +308,150 @@ class Dashboard:
                 self._thumb_locks[digest] = lock
             return lock
 
-    def _public_task(self, record, store=None, ratings_store=None):
-        # Labels may use a short-lived display cache; submission never uses it.
+    def _refresh_label_catalog_bg(self) -> None:
+        try:
+            fresh = getattr(self.executor, "catalog_view", lambda: {})()
+            with self._label_catalog_lock:
+                self._label_catalog = fresh
+                self._label_catalog_until = time.monotonic() + 60.0
+        except Exception:
+            with self._label_catalog_lock:
+                self._label_catalog_until = time.monotonic() + 15.0
+        finally:
+            with self._label_catalog_lock:
+                self._label_catalog_refreshing = False
+
+    def _get_label_catalog(self) -> dict:
+        # Labels use a non-blocking stale-while-revalidate display cache; submission never uses it.
         now = time.monotonic()
-        if now >= getattr(self, "_label_catalog_until", 0):
-            self._label_catalog = getattr(self.executor, "catalog_view", lambda: {})()
-            self._label_catalog_until = now + 30
-        return public_task(record, store, ratings_store, self._label_catalog)
+        should_refresh = False
+        with self._label_catalog_lock:
+            cached = self._label_catalog
+            if cached is not None and now < self._label_catalog_until:
+                return cached
+            if cached is None:
+                catalog_store = getattr(self.executor, "catalog", None)
+                if catalog_store is not None and callable(getattr(catalog_store, "snapshot", None)):
+                    try:
+                        cached = catalog_store.snapshot()
+                        self._label_catalog = cached
+                    except Exception:
+                        cached = {}
+            if cached is not None:
+                if not self._label_catalog_refreshing:
+                    self._label_catalog_refreshing = True
+                    should_refresh = True
+        if should_refresh:
+            threading.Thread(
+                target=self._refresh_label_catalog_bg,
+                name="video-label-catalog-refresh",
+                daemon=True,
+            ).start()
+            return cached
+        if cached is not None:
+            return cached
+        # Fallback for test doubles without a local catalog store.
+        fresh = getattr(self.executor, "catalog_view", lambda: {})()
+        with self._label_catalog_lock:
+            self._label_catalog = fresh
+            self._label_catalog_until = time.monotonic() + 60.0
+        return fresh
+
+    def _public_task(self, record, store=None, ratings_store=None, *, catalog=None, naming=None, ui_fields=None):
+        resolved_catalog = self._get_label_catalog() if catalog is None else catalog
+        return public_task(
+            record,
+            store,
+            ratings_store,
+            resolved_catalog,
+            naming=naming,
+            ui_fields=ui_fields,
+        )
+
+    @staticmethod
+    def _format_record_ui_fields(ratings_store, matched_rec, *, can_write: bool = True) -> dict:
+        ui = ratings_store.format_ui_fields(matched_rec, can_write=can_write)
+        rating_obj = ui.get("content_rating")
+        rating_str = (
+            rating_obj.get("rating", "unrated")
+            if isinstance(rating_obj, dict)
+            else str(rating_obj or "unrated")
+        )
+        return {
+            **ui,
+            "content_rating": rating_str,
+            "content_rating_detail": rating_obj,
+        }
+
+    @staticmethod
+    def _match_record_rating(record, tasks_store, by_version, by_task):
+        vids = tasks_store.task_version_ids(record)
+        for vid in vids:
+            rec = by_version.get(vid)
+            if rec is not None and rec.get("rating") == "nsfw":
+                return rec, True
+        task_rec = by_task.get(record.video_task_id)
+        if task_rec is not None and task_rec.get("rating") == "nsfw":
+            return task_rec, True
+        for vid in vids:
+            rec = by_version.get(vid)
+            if rec is not None and rec.get("rating") != "unrated":
+                return rec, False
+        if task_rec is not None and task_rec.get("rating") != "unrated":
+            return task_rec, False
+        return None, False
+
+    def _filter_authorized_records(self, records):
+        # Deduplicate authorization checks by (service, project_id, org_id, gateway_flag)
+        # so N records in the same project perform 1 RPC instead of N serial RPCs.
+        auth_groups: dict[tuple, TaskRecord] = {}
+        record_keys: list[tuple[TaskRecord, tuple | None]] = []
+        for record in records:
+            if record.service in {"higgsfield", "google-flow"}:
+                org_id = (record.authority or {}).get("organization_id") if isinstance(record.authority, dict) else None
+                key = (record.service, record.project_id, org_id)
+                auth_groups.setdefault(key, record)
+                record_keys.append((record, key))
+            elif record.service == "fal":
+                org_id = record.request.get("organization_id")
+                is_gw = bool(self.executor.fal._gateway_record(record))
+                key = ("fal", record.project_id, org_id, is_gw)
+                auth_groups.setdefault(key, record)
+                record_keys.append((record, key))
+            else:
+                record_keys.append((record, None))
+
+        if not auth_groups:
+            return records
+
+        def _check_one(rep: TaskRecord) -> bool:
+            try:
+                if rep.service in {"higgsfield", "google-flow"}:
+                    self.member_adapter(rep).authorize_record(rep)
+                elif rep.service == "fal":
+                    self.executor.fal.authorize_record(rep)
+                return True
+            except (PermissionError, ValueError, httpx.HTTPError, ExecutionError):
+                return False
+
+        results: dict[tuple, bool] = {}
+        if len(auth_groups) == 1:
+            only_key, only_rep = next(iter(auth_groups.items()))
+            results[only_key] = _check_one(only_rep)
+        else:
+            max_workers = min(8, len(auth_groups))
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {
+                    key: pool.submit(contextvars.copy_context().run, _check_one, rep)
+                    for key, rep in auth_groups.items()
+                }
+                for key, fut in futures.items():
+                    try:
+                        results[key] = fut.result()
+                    except Exception:
+                        results[key] = False
+
+        return [record for record, key in record_keys if key is None or results.get(key, False)]
 
     def _stores(self, request: Request | None = None):
         tasks_store = getattr(request.app.state, "tasks", None) if request is not None else None
@@ -407,57 +552,93 @@ class Dashboard:
         page = max(1, int(query.get("page", "1")))
         size = max(1, min(100, int(query.get("page_size", "24"))))
         records = self.records(tasks_store)
-        visible = []
+
+        # Single bulk SQLite read for all content ratings instead of N*K per-record queries.
+        by_version, by_task = ratings_store.load_all_ratings()
+        rating_by_task_id: dict[str, dict | None] = {}
+        non_nsfw_records = []
         for record in records:
-            if not include_nsfw and tasks_store.is_record_nsfw(record, ratings_store):
+            matched_rec, is_nsfw = self._match_record_rating(record, tasks_store, by_version, by_task)
+            if not include_nsfw and is_nsfw:
                 continue
-            if record.service in {"higgsfield", "google-flow"}:
-                try:
-                    self.member_adapter(record).authorize_record(record)
-                except (PermissionError, ValueError, httpx.HTTPError):
-                    continue
-            if record.service == "fal":
-                try:
-                    self.executor.fal.authorize_record(record)
-                except (PermissionError, ValueError, httpx.HTTPError):
-                    continue
-            visible.append(record)
-        records = visible
+            rating_by_task_id[record.video_task_id] = matched_rec
+            non_nsfw_records.append(record)
+
+        records = self._filter_authorized_records(non_nsfw_records)
         projects = sorted({r.project_id for r in records})
         options = project_options(self.executor.client, projects)
         project_labels = {item["id"]: item["label"] for item in options}
         channels = [{"id": c, "label": channel_label(c)} for c in sorted({task_channel(r) for r in records})]
-        rows = [
-            {
-                **self._public_task(r, tasks_store),
-                "task_id": r.video_task_id,
-                **tasks_store.record_ui_fields(r, ratings_store, can_write=True),
-            }
-            for r in records
-        ]
-        channel = query.get("channel", "all")
-        if channel != "all":
-            rows = [r for r in rows if r["presentation"]["channel_id"] == channel]
-        for key in ("project_id", "service"):
-            value = query.get(key, "all")
-            if value != "all":
-                rows = [r for r in rows if r[key] == value]
+
+        channel_filter = query.get("channel", "all")
+        project_filter = query.get("project_id", "all")
+        service_filter = query.get("service", "all")
         search = query.get("q", "").casefold()
-        if search:
-            rows = [r for r in rows if search in " ".join(str(r[k]) for k in (
-                "title", "prompt", "project_id", "idempotency_key", "video_task_id")).casefold()
-                    or search in project_labels.get(r["project_id"], "").casefold()]
-        counts = {s: sum(r["status"] == s for r in rows) for s in (
-            "queued", "running", "succeeded", "failed", "cancelled")}
         status_filter = query.get("status", "all")
+
+        # Filter records before building full public payloads; only batch-load titles early when searching.
+        filtered = records
+        if channel_filter != "all":
+            filtered = [r for r in filtered if task_channel(r) == channel_filter]
+        if project_filter != "all":
+            filtered = [r for r in filtered if r.project_id == project_filter]
+        if service_filter != "all":
+            filtered = [r for r in filtered if r.service == service_filter]
+
+        all_titles = titles.project_batch(tasks_store, filtered) if (search and filtered) else None
+        if search:
+            matched = []
+            for r in filtered:
+                title_val = (all_titles.get(r.video_task_id) or {}).get("title", "") if all_titles else ""
+                haystack = " ".join(str(v) for v in (
+                    title_val,
+                    r.request.get("prompt", ""),
+                    r.project_id,
+                    r.idempotency_key,
+                    r.video_task_id,
+                )).casefold()
+                if search in haystack or search in project_labels.get(r.project_id, "").casefold():
+                    matched.append(r)
+            filtered = matched
+
+        counts = {s: 0 for s in ("queued", "running", "succeeded", "failed", "cancelled")}
+        for r in filtered:
+            if r.status in counts:
+                counts[r.status] += 1
+
         if status_filter != "all":
-            rows = [r for r in rows if r["status"] == status_filter]
-        elapsed = [r["timing"]["processing_seconds"] if r["service"] == "higgsfield" else r["timing"]["total_seconds"]
-                   for r in rows if r["status"] == "succeeded"]
-        elapsed = [value for value in elapsed if value is not None]
-        return {"tasks": rows[(page-1)*size:page*size], "total": len(rows), "page": page,
+            filtered = [r for r in filtered if r.status == status_filter]
+
+        elapsed = []
+        completion_times = []
+        for r in filtered:
+            if r.status == "succeeded":
+                completion_times.append(r.completed_at or r.updated_at)
+                timed = TaskStore.with_timing(r)
+                t_val = (timed.timing or {}).get("processing_seconds" if r.service == "higgsfield" else "total_seconds")
+                if t_val is not None:
+                    elapsed.append(t_val)
+
+        page_records = filtered[(page - 1) * size : page * size]
+        page_titles = all_titles if all_titles is not None else titles.project_batch(tasks_store, page_records)
+        label_catalog = self._get_label_catalog()
+        page_rows = [
+            {
+                **self._public_task(
+                    r,
+                    tasks_store,
+                    ratings_store,
+                    catalog=label_catalog,
+                    naming=page_titles.get(r.video_task_id),
+                    ui_fields=self._format_record_ui_fields(ratings_store, rating_by_task_id.get(r.video_task_id), can_write=True),
+                ),
+                "task_id": r.video_task_id,
+            }
+            for r in page_records
+        ]
+        return {"tasks": page_rows, "total": len(filtered), "page": page,
                 "page_size": size, "projects": projects, "project_options": options, "channels": channels, "counts": counts,
-                "completion_times": [r["completed_at"] for r in rows if r["status"] == "succeeded"],
+                "completion_times": completion_times,
                 "average_elapsed_seconds": round(sum(elapsed)/len(elapsed), 1) if elapsed else None,
                 "services": dict(self.services), "grok_capability": self.executor.grok.capability(),
                 "synced_at": self.synced_at, "sync_errors": self.sync_errors}
@@ -482,11 +663,24 @@ class Dashboard:
             include_nsfw=include_nsfw,
             ratings_store=ratings_store,
         )
+        by_version, by_task = ratings_store.load_all_ratings()
+        page_titles = titles.project_batch(tasks_store, records)
+        label_catalog = self._get_label_catalog()
         items = [
             {
-                **self._public_task(r, tasks_store),
+                **self._public_task(
+                    r,
+                    tasks_store,
+                    ratings_store,
+                    catalog=label_catalog,
+                    naming=page_titles.get(r.video_task_id),
+                    ui_fields=self._format_record_ui_fields(
+                        ratings_store,
+                        self._match_record_rating(r, tasks_store, by_version, by_task)[0],
+                        can_write=True,
+                    ),
+                ),
                 "task_id": r.video_task_id,
-                **tasks_store.record_ui_fields(r, ratings_store, can_write=True),
             }
             for r in records
         ]
