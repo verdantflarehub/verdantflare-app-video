@@ -650,12 +650,12 @@ class ProcessingExecutor:
         grant_headers: dict[str, str] = {}
         try:
             local_gating = bool(
-                self.service in {'sr', 'interpolate', 'regenerate_2k', 'character_swap'}
+                self.service in {'sr', 'interpolate', 'regenerate_2k', 'character_swap', 'lipsync'}
                 and (not self.executor.scheduler.enabled)
                 and (self.executor.gpu.enabled or self.executor.stage_slot.enabled)
             )
             identity = None
-            if self.service in {'regenerate_2k', 'character_swap'}:
+            if self.service in {'regenerate_2k', 'character_swap', 'lipsync'}:
                 try:
                     identity = self.executor.wake_int8(self.service, url, headers)
                 except ExecutionError:
@@ -666,7 +666,7 @@ class ProcessingExecutor:
                     self.executor.retire_idle_engine(self.service, rollback=True)
                     return failed
 
-            if self.service in {'sr', 'interpolate', 'regenerate_2k', 'character_swap'} and self.executor.engine_gate.enabled:
+            if self.service in {'sr', 'interpolate', 'regenerate_2k', 'character_swap', 'lipsync'} and self.executor.engine_gate.enabled:
                 slot_ident = identity or self.executor.probe_runtime_identity(url, headers)
                 try:
                     acquired = self.executor.acquire_engine_slot(
@@ -757,7 +757,7 @@ class ProcessingExecutor:
                     timeout=30,
                 )
                 if response.status_code in {400, 404, 409, 422, 429} or (
-                    self.service == 'character_swap' and response.status_code in {403, 413, 503}
+                    self.service in {'character_swap', 'lipsync'} and response.status_code in {403, 413, 503}
                 ) or (
                     self.service == 'regenerate_2k' and response.status_code == 503
                 ):
@@ -1107,13 +1107,30 @@ class ProcessingExecutor:
             if payload['video_task_id'] != record.video_task_id or payload['status'] != 'succeeded':
                 raise ValueError('result task mismatch')
             data = payload['result']
-            if data['input_sha256'] != record.request['source_sha256']:
-                raise ValueError('source mismatch')
+            if self.service == 'lipsync':
+                if data['input_video_sha256'] != record.request['source_video_sha256'] or data['input_audio_sha256'] != record.request['audio_sha256']:
+                    raise ValueError('lipsync source mismatch')
+                def _norm_lip(m: dict) -> dict:
+                    return {
+                        'width': int(m['width']),
+                        'height': int(m['height']),
+                        'frames': int(m['frames']),
+                        'frame_rate': str(m.get('frame_rate') or m['fps_str']),
+                        'duration_seconds': float(m['duration_seconds']),
+                        'video_codec': str(m.get('video_codec') or m['codec']),
+                        'audio': bool(m.get('audio') if 'audio' in m else m['has_audio']),
+                    }
+                media = _norm_lip(data['media'])
+                source = _norm_lip(data['input_media'])
+                preview = _norm_lip(data['preview_media'])
+            else:
+                if data['input_sha256'] != record.request['source_sha256']:
+                    raise ValueError('source mismatch')
 
-            keys = ('width', 'height', 'frames', 'frame_rate', 'duration_seconds', 'video_codec', 'audio')
-            media = {k: data['media'][k] for k in keys}
-            source = {k: data['input_media'][k] for k in keys}
-            preview = {k: data['preview_media'][k] for k in keys}
+                keys = ('width', 'height', 'frames', 'frame_rate', 'duration_seconds', 'video_codec', 'audio')
+                media = {k: data['media'][k] for k in keys}
+                source = {k: data['input_media'][k] for k in keys}
+                preview = {k: data['preview_media'][k] for k in keys}
             for item in (source, media, preview):
                 if any(type(item[k]) is not int or item[k] <= 0 for k in ('width', 'height', 'frames')):
                     raise ValueError('invalid dimensions')
@@ -1121,10 +1138,18 @@ class ProcessingExecutor:
                     raise ValueError('invalid media')
                 if not math.isfinite(float(item['duration_seconds'])) or float(item['duration_seconds']) <= 0:
                     raise ValueError('invalid duration')
-            if media['audio'] != source['audio'] or media['video_codec'] != 'h264':
+            if self.service == 'lipsync':
+                if media['video_codec'] != 'h264':
+                    raise ValueError('lipsync codec mismatch')
+            elif media['audio'] != source['audio'] or media['video_codec'] != 'h264':
                 raise ValueError('media mismatch')
 
-            if self.service == 'sr':
+            if self.service == 'lipsync':
+                if (media['width'], media['height']) != (source['width'], source['height']):
+                    raise ValueError('lipsync resolution mismatch')
+                if Fraction(media['frame_rate']) != Fraction(source['frame_rate']):
+                    raise ValueError('lipsync frame rate mismatch')
+            elif self.service == 'sr':
                 if data['parameters']['backend'] != record.request['backend']:
                     raise ValueError('backend mismatch')
                 if (media['width'], media['height']) != (
@@ -1167,7 +1192,10 @@ class ProcessingExecutor:
                     raise ValueError('interpolation geometry mismatch')
 
             duration = float(Fraction(media['frames']) / Fraction(media['frame_rate']))
-            if abs(duration - float(media['duration_seconds'])) > 0.001 or abs(
+            if self.service == 'lipsync':
+                if abs(duration - float(media['duration_seconds'])) > 0.05:
+                    raise ValueError('lipsync duration mismatch')
+            elif abs(duration - float(media['duration_seconds'])) > 0.001 or abs(
                 duration - float(source['duration_seconds'])
             ) > (1/48 + 0.001 if self.service == 'character_swap' else 0.001):
                 raise ValueError('duration mismatch')
@@ -1175,11 +1203,20 @@ class ProcessingExecutor:
             expected_pw, expected_ph = preview_geometry(media['width'], media['height'])
             if (preview['width'], preview['height']) != (expected_pw, expected_ph):
                 raise ValueError('preview geometry mismatch')
-            if any(preview[k] != media[k] for k in ('frames', 'frame_rate', 'duration_seconds', 'video_codec', 'audio')):
+            if self.service == 'lipsync':
+                if preview['video_codec'] != 'h264' or abs(preview['duration_seconds'] - media['duration_seconds']) > 0.05:
+                    raise ValueError('lipsync preview mismatch')
+            elif any(preview[k] != media[k] for k in ('frames', 'frame_rate', 'duration_seconds', 'video_codec', 'audio')):
                 raise ValueError('preview mismatch')
 
             model = data['model']
-            if self.service == 'character_swap':
+            if self.service == 'lipsync':
+                if model.get('backend') != 'latentsync_1_6':
+                    raise ValueError('lipsync model mismatch')
+                media['model'] = model
+                media['parameters'] = data['parameters']
+                media['audio_mode'] = data['media'].get('audio_mode', record.request.get('audio_mix_mode'))
+            elif self.service == 'character_swap':
                 if model['backend'] != self.backend:
                     raise ValueError('character_swap model mismatch')
                 for key in ('character_image_artifact_id', 'character_image_sha256', 'character_lora_version',
@@ -1399,6 +1436,10 @@ class ProcessingExecutor:
             for key in ('character_image_artifact_id', 'character_image_sha256', 'character_lora_version',
                         'source_artifact_id', 'source_sha256', 'lora_strength', 'turbo_variant', 'resolution_preset'):
                 value[key] = record.request.get(key)
+        if self.service == 'lipsync':
+            for key in ('source_video_artifact_id', 'source_video_sha256', 'audio_artifact_id', 'audio_sha256',
+                        'inference_steps', 'guidance_scale', 'seed', 'audio_mix_mode'):
+                value[key] = record.request.get(key)
         if self.service == 'regenerate_2k':
             value['delivery'] = record.delivery
             value['source_artifact_id'] = record.request.get('source_artifact_id')
@@ -1422,7 +1463,7 @@ class ProcessingExecutor:
             'download_path': self.artifacts.download_path(artifact_id),
             'sha256': artifact.sha256,
             'size': int(artifact.size),
-            'source_artifact_id': record.request['source_artifact_id'],
+            'source_artifact_id': record.request.get('source_artifact_id') or record.request.get('source_video_artifact_id'),
             'media': enriched_media,
         }
         return value
