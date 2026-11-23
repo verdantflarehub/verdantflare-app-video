@@ -1397,7 +1397,12 @@ class ProcessingExecutor:
 
             media['input_media'] = source
             media['preview_media'] = preview
-            for key in ('input_sha256', 'output_sha256', 'preview_sha256'):
+            sha_keys = (
+                ('input_video_sha256', 'input_audio_sha256', 'output_sha256', 'preview_sha256')
+                if self.service == 'lipsync'
+                else ('input_sha256', 'output_sha256', 'preview_sha256')
+            )
+            for key in sha_keys:
                 if not re.fullmatch(r'[0-9a-f]{64}', data[key]):
                     raise ValueError('invalid digest')
                 media[key] = data[key]
