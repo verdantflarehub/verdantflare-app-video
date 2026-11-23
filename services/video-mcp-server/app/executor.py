@@ -50,7 +50,7 @@ H3_DURATION_TOLERANCE_MS = 1000
 MAX_INLINE_IMAGE_BYTES = 3 * 1024 * 1024
 MODERN_H3_SERVICES = {"h3-fasth3", "h3-singularity"}
 LOCAL_H3_SERVICES = {"h3", "h3-vdn", "h3-sol", *MODERN_H3_SERVICES}
-LOCAL_GPU_SERVICES = LOCAL_H3_SERVICES | {"regenerate_2k", "character_swap", "interpolate", "sr", "depth", "h3-latent-upscale"}
+LOCAL_GPU_SERVICES = LOCAL_H3_SERVICES | {"regenerate_2k", "character_swap", "lipsync", "interpolate", "sr", "depth", "h3-latent-upscale"}
 TERMINAL_TASK_STATUS = {"succeeded", "failed", "cancelled", "canceled"}
 
 
@@ -173,7 +173,7 @@ class VideoExecutor:
         from .depth import DepthExecutor
         self.depth = DepthExecutor(self)
         from .processing import ProcessingExecutor
-        self.processing = {name: ProcessingExecutor(self, name) for name in ("sr", "interpolate", "regenerate_2k", "character_swap")}
+        self.processing = {name: ProcessingExecutor(self, name) for name in ("sr", "interpolate", "regenerate_2k", "character_swap", "lipsync")}
         from .h3_latent import H3LatentExecutor
         self.processing["h3-latent-upscale"] = H3LatentExecutor(self)
         from .providers.fal import FalAdapter
@@ -559,6 +559,7 @@ class VideoExecutor:
         endpoint_map = {
             "regenerate_2k": "regenerate-2k",
                 "character_swap": "character-swap",
+            "lipsync": "lipsync",
             "interpolate": "interpolate",
             "sr": "sr",
             "depth": "depth",
@@ -975,7 +976,7 @@ class VideoExecutor:
         elapsed = max(0.0, now_wall - q_wall) if q_wall is not None else 0.0
 
         attempt_id = str(pstate.get("_gpu_attempt_id") or f"att-{record.video_task_id[-12:]}")
-        journaled = service in {"regenerate_2k", "character_swap"} and self._int8_scaling_enabled()
+        journaled = service in {"regenerate_2k", "character_swap", "lipsync"} and self._int8_scaling_enabled()
         try:
             if (
                 isinstance(existing_lease, dict)
@@ -2471,7 +2472,7 @@ class VideoExecutor:
 
     def reconcile_gpu(self) -> None:
         if self._int8_scaling_enabled():
-            for engine in ("regenerate_2k", "character_swap"):
+            for engine in ("regenerate_2k", "character_swap", "lipsync"):
                 try:
                     self.retire_idle_engine(engine)
                 except Exception:

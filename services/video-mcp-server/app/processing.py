@@ -37,22 +37,30 @@ from .tasks import TaskConflict, TaskRecord
 
 SAFE_REJECTION_CODES = {
     'attempt_stage_conflict',
+    'audio_integrity_failed',
+    'audio_not_found',
     'body_too_large',
     'boot_id_mismatch',
     'character_image_integrity_failed',
     'character_image_not_found',
     'container_id_mismatch',
+    'duration_mismatch',
     'duration_out_of_range',
     'fence_state_corrupted',
     'fence_state_persist_failed',
     'gpu_identity_unavailable',
     'gpu_uuid_mismatch',
     'idempotency_conflict',
+    'invalid_audio_artifact_id',
+    'invalid_audio_media',
+    'invalid_audio_sha256',
     'invalid_character_image_artifact_id',
     'invalid_character_image_media',
     'invalid_character_image_sha256',
     'invalid_content_length',
+    'invalid_guidance_scale',
     'invalid_idempotency_key',
+    'invalid_inference_steps',
     'invalid_json',
     'invalid_lora_strength',
     'invalid_project_id',
@@ -65,6 +73,8 @@ SAFE_REJECTION_CODES = {
     'invalid_source_fps',
     'invalid_source_media',
     'invalid_source_sha256',
+    'invalid_source_video_artifact_id',
+    'invalid_source_video_sha256',
     'json_object_required',
     'lease_expired',
     'missing_or_invalid_gpu_grant',
@@ -76,6 +86,7 @@ SAFE_REJECTION_CODES = {
     'source_integrity_failed',
     'source_not_found',
     'stale_or_revoked_fencing_token',
+    'unsupported_audio_mix_mode',
     'unsupported_character_lora_version',
     'unsupported_grid_mode',
     'unsupported_regenerate_profile',
@@ -116,7 +127,7 @@ class ProcessingExecutor:
         self.artifacts, self.tasks = executor.artifacts, executor.tasks
         self._client_override = None
         self._lock = executor._lock
-        if service not in {'sr', 'interpolate', 'regenerate_2k', 'character_swap'}:
+        if service not in {'sr', 'interpolate', 'regenerate_2k', 'character_swap', 'lipsync'}:
             raise ValueError('unsupported processing service')
         self.service = service
         self.endpoint_path = service.replace('_', '-')
@@ -124,11 +135,12 @@ class ProcessingExecutor:
             'seedvr2' if service == 'sr'
             else 'open_h3_2k_ic' if service == 'regenerate_2k'
             else 'h3_character_swap_lora' if service == 'character_swap'
+            else 'latentsync_1_6' if service == 'lipsync'
             else 'rife'
         )
-        if service in {'character_swap', 'regenerate_2k'}:
+        if service in {'character_swap', 'regenerate_2k', 'lipsync'}:
             prefix = 'VIDEO_' + service.upper()
-            version = f'video-minimax-h3-{self.endpoint_path}-v0.1.0'
+            version = 'video-lipsync-v0.1.0' if service == 'lipsync' else f'video-minimax-h3-{self.endpoint_path}-v0.1.0'
             self.url = os.getenv(f'{prefix}_RUNTIME_URL', '').strip().rstrip('/')
             self.runtime_version = os.getenv(f'{prefix}_RUNTIME_VERSION', version).strip() or version
         else:
@@ -147,7 +159,7 @@ class ProcessingExecutor:
         self._client_override = value
 
     def _runtime_target(self, record: TaskRecord | None = None) -> tuple[str, dict[str, str], str]:
-        if self.service not in {'character_swap', 'regenerate_2k'}:
+        if self.service not in {'character_swap', 'regenerate_2k', 'lipsync'}:
             endpoint = (record.runtime_endpoint if record and record.runtime_endpoint else self.url).rstrip('/')
             version = (record.runtime_version if record and record.runtime_version else self.runtime_version)
             prefix = 'VIDEO_SR' if self.service == 'sr' else 'VIDEO_INTERPOLATION'
@@ -473,6 +485,10 @@ class ProcessingExecutor:
                 from .character_swap import prepare_request
                 swap_request = prepare_request(self.artifacts, project_id, source_artifact_id, parameters)
                 validated = swap_request
+            elif self.service == 'lipsync':
+                from .lipsync import prepare_request as prepare_lipsync_request
+                lipsync_request = prepare_lipsync_request(self.artifacts, project_id, source_artifact_id, parameters)
+                validated = lipsync_request
             else:
                 validated = self.validate_parameters(parameters)
             source = self.artifacts.get(source_artifact_id, project_id)
@@ -484,6 +500,8 @@ class ProcessingExecutor:
             inspected = None
             if self.service == 'character_swap':
                 request = swap_request
+            elif self.service == 'lipsync':
+                request = lipsync_request
             elif self.service == 'regenerate_2k':
                 inspected = self._inspect_regenerate_source_media(project_id, source, strict=False)
                 if inspected is not None:

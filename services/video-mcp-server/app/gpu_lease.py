@@ -41,6 +41,7 @@ SCHEDULER_CONSUMER_SPECS: dict[str, dict[str, object]] = {
     "h3-fasth3": {"consumer_kind": "h3", "stage_id": "generation", "reclaim_mode": "epoch_unload"},
     "h3-singularity": {"consumer_kind": "h3", "stage_id": "generation", "reclaim_mode": "epoch_unload"},
     "character_swap": {"consumer_kind": "video.character_swap", "stage_id": "character_swap", "reclaim_mode": "epoch_unload"},
+    "lipsync": {"consumer_kind": "video.lipsync", "stage_id": "lipsync", "reclaim_mode": "epoch_unload"},
     "regenerate_2k": {"consumer_kind": "video.regenerate_2k", "stage_id": "regenerate_2k", "reclaim_mode": "epoch_unload"},
     "h3-latent-upscale": {"consumer_kind": "video.regenerate_2k", "stage_id": "regenerate_2k", "reclaim_mode": "epoch_unload"},
     "interpolate": {"consumer_kind": "rife", "stage_id": "postprocess_rife", "reclaim_mode": "warm_idle_settled"},
@@ -303,6 +304,8 @@ class GpuCoordinator:
 
     @staticmethod
     def engine_deployment(service: str) -> str:
+        if service == "lipsync":
+            return os.getenv("VIDEO_LIPSYNC_DEPLOYMENT") or "video-lipsync"
         if service not in {"character_swap", "regenerate_2k"}:
             raise ValueError("unknown_int8_engine")
         return os.getenv(f"VIDEO_{service.upper()}_DEPLOYMENT") or "video-minimax-h3-" + service.replace("_", "-")

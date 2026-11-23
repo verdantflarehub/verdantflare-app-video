@@ -646,6 +646,98 @@ def video_character_swap_preview(video_task_id: str) -> types.CallToolResult:
     return _result({**adapter.public_result(record, preview=True), **titles.project(executor.tasks, record)})
 
 
+@mcp.tool(name="video.lipsync")
+@mcp.tool(name="video.lipsync.generate")
+@tool_errors
+def video_lipsync(
+    project_id: str,
+    idempotency_key: str,
+    source_video_artifact_id: str,
+    audio_artifact_id: str,
+    inference_steps: int = 20,
+    guidance_scale: float = 1.5,
+    seed: int = 1247,
+    audio_mix_mode: str = "driver_wav",
+    title: str | None = None,
+) -> types.CallToolResult:
+    """Synchronize lip movement on a project video using a dry vocal PCM WAV via LatentSync 1.6."""
+    authorize(executor.client, project_id)
+    # Enforce NSFW source video isolation (S5)
+    t_store = _active_tasks()
+    r_store = _active_ratings()
+    if getattr(t_store, "root", None) is not None and t_store.root.is_dir():
+        for path in t_store.root.glob("video_task_*.json"):
+            try:
+                src_rec = TaskRecord.model_validate_json(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if src_rec.project_id == project_id and (
+                src_rec.artifact_id == source_video_artifact_id
+                or (src_rec.delivery or {}).get("final_artifact_id") == source_video_artifact_id
+            ):
+                if t_store.is_record_nsfw(src_rec, r_store):
+                    raise TaskNotFound(f"NOT_FOUND: {source_video_artifact_id}")
+    tok = titles.PROVIDED_TITLE.set(titles.validate_title(title) if title is not None else None)
+    try:
+        adapter = executor.processing["lipsync"]
+        record = adapter.generate(
+            project_id=project_id,
+            idempotency_key=idempotency_key,
+            source_artifact_id=source_video_artifact_id,
+            audio_artifact_id=audio_artifact_id,
+            inference_steps=inference_steps,
+            guidance_scale=guidance_scale,
+            seed=seed,
+            audio_mix_mode=audio_mix_mode,
+        )
+    finally:
+        titles.PROVIDED_TITLE.reset(tok)
+    return _result({**adapter.public_status(record), "task_id": record.video_task_id,
+                    **titles.project(executor.tasks, record)})
+
+
+@mcp.tool(name="video.lipsync.status")
+@tool_errors
+def video_lipsync_status(video_task_id: str) -> types.CallToolResult:
+    existing = _active_tasks().get(video_task_id)
+    if existing.service != "lipsync" or _is_task_nsfw(existing):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
+    authorize(executor.client, existing.project_id)
+    adapter = executor.processing["lipsync"]
+    record = adapter.status(video_task_id)
+    if _is_task_nsfw(record):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
+    return _result({**adapter.public_status(record), **titles.project(executor.tasks, record)})
+
+
+@mcp.tool(name="video.lipsync.result")
+@tool_errors
+def video_lipsync_result(video_task_id: str) -> types.CallToolResult:
+    existing = _active_tasks().get(video_task_id)
+    if existing.service != "lipsync" or _is_task_nsfw(existing):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
+    authorize(executor.client, existing.project_id)
+    adapter = executor.processing["lipsync"]
+    record = adapter.result(video_task_id)
+    if _is_task_nsfw(record):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
+    return _result({**adapter.public_result(record), **titles.project(executor.tasks, record)})
+
+
+@mcp.tool(name="video.lipsync.preview")
+@tool_errors
+def video_lipsync_preview(video_task_id: str) -> types.CallToolResult:
+    existing = _active_tasks().get(video_task_id)
+    if existing.service != "lipsync" or _is_task_nsfw(existing):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
+    authorize(executor.client, existing.project_id)
+    adapter = executor.processing["lipsync"]
+    record = adapter.result(video_task_id)
+    if _is_task_nsfw(record):
+        raise TaskNotFound(f"NOT_FOUND: {video_task_id}")
+    return _result({**adapter.public_result(record, preview=True), **titles.project(executor.tasks, record)})
+
+
 def _result(value: dict[str, object]) -> types.CallToolResult:
     return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(value, ensure_ascii=False))], structuredContent=value)
 
@@ -1025,7 +1117,7 @@ def video_status(video_task_id: str = "", task_id: str = "") -> types.CallToolRe
         executor.higgsfield.authorize_record(existing)
     if existing.service == 'fal':
         executor.fal.authorize_record(existing)
-    if existing.service in {'interpolate', 'regenerate_2k', 'character_swap'} or existing.request.get('postprocess'):
+    if existing.service in {'interpolate', 'regenerate_2k', 'character_swap', 'lipsync'} or existing.request.get('postprocess'):
         authorize(executor.client, existing.project_id)
     record = executor.status(tid) if t_store is executor.tasks else existing
     if _is_task_nsfw(record):
@@ -1069,7 +1161,7 @@ def video_result(video_task_id: str = "", task_id: str = "", execution_proof_onl
         executor.higgsfield.authorize_record(existing)
     if existing.service == 'fal':
         executor.fal.authorize_record(existing)
-    if existing.service in {'interpolate', 'regenerate_2k', 'character_swap'} or existing.request.get('postprocess'):
+    if existing.service in {'interpolate', 'regenerate_2k', 'character_swap', 'lipsync'} or existing.request.get('postprocess'):
         authorize(executor.client, existing.project_id)
     if t_store is executor.tasks:
         record = executor.result(tid)

@@ -91,7 +91,7 @@ class ContentRatingUpdate(BaseModel):
 def task_channel(record):
     route = record.request.get("route") or record.runtime_route or record.service
     local = {"h3", "h3-sol", "h3-vdn", "h3-fasth3", "h3-singularity", "minimax-h3-sol-ref2va",
-             "h3-character-swap", "h3-regenerate-2k", "h3-latent-upscale", "sr", "interpolate", "regenerate_2k", "character_swap", "depth", "comfyui", "local"}
+             "h3-character-swap", "h3-regenerate-2k", "h3-latent-upscale", "sr", "interpolate", "regenerate_2k", "character_swap", "lipsync", "depth", "comfyui", "local"}
     return "local" if route in local else route or "unknown"
 
 
@@ -102,6 +102,13 @@ def channel_label(channel):
 
 def task_presentation(record, catalog=None):
     """UI labels only: keep provider identifiers and stored requests unchanged."""
+    if record.service == "lipsync":
+        label = next((model.get("display_name") for channel in (catalog or {}).get("channels", [])
+                      if channel.get("id") == "local" for model in channel.get("models", [])
+                      if model.get("id") == "local-latentsync-1-6"), None)
+        return {"is_generation": True, "channel_id": "local", "channel_label": "本地",
+                "channel_icon": "local", "model_label": label or "LatentSync 1.6",
+                "generation_code": "LipSync", "generation_label": "口型同步（LatentSync 1.6 · 512×512）"}
     if record.service == "character_swap":
         version = str(record.request.get("character_lora_version", "v1.5")).upper()
         label = next((model.get("display_name") for channel in (catalog or {}).get("channels", [])
@@ -199,6 +206,7 @@ def public_task(record, store=None, ratings_store=None, catalog=None, *, naming=
             "interpolate": "rife",
             "regenerate_2k": "open-h3-regenerate-2k-ic",
             "character_swap": "h3-character-swap-lora",
+            "lipsync": "latentsync-1.6",
             "depth": "video-depth-anything",
             "h3-latent-upscale": "h3-latent-upscaler",
         }.get(record.service)
@@ -224,6 +232,12 @@ def public_task(record, store=None, ratings_store=None, catalog=None, *, naming=
     gpu_queue = public_gpu_queue(record)
     admission_reconciliation = public_admission_reconciliation(record)
     swap_fields = {}
+    if record.service == "lipsync":
+        swap_fields = {key: record.request.get(key) for key in (
+            "source_video_artifact_id", "source_video_sha256", "audio_artifact_id", "audio_sha256")}
+        for key, default in (("inference_steps", 20), ("guidance_scale", 1.5),
+                             ("seed", 1247), ("audio_mix_mode", "driver_wav")):
+            swap_fields[key] = record.request.get(key, default)
     if record.service == "character_swap":
         swap_fields = {key: record.request.get(key) for key in (
             "source_artifact_id", "source_sha256", "character_image_artifact_id", "character_image_sha256")}
@@ -712,6 +726,12 @@ class Dashboard:
         value["runtime_version"] = record.runtime_version or self.executor.runtime_version
         value["references"] = []
         references = record.request.get("references", {})
+        if record.service == "lipsync":
+            references = {
+                "videos": [{"artifact_id": record.request["source_video_artifact_id"], "purpose": "源视频"}],
+                "audios": [{"artifact_id": record.request["audio_artifact_id"], "purpose": "驱动干声 WAV"}],
+            }
+            value["reference_limits"] = {"images": 0, "videos": 1, "audios": 1}
         if record.service == "character_swap":
             references = {"images": [{"artifact_id": record.request["character_image_artifact_id"],
                                       "purpose": "目标角色参考图 <Picture 1>"}],
