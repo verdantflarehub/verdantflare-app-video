@@ -225,6 +225,26 @@ VIDEO_TOOLS_SCHEMA = [
             "required": ["source_artifact_id", "project_id", "idempotency_key"],
         },
     },
+    {
+        "name": "video.lipsync",
+        "description": "Synchronize lip movements of a project video to a PCM WAV audio track with local LatentSync 1.6.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "project_id": {"type": "string", "description": "Owning Studio project ID"},
+                "idempotency_key": {"type": "string", "description": "Stable key for submission and recovery"},
+                "source_video_artifact_id": {"type": "string", "description": "Source video artifact ID"},
+                "audio_artifact_id": {"type": "string", "description": "Driver PCM WAV audio artifact ID"},
+                "inference_steps": {"type": "integer", "minimum": 10, "maximum": 50, "default": 20},
+                "guidance_scale": {"type": "number", "minimum": 1.0, "maximum": 3.0, "default": 1.5},
+                "seed": {"type": "integer", "minimum": 0, "maximum": 4294967295, "default": 1247},
+                "audio_mix_mode": {"type": "string", "enum": ["driver_wav", "source_audio", "mute"], "default": "driver_wav"},
+                "title": {"type": "string", "description": "Optional readable task title"},
+            },
+            "required": ["project_id", "idempotency_key", "source_video_artifact_id", "audio_artifact_id"],
+        },
+    },
 ]
 
 VIDEO_TOOLS_SCHEMA.extend([
