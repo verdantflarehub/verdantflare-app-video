@@ -100,3 +100,56 @@ class EngineRetirementTest(unittest.TestCase):
         self.assertNotEqual(renewed.provider_state["_gpu_attempt_id"], "first")
         self.assertNotIn("_gpu_lease", renewed.provider_state)
         self.assertEqual(self.executor.tasks.get(task.video_task_id).provider_state, renewed.provider_state)
+
+    def test_wake_int8_recovers_replaced_pod_when_replicas_already_one(self):
+        """Regression test for bug_20261124_video-lipsync-mcp-runtime-not-ready:
+        When an engine Pod is upgraded/replaced in-place while replicas==1 and all prior tasks are settled,
+        wake_int8 must advance engine_scale_state to the new pod_uid instead of looping until deadline.
+        """
+        from app.executor import ExecutionError
+
+        self.executor.engine_journal.observed(self.service, "woken_pod_uid", "pod-v013")
+        self.executor.engine_journal.observed(self.service, "bound_pod_uid", "pod-v013")
+        self.executor.engine_journal.observed(self.service, "dispatched_pod_uid", "pod-v013")
+
+        new_identity = {
+            "pod_uid": "pod-v014",
+            "container_id": "container-v014",
+            "boot_id": "boot-v014",
+            "visible_gpu_uuids": ["GPU-798fb508-830f-b538-6733-72ed6d210d40"],
+        }
+        self.executor.client = Mock()
+        self.executor.client.get.return_value = httpx.Response(
+            200,
+            json={
+                "ready": True,
+                "capabilities": {"backend": self.executor.processing[self.service].backend},
+                "runtime_identity": new_identity,
+            },
+        )
+
+        woken = self.executor.wake_int8(self.service, "http://engine", {})
+        self.assertEqual(woken["pod_uid"], "pod-v014")
+        gen = self.executor.engine_journal.generation(self.service)
+        self.assertEqual(gen["generation"], 2)
+        self.assertEqual(gen["woken_pod_uid"], "pod-v014")
+        self.assertIsNone(gen["bound_pod_uid"])
+        self.assertIsNone(gen["dispatched_pod_uid"])
+
+        # Subsequent bound and dispatched observations on the new pod must succeed cleanly
+        self.executor.engine_journal.observed(self.service, "bound_pod_uid", "pod-v014")
+        self.executor.engine_journal.observed(self.service, "dispatched_pod_uid", "pod-v014")
+
+        # Conversely, if an active lease still exists for the service during pod replacement,
+        # wake_int8 must fail fast with engine_generation_requires_reconciliation.
+        self.executor.scheduler.list_leases.return_value = [{"stage_id": self.service, "state": "granted"}]
+        self.executor.client.get.return_value = httpx.Response(
+            200,
+            json={
+                "ready": True,
+                "capabilities": {"backend": self.executor.processing[self.service].backend},
+                "runtime_identity": {**new_identity, "pod_uid": "pod-v015"},
+            },
+        )
+        with self.assertRaisesRegex(ExecutionError, "engine_generation_requires_reconciliation"):
+            self.executor.wake_int8(self.service, "http://engine", {})

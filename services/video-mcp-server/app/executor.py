@@ -872,7 +872,8 @@ class VideoExecutor:
                 backend = self.processing[service].backend
                 if (data.get("ready") is True and (backend in profiles or caps.get("backend") == backend)
                         and self._has_concrete_runtime_identity(identity)):
-                    if self.engine_journal.generation(service) is None:
+                    state = self.engine_journal.generation(service)
+                    if state is None or (state.get("woken_pod_uid") and state["woken_pod_uid"] != identity["pod_uid"]):
                         self.recover_ready_engine(service, identity["pod_uid"])
                     self.engine_journal.observed(service, "woken_pod_uid", identity["pod_uid"])
                     return identity
@@ -2383,8 +2384,26 @@ class VideoExecutor:
                 logging.getLogger(__name__).warning("Expired admission reconciliation deferred: %s", path.stem)
 
     def recover_ready_engine(self, service, uid):
-        if not self.tasks.root.is_dir() or self.engine_journal.pending(service):
+        if not self.tasks.root.is_dir():
             raise ExecutionError("engine_generation_requires_reconciliation")
+        leases = self.scheduler.list_leases()
+        for pending in self.engine_journal.pending(service):
+            try:
+                ptask = self.tasks.get(pending["task_id"])
+            except Exception as exc:
+                raise ExecutionError("engine_generation_requires_reconciliation") from exc
+            if ptask.status not in TERMINAL_TASK_STATUS:
+                raise ExecutionError("engine_generation_requires_reconciliation")
+            self.reconcile_pending_grant(ptask, pending["attempt_id"], service, None, leases, resume=False)
+            self.engine_journal.confirm_acquire(ptask.video_task_id, pending["attempt_id"], service)
+        if self.engine_journal.pending(service):
+            raise ExecutionError("engine_generation_requires_reconciliation")
+        active_lease_ids = {
+            str(l.get("lease_id") or "")
+            for l in leases
+            if l.get("state") not in {"expired", "released"} and l.get("lease_id")
+        }
+        pending_releases = getattr(self.scheduler, "_pending_releases", None) or {}
         for path in self.tasks.root.iterdir():
             if not path.match("video_task_*.json"):
                 continue
@@ -2394,9 +2413,20 @@ class VideoExecutor:
                 if ps.get("gpu_dispatched") and task.status not in TERMINAL_TASK_STATUS:
                     raise ExecutionError("engine_generation_requires_reconciliation")
                 if ps.get("_gpu_lease_owned") and not ps.get("_gpu_lease_released"):
-                    raise ExecutionError("engine_generation_requires_reconciliation")
+                    lease_doc = ps.get("_gpu_lease") if isinstance(ps.get("_gpu_lease"), dict) else {}
+                    lease_id = str(lease_doc.get("lease_id") or "")
+                    if (
+                        task.status in TERMINAL_TASK_STATUS
+                        and ps.get("worker_settled") is not False
+                        and lease_id not in active_lease_ids
+                        and lease_id not in pending_releases
+                    ):
+                        ps = {**ps, "_gpu_lease_released": True}
+                        self.tasks.update(task, provider_state=ps)
+                    else:
+                        raise ExecutionError("engine_generation_requires_reconciliation")
         if any(l.get("stage_id") == service and l.get("state") not in {"expired", "released"}
-               for l in self.scheduler.list_leases()):
+               for l in leases):
             raise ExecutionError("engine_generation_requires_reconciliation")
         self.engine_journal.recover_ready_generation(service, uid, time.time())
 

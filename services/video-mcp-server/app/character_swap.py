@@ -118,10 +118,22 @@ class EngineJournal:
 
     def recover_ready_generation(self, service, uid, now):
         with closing(self.connect()) as db, db:
-            added = db.execute("INSERT OR IGNORE INTO engine_scale_state VALUES(?,1,?,?,NULL,NULL)",
-                               (service, now, uid))
-            if added.rowcount:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT generation, woken_pod_uid FROM engine_scale_state WHERE service=?",
+                (service,),
+            ).fetchone()
+            if row is None:
+                db.execute("INSERT INTO engine_scale_state VALUES(?,1,?,?,NULL,NULL)", (service, now, uid))
                 db.execute("INSERT OR REPLACE INTO recovered_engine_generations VALUES(?,1)", (service,))
+            elif row["woken_pod_uid"] != uid:
+                next_gen = int(row["generation"]) + 1
+                db.execute(
+                    "UPDATE engine_scale_state SET generation=?, last_active=?, woken_pod_uid=?, "
+                    "bound_pod_uid=NULL, dispatched_pod_uid=NULL WHERE service=?",
+                    (next_gen, now, uid, service),
+                )
+                db.execute("INSERT OR REPLACE INTO recovered_engine_generations VALUES(?,?)", (service, next_gen))
 
     def generation(self, service):
         with closing(self.connect()) as db:
