@@ -42,7 +42,7 @@ COPY src ./src
 RUN python3 -m pip install --no-deps --no-cache-dir . && python3 -m compileall -q /opt/video-lipsync/src
 
 LABEL org.opencontainers.image.title="VerdantFlare Video LipSync (LatentSync 1.6)" \
-      org.opencontainers.image.version="0.1.4" \
+      org.opencontainers.image.version="0.1.5" \
       org.opencontainers.image.licenses="Apache-2.0"
 
 ENV PYTHONPATH=/opt/video-lipsync/src:/opt/latentsync \

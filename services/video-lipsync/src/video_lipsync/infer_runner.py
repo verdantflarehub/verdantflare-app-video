@@ -47,13 +47,11 @@ def _align_warp_face_border(restorer, img: np.ndarray, landmarks3: np.ndarray) -
 
 
 class SeamlessLipsyncPipeline(LipsyncPipeline):
-    """LipsyncPipeline subclass with sub-nasal soft-mask paste-back, Lab color matching, and yaw safety."""
+    """LipsyncPipeline subclass with sub-nasal soft-mask paste-back, Lab color matching, and yaw safety.
 
-    def __init__(self, *args, metrics_out_path: Path | None = None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._frame_landmarks: list[np.ndarray | None] = []
-        self._metrics_out_path = metrics_out_path
-        self.paste_back_stats = PasteBackStats()
+    Note: Must NOT override __init__ because diffusers.DiffusionPipeline.components inspects
+    inspect.signature(self.__init__).parameters against registered module names.
+    """
 
     def affine_transform_video(self, video_frames: np.ndarray):
         raw_landmarks: list[np.ndarray | None] = []
@@ -148,7 +146,8 @@ class SeamlessLipsyncPipeline(LipsyncPipeline):
             mat = affine_matrices[index]
             if isinstance(mat, torch.Tensor):
                 mat = mat.detach().cpu().numpy()
-            lmk = self._frame_landmarks[index] if index < len(self._frame_landmarks) else None
+            frame_landmarks = getattr(self, "_frame_landmarks", [])
+            lmk = frame_landmarks[index] if index < len(frame_landmarks) else None
 
             out_frame = paste_back_frame(
                 video_frames[index],
@@ -168,12 +167,6 @@ class SeamlessLipsyncPipeline(LipsyncPipeline):
                 f"high_yaw_fallback={stats_dict['high_yaw_fallback_frames']}",
                 flush=True,
             )
-        if self._metrics_out_path is not None:
-            try:
-                self._metrics_out_path.parent.mkdir(parents=True, exist_ok=True)
-                self._metrics_out_path.write_text(json.dumps(stats_dict), encoding="utf-8")
-            except OSError:
-                pass
         return np.stack(out_frames, axis=0)
 
 
@@ -233,15 +226,15 @@ def main() -> int:
 
     temp_dir = Path(args.temp_dir)
     temp_dir.mkdir(parents=True, exist_ok=True)
-    metrics_path = temp_dir / "paste_back_metrics.json"
 
     pipeline = SeamlessLipsyncPipeline(
         vae=vae,
         audio_encoder=audio_encoder,
         unet=unet,
         scheduler=scheduler,
-        metrics_out_path=metrics_path,
     )
+    pipeline._frame_landmarks = []
+    pipeline.paste_back_stats = PasteBackStats()
     if os.environ.get("LIPSYNC_ENABLE_CPU_OFFLOAD", "1") == "1":
         try:
             pipeline.enable_model_cpu_offload()
@@ -273,6 +266,15 @@ def main() -> int:
         mask_image_path=config.data.mask_image_path,
         temp_dir=str(temp_dir),
     )
+    stats_obj = getattr(pipeline, "paste_back_stats", None)
+    if stats_obj is not None:
+        stats_json = json.dumps(stats_obj.to_dict())
+        for mpath in (Path(args.video_out_path).parent / "paste_back_metrics.json", temp_dir / "paste_back_metrics.json"):
+            try:
+                mpath.parent.mkdir(parents=True, exist_ok=True)
+                mpath.write_text(stats_json, encoding="utf-8")
+            except OSError:
+                pass
     return 0
 
 

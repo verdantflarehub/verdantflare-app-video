@@ -201,3 +201,17 @@ def test_landmark_smoother_damps_jitter_and_preserves_zero_cuda():
 
     for mod in ("torch", "diffusers", "onnxruntime"):
         assert mod not in sys.modules
+
+
+def test_seamless_pipeline_does_not_override_diffusers_init_signature():
+    """diffusers.DiffusionPipeline inspects __init__ parameters; subclass must not override __init__."""
+    import ast
+    from pathlib import Path
+
+    src_path = Path(__file__).resolve().parents[1] / "src" / "video_lipsync" / "infer_runner.py"
+    tree = ast.parse(src_path.read_text(encoding="utf-8"))
+    cls_nodes = [n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "SeamlessLipsyncPipeline"]
+    assert len(cls_nodes) == 1
+    method_names = {n.name for n in cls_nodes[0].body if isinstance(n, ast.FunctionDef)}
+    assert "__init__" not in method_names
+    assert {"affine_transform_video", "loop_video", "restore_video"} <= method_names

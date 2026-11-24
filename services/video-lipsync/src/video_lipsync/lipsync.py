@@ -299,7 +299,9 @@ def run_lipsync(
     inference_seconds = round(time.monotonic() - t_inf0, 3)
 
     paste_back_metrics: dict = {}
-    metrics_file = task_dir / "temp" / "paste_back_metrics.json"
+    metrics_file = task_dir / "paste_back_metrics.json"
+    if not metrics_file.is_file():
+        metrics_file = task_dir / "temp" / "paste_back_metrics.json"
     if metrics_file.is_file():
         try:
             loaded = json.loads(metrics_file.read_text(encoding="utf-8"))
