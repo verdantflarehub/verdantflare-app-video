@@ -187,6 +187,7 @@ def _run_fasth3_nvfp4(
 
     from .audio_guidance import anchor_encoded_audio, validate_timeline_pcm
     from .image_guidance import anchor_first_image, validate_first_image
+    from .image_guides import anchor_images, validate_images
     from .media import align_video_reference, load_audio, load_image, load_video, mux_mp4, sha256
     from .vsa_patch import FastH3VSAPatch
 
@@ -279,6 +280,8 @@ def _run_fasth3_nvfp4(
     width, height = geometry["width"], geometry["height"]
     if request.get("image_guidance") == "first_frame":
         validate_first_image(images, width, height)
+    if request.get("image_guides") is not None:
+        validate_images(images, request["image_guides"], width, height, timing["frames"])
     ref_decode_seconds = time.perf_counter() - decode_started
 
     set_stage("warming")
@@ -406,6 +409,9 @@ def _run_fasth3_nvfp4(
             )
             if request.get("image_guidance") == "first_frame":
                 conditioning = anchor_first_image(conditioning, width, height)
+            if request.get("image_guides") is not None:
+                conditioning = anchor_images(conditioning, images, request["image_guides"],
+                    width, height, length, vae.encode)
             if timeline_audio is not None:
                 audio_ticks = int(latent["samples"].tensors[1].shape[-1])
                 conditioning = anchor_encoded_audio(conditioning, audio_ticks)

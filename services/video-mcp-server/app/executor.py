@@ -1576,6 +1576,13 @@ class VideoExecutor:
                             from .singularity import runtime_supports_timeline, runtime_supports_first_frame
                             if runtime_supports_first_frame(health):
                                 routes[-1]["image_guidance"]["modes"].append("first_frame")
+                            from .image_guides import runtime_supports as supports_image_guides
+                            if service == "h3-fasth3" and supports_image_guides(health):
+                                routes[-1]["image_guides"] = {
+                                    "schema": "single-frame-v1", "maximum": 8, "index_base": 0,
+                                    "experimental": True, "gpu_verified": False,
+                                    "exact_pixel_preservation": False, "hard_geometry_lock": False,
+                                }
                             if runtime_supports_timeline(health):
                                 routes[-1]["audio_guidance"]["modes"].append("timeline")
                     except (httpx.HTTPError, ValueError, AttributeError):
@@ -1723,7 +1730,7 @@ class VideoExecutor:
                    aspect_ratio: str, references: dict[str, list[dict[str, str]]],
                    route: str = "h3", quality_profile: str | None = None,
                    audio_guidance: str | None = None, image_guidance: str | None = None,
-                   *, allow_legacy_profile: bool = False) -> tuple[dict[str, object], str]:
+                   *, allow_legacy_profile: bool = False, image_guides=None) -> tuple[dict[str, object], str]:
         if not isinstance(route, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", route):
             raise ValueError("route must be a lowercase slug")
         service = self._service_for_route(route)
@@ -1732,6 +1739,8 @@ class VideoExecutor:
         from .singularity import check_audio_guidance, check_image_guidance
         check_audio_guidance(audio_guidance, service)
         check_image_guidance(image_guidance, service)
+        from .image_guides import check_route as check_image_guides
+        check_image_guides(image_guides, service, image_guidance)
         if quality_profile not in {"fasth3-nvfp4", "du-0"}:
             raise ValueError("quality_profile_not_available")
         if service in MODERN_H3_SERVICES:
@@ -1804,6 +1813,9 @@ class VideoExecutor:
                     raise ValueError(f"{kind} references exceed 15 seconds in total")
             visuals = media_by_kind["images"] or media_by_kind["videos"]
             request["resolved_output"] = output_spec(aspect_ratio, duration_seconds, visuals[0] if visuals else None)
+            if image_guides is not None:
+                from .image_guides import validate as validate_image_guides
+                request["image_guides"] = validate_image_guides(image_guides, media_by_kind["images"], request["resolved_output"])
             if image_guidance == "first_frame":
                 if not media_by_kind["images"]:
                     raise ValueError("first_frame_requires_image")
@@ -1845,6 +1857,7 @@ class VideoExecutor:
                  channel_account_id: str | None = None, budget_limit: str | None = None,
                  price_ceiling: float | None = None, audio_guidance: str | None = None,
                  image_guidance: str | None = None,
+                 image_guides=None,
                  workflow_params: dict[str, object] | None = None,
                  upscale: str | None = None) -> TaskRecord:
         with self._lock:
@@ -1861,6 +1874,8 @@ class VideoExecutor:
             from .singularity import check_audio_guidance, check_image_guidance
             check_audio_guidance(audio_guidance, service)
             check_image_guidance(image_guidance, service)
+            from .image_guides import check_route as check_image_guides
+            check_image_guides(image_guides, service, image_guidance)
             if route != "higgsfield" and price_ceiling is not None:
                 raise ValueError("price_ceiling_not_supported")
             if route not in {'fal', 'grok', 'google', 'google-flow'} and (channel_account_id is not None or budget_limit is not None):
@@ -1960,6 +1975,7 @@ class VideoExecutor:
                         project_id, model, prompt, duration_seconds, aspect_ratio,
                         references, route, resolved_qp, audio_guidance, image_guidance,
                         allow_legacy_profile=allow_legacy_profile,
+                        image_guides=image_guides,
                     )
                     request, digest = self.delivery.prepare(request, digest, postprocess, check=False)
                     authority = authorize(self.client, project_id) if postprocess is not None else None
@@ -2016,6 +2032,8 @@ class VideoExecutor:
                                "quality_profile": resolved_qp}
                     if "image_guidance" in request:
                         payload["image_guidance"] = request["image_guidance"]
+                    if "image_guides" in request:
+                        payload["image_guides"] = request["image_guides"]
                     if "audio_guidance" in request:
                         payload["audio_guidance"] = request["audio_guidance"]
                     # Persist the attempt before calling the runtime. An ambiguous network
@@ -2097,6 +2115,8 @@ class VideoExecutor:
         }
         if "image_guidance" in request:
             payload["image_guidance"] = request["image_guidance"]
+        if "image_guides" in request:
+            payload["image_guides"] = request["image_guides"]
         if "audio_guidance" in request:
             payload["audio_guidance"] = request["audio_guidance"]
         if service == "h3-vdn":
@@ -2232,6 +2252,13 @@ class VideoExecutor:
                             return _fail_pre_submit(
                                 "first_frame_not_supported",
                                 "Selected runtime does not support first-frame guidance; generation was not submitted",
+                            )
+                    if record.request.get("image_guides") is not None:
+                        from .image_guides import runtime_supports as supports_image_guides
+                        if not supports_image_guides(health_data):
+                            return _fail_pre_submit(
+                                "image_guides_not_supported",
+                                "Selected runtime does not support single-frame image guides; generation was not submitted",
                             )
                     if audio_guidance == "timeline":
                         from .singularity import runtime_supports_timeline
@@ -2941,6 +2968,14 @@ class VideoExecutor:
                         authorize(self.client, record.project_id, record.authority)
                         req = record.request
                         payload = self._build_local_generation_payload(record)
+                        if req.get('image_guides') is not None:
+                            from .image_guides import runtime_supports
+                            health = self.client.get(f'{url}/health', headers=headers, timeout=10)
+                            authorize(self.client, record.project_id, record.authority)
+                            health.raise_for_status()
+                            data = health.json()
+                            if not runtime_supports(data) or data.get('ready') is not True:
+                                raise ValueError('image_guides_not_supported_or_not_ready')
                         if req.get('image_guidance') == 'first_frame':
                             from .singularity import runtime_supports_first_frame
                             health = self.client.get(f'{url}/health', headers=headers, timeout=10)

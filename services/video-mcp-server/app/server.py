@@ -87,6 +87,7 @@ IMAGE_GUIDANCE_DESCRIPTION = (
     "but multi-reference cross-style conversion acts as soft conditioning without hard geometry lock "
     "(render a matching photoreal first-frame keyframe before motion generation)."
 )
+from .image_guides import DESCRIPTION as IMAGE_GUIDES_DESCRIPTION, SCHEMA as IMAGE_GUIDES_SCHEMA
 
 VIDEO_TOOLS_SCHEMA = [
     {
@@ -821,6 +822,7 @@ def video_preflight(project_id: str, prompt: str = "",
                     channel_account_id: str | None = None, budget_limit: str | None = None,
                     price_ceiling: float | None = None, audio_guidance: str | None = None,
                     image_guidance: Annotated[str | None, Field(default=None, description=IMAGE_GUIDANCE_DESCRIPTION)] = None,
+                    image_guides: Annotated[list[dict[str, object]] | None, Field(default=None, description=IMAGE_GUIDES_DESCRIPTION, json_schema_extra=IMAGE_GUIDES_SCHEMA)] = None,
                     source_artifact_id: str | None = None,
                     character_image_artifact_id: str | None = None,
                     character_lora_version: str = "v1.5", turbo_variant: str = "fl2v_turbo_8step",
@@ -835,6 +837,13 @@ def video_preflight(project_id: str, prompt: str = "",
                     guidance_scale: float = 1.5,
                     audio_mix_mode: str = "driver_wav") -> types.CallToolResult:
     """Validate exact media and parameters and read the selected channel's real pricing and admission."""
+    if image_guides is not None and (
+        source_artifact_id is not None or character_image_artifact_id is not None
+        or route in {"character_swap", "regenerate_2k", "lipsync"}
+        or mode in {"character_swap", "lipsync"}
+        or model == "latentsync-1.6" or audio_artifact_id is not None
+    ):
+        raise ValueError("image_guides_require_h3_fasth3")
     if route == "lipsync" or mode == "lipsync" or model == "latentsync-1.6" or audio_artifact_id is not None:
         from .lipsync import prepare_request as prepare_lipsync_request
         authorize(executor.client, project_id)
@@ -896,6 +905,8 @@ def video_preflight(project_id: str, prompt: str = "",
     from .singularity import check_audio_guidance, runtime_supports_timeline, check_image_guidance, runtime_supports_first_frame
     check_audio_guidance(audio_guidance, executor._service_for_route(selected))
     check_image_guidance(image_guidance, executor._service_for_route(selected))
+    from .image_guides import check_route as check_image_guides, runtime_supports as supports_image_guides
+    check_image_guides(image_guides, executor._service_for_route(selected), image_guidance)
     norm_post = normalize_postprocess(postprocess, selected)
     if selected != "comfyui" and workflow_params is not None:
         raise ValueError("unsupported_parameter")
@@ -969,7 +980,8 @@ def video_preflight(project_id: str, prompt: str = "",
     expected_profile = route_quality_profile(selected)
     effective_profile = quality_profile if quality_profile is not None else expected_profile
     request, digest = executor._normalize(require_project_id(project_id), model or "minimax-h3-ref2va", prompt,
-        duration_seconds, aspect_ratio or "16:9", references, selected, effective_profile, audio_guidance, image_guidance)
+        duration_seconds, aspect_ratio or "16:9", references, selected, effective_profile, audio_guidance, image_guidance,
+        image_guides=image_guides)
     try:
         response = executor.client.get(f"{url}/health", headers=headers, timeout=10)
         if response.status_code != 200:
@@ -988,6 +1000,8 @@ def video_preflight(project_id: str, prompt: str = "",
         raise ValueError("timeline_audio_not_supported_or_not_ready")
     if image_guidance == "first_frame" and not runtime_supports_first_frame(health):
         raise ValueError("first_frame_not_supported_or_not_ready")
+    if image_guides is not None and not supports_image_guides(health):
+        raise ValueError("image_guides_not_supported_or_not_ready")
     if norm_post is not None:
         authorize(executor.client, project_id)
     request, digest = executor.delivery.prepare(request, digest, postprocess)
@@ -1016,6 +1030,7 @@ def video_preflight(project_id: str, prompt: str = "",
                     "resolved_output": request["resolved_output"], "reference_mapping": request["reference_mapping"],
                     "reference_media": request["reference_media"], "prompt": request["prompt"],
                     **({"image_guidance": request["image_guidance"]} if "image_guidance" in request else {}),
+                    **({"image_guides": request["image_guides"]} if "image_guides" in request else {}),
                     **({"audio_guidance": request["audio_guidance"], "timeline_audio": request.get("timeline_audio")}
                        if "audio_guidance" in request else {})})
 
@@ -1049,6 +1064,7 @@ def video_create(prompt: str,
                   channel_account_id: str | None = None, budget_limit: str | None = None,
                   price_ceiling: float | None = None, audio_guidance: str | None = None,
                   image_guidance: Annotated[str | None, Field(default=None, description=IMAGE_GUIDANCE_DESCRIPTION)] = None,
+                  image_guides: Annotated[list[dict[str, object]] | None, Field(default=None, description=IMAGE_GUIDES_DESCRIPTION, json_schema_extra=IMAGE_GUIDES_SCHEMA)] = None,
                   workflow_params: dict[str, object] | None = None,
                   upscale: str | None = None) -> types.CallToolResult:
     """Create an asynchronous video generation task."""
@@ -1058,6 +1074,7 @@ def video_create(prompt: str,
                                quality_profile=quality_profile, mode=mode, resolution=resolution, postprocess=postprocess,
                                channel_account_id=channel_account_id, budget_limit=budget_limit, price_ceiling=price_ceiling,
                                audio_guidance=audio_guidance, image_guidance=image_guidance,
+                               image_guides=image_guides,
                                workflow_params=workflow_params, upscale=upscale)
     return _result({**naming, "task_id": record.video_task_id, "video_task_id": record.video_task_id,
                     "status": record.status, "created_at": record.created_at, "error": record.error, "delivery": record.delivery,
@@ -1075,6 +1092,7 @@ def video_generate(project_id: str, idempotency_key: str, model: str, prompt: st
                   channel_account_id: str | None = None, budget_limit: str | None = None,
                   price_ceiling: float | None = None, audio_guidance: str | None = None,
                   image_guidance: Annotated[str | None, Field(default=None, description=IMAGE_GUIDANCE_DESCRIPTION)] = None,
+                  image_guides: Annotated[list[dict[str, object]] | None, Field(default=None, description=IMAGE_GUIDES_DESCRIPTION, json_schema_extra=IMAGE_GUIDES_SCHEMA)] = None,
                   workflow_params: dict[str, object] | None = None,
                   upscale: str | None = None) -> types.CallToolResult:
     """Generate with a business model and an explicitly selected runtime route.
@@ -1090,6 +1108,7 @@ def video_generate(project_id: str, idempotency_key: str, model: str, prompt: st
                                quality_profile=quality_profile, mode=mode, resolution=resolution, postprocess=postprocess,
                                channel_account_id=channel_account_id, budget_limit=budget_limit, price_ceiling=price_ceiling,
                                audio_guidance=audio_guidance, image_guidance=image_guidance,
+                               image_guides=image_guides,
                                workflow_params=workflow_params, upscale=upscale)
     return _result({**naming, "task_id": record.video_task_id, "video_task_id": record.video_task_id,
                     "status": record.status, "created_at": record.created_at, "error": record.error, "delivery": record.delivery})

@@ -62,6 +62,7 @@ def validate_request(payload: dict, reference_base_url: str):
         "quality_profile",
         "audio_guidance",
         "image_guidance",
+        "image_guides",
     }
     if not isinstance(payload, dict) or not required <= payload.keys() or payload.keys() - allowed:
         raise RuntimeErrorCode("invalid_request_fields")
@@ -118,6 +119,8 @@ def validate_request(payload: dict, reference_base_url: str):
         raise RuntimeErrorCode("too_many_references_of_type")
     if image_guidance == "first_frame" and not counts["image"]:
         raise RuntimeErrorCode("first_frame_requires_image")
+    from .image_guides import validate_guides
+    validate_guides(payload.get("image_guides"), counts["image"], resolve_timing(payload["seconds"])["frames"], image_guidance)
     if audio_guidance == "timeline" and (counts["audio"] != 1 or counts["video"]):
         raise RuntimeErrorCode("timeline_requires_one_audio_and_no_video")
     if ratio == "adaptive" and not counts["image"] and not counts["video"]:
@@ -218,6 +221,7 @@ def check_weights_health(
             "quality_profiles": list(QUALITY_PROFILES),
             "audio_guidance_modes": ["reference", "timeline"],
             "image_guidance_modes": ["reference", "first_frame"],
+            "image_guides": {"schema": "single-frame-v1", "maximum": 8, "index_base": 0},
             "first_frame_experimental": True,
             "first_frame_gpu_verified": False,
             "timeline_audio_experimental": True,
