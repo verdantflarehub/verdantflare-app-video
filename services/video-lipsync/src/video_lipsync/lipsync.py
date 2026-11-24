@@ -298,6 +298,16 @@ def run_lipsync(
         raise RuntimeErrorCode("inference_failed")
     inference_seconds = round(time.monotonic() - t_inf0, 3)
 
+    paste_back_metrics: dict = {}
+    metrics_file = task_dir / "temp" / "paste_back_metrics.json"
+    if metrics_file.is_file():
+        try:
+            loaded = json.loads(metrics_file.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                paste_back_metrics = loaded
+        except (OSError, json.JSONDecodeError):
+            paste_back_metrics = {}
+
     # Restore exact source CFR and mix requested audio track
     t_enc0 = time.monotonic()
     mix_mode = request["audio_mix_mode"]
@@ -402,5 +412,15 @@ def run_lipsync(
             "gpu_peak_vram_mib": vram_stats["peak_used_mib"],
             "gpu_min_free_vram_mib": vram_stats["min_free_mib"],
             "gpu_peak_reserved_bytes": vram_stats["peak_used_mib"] * 1024 * 1024,
+            **{
+                k: int(paste_back_metrics[k])
+                for k in (
+                    "faces_detected_frames",
+                    "faces_missing_frames",
+                    "high_yaw_degraded_frames",
+                    "high_yaw_fallback_frames",
+                )
+                if k in paste_back_metrics
+            },
         },
     }

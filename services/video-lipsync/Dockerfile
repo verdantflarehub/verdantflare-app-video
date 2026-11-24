@@ -28,10 +28,13 @@ RUN python3 -m pip install --no-cache-dir \
       av \
       soundfile
 
-RUN git clone --depth 1 --filter=blob:none --no-checkout https://github.com/bytedance/LatentSync.git /opt/latentsync \
+ARG LATENTSYNC_COMMIT=a229c3948406bc2cf6eaf4873e662e70c6a04746
+RUN git init /opt/latentsync \
     && cd /opt/latentsync \
+    && git remote add origin https://github.com/bytedance/LatentSync.git \
     && git sparse-checkout set configs latentsync scripts eval \
-    && git checkout
+    && git fetch --depth 1 --filter=blob:none origin "${LATENTSYNC_COMMIT}" \
+    && git checkout --detach FETCH_HEAD
 
 WORKDIR /opt/video-lipsync
 COPY pyproject.toml ./
@@ -39,7 +42,7 @@ COPY src ./src
 RUN python3 -m pip install --no-deps --no-cache-dir . && python3 -m compileall -q /opt/video-lipsync/src
 
 LABEL org.opencontainers.image.title="VerdantFlare Video LipSync (LatentSync 1.6)" \
-      org.opencontainers.image.version="0.1.0" \
+      org.opencontainers.image.version="0.1.4" \
       org.opencontainers.image.licenses="Apache-2.0"
 
 ENV PYTHONPATH=/opt/video-lipsync/src:/opt/latentsync \
